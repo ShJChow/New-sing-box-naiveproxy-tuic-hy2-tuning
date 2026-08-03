@@ -138,8 +138,10 @@ jobs:
           TOKEN=$(cat "$HOME/sbbox/subtoken")
           SUB="$HOME/sbbox/websub/$TOKEN"
           test -s "$SUB" || { echo "订阅文件为空"; exit 1; }
-          # v2rayN 要求单行 base64，不能含换行
-          grep -q $'\n' "$SUB" && { echo "订阅含换行，v2rayN 无法解析"; exit 1; }
+          # v2rayN 要求单行 base64，不能含换行。
+          # 无尾换行的单行文件 wc -l 记为 0 行；用 grep 找 \n 不可行（模式里的
+          # 换行会被当成「空模式或空模式」，匹配任意行，永远为真）。
+          [ "$(wc -l < "$SUB")" -eq 0 ] || { echo "订阅含换行，v2rayN 无法解析"; exit 1; }
           base64 -d < "$SUB" > /tmp/decoded.txt
           echo "--- 订阅内容 ---"; cat /tmp/decoded.txt
           grep -q '^naive+' /tmp/decoded.txt && { echo "naive 未被剔除，v2rayN 会显示 -1"; exit 1; }

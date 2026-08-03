@@ -952,8 +952,8 @@ gen_client_sbox() {
     "log": { "level": "info", "timestamp": true },
     "dns": {
         "servers": [
-            { "tag": "remote", "address": "https://1.1.1.1/dns-query" },
-            { "tag": "local", "address": "223.5.5.5" }
+            { "tag": "remote", "type": "https", "server": "1.1.1.1", "detour": "auto" },
+            { "tag": "local", "type": "udp", "server": "223.5.5.5", "detour": "direct" }
         ],
         "rules": [ { "rule_set": "geosite-cn", "server": "local" } ],
         "final": "remote"
