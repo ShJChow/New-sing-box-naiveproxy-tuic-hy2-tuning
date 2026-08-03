@@ -36,6 +36,7 @@ CERT_DIR="$SB_HOME/cert"
 SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
+SBBOX_VERSION="v1.0.0"
 SB_URL="https://raw.githubusercontent.com/ShJChow/sbbox/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -96,7 +97,7 @@ v4v6() {
 # ---------- 帮助信息 ----------
 showmode() {
   echo "==========================================================="
-  echo "sbbox — Sing-box-Only 四协议安全代理脚本"
+  echo "sbbox $SBBOX_VERSION — Sing-box-Only 四协议安全代理脚本"
   echo "支持协议：Tuic / Hysteria2 / Naiveproxy / Reality"
   echo "-----------------------------------------------------------"
   echo "主脚本：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sbbox/main/sbbox.sh)"

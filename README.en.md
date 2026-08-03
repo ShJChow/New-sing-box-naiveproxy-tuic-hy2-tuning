@@ -1,5 +1,7 @@
 # sbbox — Sing-box-Only Secure Proxy Deployment Script
 
+[![validate](https://github.com/ShJChow/sbbox/actions/workflows/validate.yml/badge.svg)](https://github.com/ShJChow/sbbox/actions/workflows/validate.yml)
+
 A **sing-box single-core** deployment script derived from [`yonggekkk/argosbx`](https://github.com/yonggekkk/argosbx), stripped down to four protocols:
 
 | Protocol | Purpose | Transport |
