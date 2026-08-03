@@ -3,7 +3,7 @@
 # sbbox.sh — Sing-box-Only 安全加固代理部署脚本
 #
 # 基于 yonggekkk/argosbx 架构，剥离为 sing-box 单内核，
-# 仅保留 Tuic / Hysteria2 / Naiveproxy / Reality 四协议。
+# 仅保留 Tuic / Hysteria2 / Naiveproxy(H2+H3) / Reality 五协议。
 # 集成内核级流控调优 (xh tuning on) + acme.sh 证书申请。
 #
 # 用法：
@@ -97,8 +97,8 @@ v4v6() {
 # ---------- 帮助信息 ----------
 showmode() {
   echo "==========================================================="
-  echo "sbbox $SBBOX_VERSION — Sing-box-Only 四协议安全代理脚本"
-  echo "支持协议：Tuic / Hysteria2 / Naiveproxy / Reality"
+  echo "sbbox $SBBOX_VERSION — Sing-box-Only 五协议安全代理脚本"
+  echo "支持协议：Tuic / Hysteria2 / Naiveproxy(H2+H3) / Reality"
   echo "-----------------------------------------------------------"
   echo "主脚本：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sbbox/main/sbbox.sh)"
   echo "显示节点信息：sbbox list 【或】 bash sbbox.sh list"
@@ -482,7 +482,7 @@ tune_show() {
 }
 
 # ======================================================
-# sing-box 服务端配置生成（四协议）
+# sing-box 服务端配置生成（五协议，Naiveproxy 服务端单入站同时支持 H2+H3）
 # ======================================================
 installsb() {
   echo ""

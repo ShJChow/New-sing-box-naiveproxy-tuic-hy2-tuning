@@ -2,13 +2,14 @@
 
 [![validate](https://github.com/ShJChow/sbbox/actions/workflows/validate.yml/badge.svg)](https://github.com/ShJChow/sbbox/actions/workflows/validate.yml)
 
-基于 [`yonggekkk/argosbx`](https://github.com/yonggekkk/argosbx) 架构精简而成的 **sing-box 单内核**部署脚本，只保留四个协议：
+基于 [`yonggekkk/argosbx`](https://github.com/yonggekkk/argosbx) 架构精简而成的 **sing-box 单内核**部署脚本，只保留五个协议：
 
 | 协议 | 用途 | 传输 |
 |------|------|------|
 | **Tuic** | 低延迟 UDP 加速 | QUIC (HTTP/3) |
 | **Hysteria2** | 高吞吐 / 抗丢包 | QUIC (HTTP/3) |
-| **Naiveproxy** | 高隐匿性 HTTP(S) 代理 | HTTP/2 + HTTP/3 |
+| **Naiveproxy H2** | 高隐匿性 HTTP/2 代理 | HTTP/2 |
+| **Naiveproxy H3** | 高隐匿性 HTTP/3 代理 | HTTP/3 (QUIC) |
 | **Reality (VLESS)** | 零证书抗检测 | TCP + Vision 流控 |
 
 集成了：
@@ -51,7 +52,7 @@
 bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sbbox/main/sbbox.sh) \
   tup=1 hyp=1 vlp=1
 
-# 装全部四个协议（需域名，自动申请 Let's Encrypt 证书）
+# 装全部五个协议（需域名，自动申请 Let's Encrypt 证书）
 bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sbbox/main/sbbox.sh) \
   tup=1 hyp=1 nvp=1 vlp=1 alns=1 ym=your.domain.com
 ```

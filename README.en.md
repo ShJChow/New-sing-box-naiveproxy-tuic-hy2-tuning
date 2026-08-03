@@ -2,13 +2,14 @@
 
 [![validate](https://github.com/ShJChow/sbbox/actions/workflows/validate.yml/badge.svg)](https://github.com/ShJChow/sbbox/actions/workflows/validate.yml)
 
-A **sing-box single-core** deployment script derived from [`yonggekkk/argosbx`](https://github.com/yonggekkk/argosbx), stripped down to four protocols:
+A **sing-box single-core** deployment script derived from [`yonggekkk/argosbx`](https://github.com/yonggekkk/argosbx), stripped down to five protocols:
 
 | Protocol | Purpose | Transport |
 |----------|---------|-----------|
 | **Tuic** | Low-latency UDP acceleration | QUIC (HTTP/3) |
 | **Hysteria2** | High throughput / loss resistance | QUIC (HTTP/3) |
-| **Naiveproxy** | High-disguise HTTP(S) proxy | HTTP/2 + HTTP/3 |
+| **Naiveproxy H2** | High-disguise HTTP/2 proxy | HTTP/2 |
+| **Naiveproxy H3** | High-disguise HTTP/3 proxy | HTTP/3 (QUIC) |
 | **Reality (VLESS)** | Zero-certificate anti-detection | TCP + Vision flow |
 
 Bundled with:
@@ -51,7 +52,7 @@ Bundled with:
 bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sbbox/main/sbbox.sh) \
   tup=1 hyp=1 vlp=1
 
-# All four protocols (domain required; auto-issue a Let's Encrypt certificate)
+# All five protocols (domain required; auto-issue a Let's Encrypt certificate)
 bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sbbox/main/sbbox.sh) \
   tup=1 hyp=1 nvp=1 vlp=1 alns=1 ym=your.domain.com
 ```
