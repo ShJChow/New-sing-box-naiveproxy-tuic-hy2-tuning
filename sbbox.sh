@@ -108,6 +108,7 @@ showmode() {
   echo "流控调优：sbbox tune show | sbbox tune off"
   echo "证书管理：sbbox cert status | sbbox cert renew"
   echo "订阅地址：sbbox sub 【关闭】 sbbox sub off"
+  echo "自检修复：sbbox doctor"
   echo "卸载：sbbox del"
   echo "-----------------------------------------------------------"
   echo "环境变量（安装期）：tup=1 hyp=1 nvp=1 vlp=1"
@@ -1154,6 +1155,12 @@ sbrestart() {
 }
 
 cleandel() {
+  # 交互式确认，避免误删（非 TTY 自动跳过确认直接卸载）
+  if [ -t 0 ]; then
+    printf '%s' "确认卸载 sbbox 全部节点与配置？(y/N) " >&2
+    read -r _confirm
+    case "$_confirm" in y|Y|yes|YES) : ;; *) warn "已取消卸载" && return 0 ;; esac
+  fi
   info "停止 sing-box 并清理……"
   stop_sub_server >/dev/null 2>&1
   kill -15 $(pgrep -f "sing-box run -c $SB_CONF" 2>/dev/null) >/dev/null 2>&1
@@ -1247,6 +1254,7 @@ main() {
     tune)   shift; cmd_tune "$@"; exit ;;   # 安装期已自动 on，off 用于回滚
     cert)   shift; cert_mgmt "$@"; exit ;;
     sub)    shift; cmd_sub "$@"; exit ;;
+    doctor) doctor; exit ;;
     del)    cleandel; exit ;;
     help|-h|--help) showmode; exit ;;
   esac
@@ -1370,6 +1378,116 @@ cert_mgmt() {
       ;;
     *) echo "用法: sbbox cert [status|renew]" ;;
   esac
+}
+
+# ======================================================
+# 节点自检自愈：检查每个已启用协议端口是否监听/可连，
+# 发现不通自动修复（重启服务 → 仍不通则重新生成配置再重启）
+# ======================================================
+port_listening() { # $1=port  $2=tcp|udp  → 0 监听中
+  local p=$1 proto=${2:-tcp}
+  if command -v ss >/dev/null 2>&1; then
+    ss -"$proto"ln 2>/dev/null | grep -q ":$p[[:space:]]"
+  elif command -v netstat >/dev/null 2>&1; then
+    netstat -"$proto"ln 2>/dev/null | grep -q ":$p[[:space:]]"
+  else
+    # 无 ss/netstat 时退化为尝试 TCP 连接
+    timeout 2 bash -c "echo >/dev/tcp/127.0.0.1/$p" >/dev/null 2>&1
+  fi
+}
+
+tcp_reachable() { timeout 3 bash -c "echo >/dev/tcp/127.0.0.1/$1" >/dev/null 2>&1; }
+
+doctor() {
+  detect_env
+  load_state
+
+  local issues=0 fixed=0 svc_down=0
+  echo "========= sbbox 节点自检 ========="
+
+  if ! pgrep -f "sing-box run -c $SB_CONF" >/dev/null 2>&1; then
+    echo -e "sing-box 服务：${RED}未运行${NC} → 尝试重启"
+    svc_down=1
+  else
+    echo -e "sing-box 服务：${GREEN}运行中${NC}"
+  fi
+
+  # 需要证书的协议（naive）若证书缺失视为不通
+  if [ "$nvp" = yes ] && [ "$CERT_OK" != 1 ]; then
+    echo -e "Naiveproxy：${RED}证书缺失${NC}（naive 需要真实证书，不会启动）"
+    issues=$((issues+1))
+  fi
+
+  check_one() { # $1=名称 $2=端口 $3=tcp|udp
+    local name=$1 p=$2 proto=${3:-tcp} rc=0
+    if [ -z "$p" ]; then
+      echo -e "  ${name}：${RED}端口未配置${NC}"
+      issues=$((issues+1)); return
+    fi
+    if ! port_listening "$p" "$proto"; then
+      echo -e "  ${name}（端口 $p）：${RED}未监听${NC}"
+      issues=$((issues+1)); rc=1
+    elif [ "$proto" = tcp ] && ! tcp_reachable "$p"; then
+      echo -e "  ${name}（端口 $p）：${RED}端口监听但无法握手${NC}"
+      issues=$((issues+1)); rc=1
+    else
+      echo -e "  ${name}（端口 $p）：${GREEN}正常${NC}"
+    fi
+  }
+
+  [ "$tup" = yes ] && check_one Tuic "$port_tu" tcp
+  [ "$hyp" = yes ] && check_one Hysteria2 "$port_hy2" udp
+  [ "$nvp" = yes ] && check_one Naiveproxy "$port_nv" tcp
+  [ "$vlp" = yes ] && check_one Reality "$port_vl" tcp
+
+  if [ "$issues" -eq 0 ] && [ "$svc_down" -eq 0 ]; then
+    echo ""
+    echo -e "${GREEN}全部节点正常${NC}"
+    return 0
+  fi
+
+  # ---------- 自动修复 ----------
+  echo ""
+  echo "检测到 $issues 处问题，开始修复……"
+
+  # 证书缺失 → 尝试申请（有 ym 时）
+  if [ "$nvp" = yes ] && [ "$CERT_OK" != 1 ] && [ -n "$ym" ]; then
+    install_cert && get_cert_paths
+    [ "$CERT_OK" = 1 ] && echo -e "证书：${GREEN}已重新获取${NC}" && fixed=$((fixed+1))
+  fi
+
+  # 先重启服务，覆盖「进程挂了 / 端口没起来」的情况
+  if [ "$svc_down" -eq 1 ] || [ "$issues" -gt 0 ]; then
+    sbrestart
+    sleep 2
+    # 重启后复查每个有问题的端口，仍未恢复则重新生成配置
+    for spec in "Tuic:$port_tu:tcp" "Hysteria2:$port_hy2:udp" "Naiveproxy:$port_nv:tcp" "Reality:$port_vl:tcp"; do
+      name=${spec%%:*}; rest=${spec#*:}; p=${rest%%:*}; proto=${rest##*:}
+      case "$name" in
+        Tuic)       [ "$tup" = yes ] || continue ;;
+        Hysteria2)  [ "$hyp" = yes ] || continue ;;
+        Naiveproxy) [ "$nvp" = yes ] || continue ;;
+        Reality)    [ "$vlp" = yes ] || continue ;;
+      esac
+      if ! port_listening "$p" "$proto"; then
+        echo "  ${name} 重启后仍不通，重新生成配置……"
+        installsb >/dev/null 2>&1
+        sbrestart >/dev/null 2>&1
+        sleep 2
+        if port_listening "$p" "$proto"; then
+          echo -e "  ${name}：${GREEN}已修复${NC}"; fixed=$((fixed+1))
+        else
+          echo -e "  ${name}：${RED}修复失败，请查看日志 sbbox log${NC}"
+        fi
+      else
+        echo -e "  ${name}：${GREEN}已恢复${NC}"; fixed=$((fixed+1))
+      fi
+    done
+  fi
+
+  echo ""
+  echo "===== 修复完成：$fixed 项已处理，剩余 $((issues-fixed)) 项未解决 ====="
+  [ "$issues" -le "$fixed" ] && echo -e "${GREEN}建议执行 sbbox list 核对节点信息${NC}"
 }
 
 # 从磁盘恢复已保存状态（用于 list）
