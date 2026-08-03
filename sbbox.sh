@@ -790,24 +790,28 @@ gen_sub() {
 }
 
 start_sub_server() {
-  # 已在运行则不重复拉起
-  pgrep -f "sbbox_sub_server.*$subport" >/dev/null 2>&1 && return 0
+  # 先确定命令与进程标记（标记 = 完整命令串，避免 exec -a 的 dash 兼容问题），
+  # 再检查是否已在运行——SUB_MARK 不能是空串，否则 pgrep -f "" 匹配一切。
   local runner=""
   if command -v python3 >/dev/null 2>&1; then
-    runner="python3 -m http.server $subport --bind :: --directory $SUB_DIR"
+    # 绑定 0.0.0.0（IPv4）而非 ::，纯 IPv4 VPS 上没有 IPv6 地址，绑定 :: 会启动失败
+    runner="python3 -m http.server $subport --bind 0.0.0.0 --directory $SUB_DIR"
+    SUB_MARK="python3 -m http.server $subport"
   elif command -v busybox >/dev/null 2>&1; then
     runner="busybox httpd -f -p $subport -h $SUB_DIR"
+    SUB_MARK="busybox httpd -f -p $subport"
   else
     warn "未找到 python3 或 busybox，无法启动订阅服务；请手动分发 $SUB_DIR/$(cat "$SB_HOME/subtoken" 2>/dev/null)"
     return 1
   fi
-  # 用固定标记命名，便于后续 pgrep / kill 精确匹配
-  nohup sh -c "exec -a sbbox_sub_server_$subport $runner" >/dev/null 2>&1 &
+  pgrep -f "$SUB_MARK" >/dev/null 2>&1 && return 0
+  nohup $runner >/dev/null 2>&1 &
+  echo $! > "$SB_HOME/sub.pid"
   sleep 1
   if [ "$SERVICE_TYPE" = "cron" ] || [ "$IS_ROOT" != 1 ]; then
     crontab -l > /tmp/sbbox_sub_cron.tmp 2>/dev/null || true
-    sed -i '/sbbox_sub_server/d' /tmp/sbbox_sub_cron.tmp 2>/dev/null || true
-    echo "@reboot sleep 12 && /bin/sh -c \"exec -a sbbox_sub_server_$subport $runner\" >/dev/null 2>&1 &" >> /tmp/sbbox_sub_cron.tmp
+    sed -i '/sbbox-sub\|http.server\|httpd -f/d' /tmp/sbbox_sub_cron.tmp 2>/dev/null || true
+    echo "@reboot sleep 12 && nohup $runner >/dev/null 2>&1 &" >> /tmp/sbbox_sub_cron.tmp
     crontab /tmp/sbbox_sub_cron.tmp >/dev/null 2>&1
     rm -f /tmp/sbbox_sub_cron.tmp
   elif [ "$SERVICE_TYPE" = "systemd" ]; then
@@ -817,7 +821,7 @@ Description=sbbox subscription server
 After=network.target
 [Service]
 Type=simple
-ExecStart=/bin/sh -c 'exec -a sbbox_sub_server_$subport $runner'
+ExecStart=$runner
 Restart=on-failure
 RestartSec=5s
 [Install]
@@ -826,6 +830,12 @@ EOF
     systemctl daemon-reload >/dev/null 2>&1
     systemctl enable sbbox-sub >/dev/null 2>&1
     systemctl restart sbbox-sub >/dev/null 2>&1
+  fi
+  # 确认真的起来了，没起来则给出端口冲突等线索
+  if pgrep -f "$SUB_MARK" >/dev/null 2>&1 || [ -f "$SB_HOME/sub.pid" ]; then
+    info "订阅服务已启动（端口 $subport）"
+  else
+    warn "订阅服务启动可能失败（端口 $subport 可能被占用），执行 sbbox log 排查"
   fi
 }
 
@@ -836,11 +846,14 @@ stop_sub_server() {
     rm -f /etc/systemd/system/sbbox-sub.service
     systemctl daemon-reload >/dev/null 2>&1
   fi
-  pkill -f sbbox_sub_server >/dev/null 2>&1
+  [ -f "$SB_HOME/sub.pid" ] && kill "$(cat "$SB_HOME/sub.pid")" 2>/dev/null
+  pkill -f "python3 -m http.server" >/dev/null 2>&1
+  pkill -f "busybox httpd -f -p" >/dev/null 2>&1
   crontab -l > /tmp/sbbox_sub_cron.tmp 2>/dev/null || true
-  sed -i '/sbbox_sub_server/d' /tmp/sbbox_sub_cron.tmp 2>/dev/null || true
+  sed -i '/sbbox-sub\|http.server\|httpd -f/d' /tmp/sbbox_sub_cron.tmp 2>/dev/null || true
   crontab /tmp/sbbox_sub_cron.tmp >/dev/null 2>&1
-  rm -f /tmp/sbbox_sub_cron.tmp
+  rm -f /tmp/sbbox_sub_cron.tmp /tmp/sbbox_sub_cron.tmp
+  rm -f "$SB_HOME/sub.pid"
   info "订阅服务已停止"
 }
 
@@ -857,7 +870,7 @@ cmd_sub() {
         return 0
       fi
       case "$subhost" in *:*) subhost="[$subhost]" ;; esac
-      if pgrep -f "sbbox_sub_server" >/dev/null 2>&1; then
+      if pgrep -f "http.server $port" >/dev/null 2>&1 || pgrep -f "httpd -f -p $port" >/dev/null 2>&1; then
         info "订阅服务：运行中"
       else
         warn "订阅服务：未运行（执行 sub=1 sbbox list 重新拉起）"
