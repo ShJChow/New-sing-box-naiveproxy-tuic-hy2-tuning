@@ -756,8 +756,19 @@ gen_sub() {
   mkdir -p "$SUB_DIR"
   # 空 index.html：让 HTTP 服务返回它而不是列出目录，避免令牌文件名被直接看到
   : > "$SUB_DIR/index.html"
+  # v2rayN 不支持 NaiveProxy，naive+ 链接导入后只会变成延迟 -1 的死节点，
+  # 故从订阅中剔除；nodes.txt 与 sing-box 客户端配置仍保留该协议。
+  grep -v '^naive+' "$SB_LINK" > "$SB_HOME/.sub.plain"
+  if [ ! -s "$SB_HOME/.sub.plain" ]; then
+    warn "除 Naiveproxy 外无其他节点，订阅为空；naive 请用 sing-box 客户端配置"
+    rm -f "$SB_HOME/.sub.plain"
+    return 0
+  fi
   # v2rayN 订阅格式 = 分享链接换行拼接后的 base64（不能有换行）
-  base64 < "$SB_LINK" | tr -d '\n' > "$SUB_DIR/$token"
+  base64 < "$SB_HOME/.sub.plain" | tr -d '\n' > "$SUB_DIR/$token"
+  rm -f "$SB_HOME/.sub.plain"
+  grep -q '^naive+' "$SB_LINK" && \
+    warn "Naiveproxy 节点已排除出订阅（v2rayN 不支持该协议），请用 sing-box 客户端"
 
   start_sub_server
 
