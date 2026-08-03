@@ -58,6 +58,10 @@ ym="${ym:-}"                                # acme 证书域名（启用 alns �
 alns="${alns:-}"                            # 申请 acme 证书：alns=1
 tup="${tup:-}" hyp="${hyp:-}" nvp="${nvp:-}" vlp="${vlp:-}"
 hyjpt="${hyjpt:-}"                          # Hysteria2 跳跃端口，如 "20000:30000"
+hyobfs="${hyobfs:-}"                        # Hysteria2 salamander 混淆：hyobfs=1
+hyobfs_pw="${hyobfs_pw:-}"                  # 混淆密码（默认用 uuid）
+hyup="${hyup:-}"                            # Hysteria2 上行 Mbps（与 hydown 同时设置才启用 Brutal CC）
+hydown="${hydown:-}"                        # Hysteria2 下行 Mbps
 ippz="${ippz:-}"                            # 4 / 6 / 双栈
 name="${name:-}"
 sub="${sub:-}"                              # 启用订阅服务：sub=1
@@ -579,6 +583,29 @@ EOF
 
   # Hysteria2
   if [ -n "$hyp" ]; then
+    # 拥塞控制二选一，两者互斥（官方文档：设了带宽上限即禁止客户端用 BBR）：
+    #   不设带宽   + ignore_client_bandwidth=true → 客户端统一用 BBR（稳、公平、默认）
+    #   设了带宽上限                              → 走 Hysteria Brutal CC
+    # Brutal 在高丢包跨境链路上吞吐显著更高，但会激进抢占带宽、特征更明显，
+    # 且必须填写接近真实的带宽值，填错反而更慢，故设为可选。
+    if [ -n "$hyup" ] && [ -n "$hydown" ]; then
+      hy_bw="            \"up_mbps\": $hyup,
+            \"down_mbps\": $hydown,"
+      info "Hysteria2 拥塞控制：Brutal（上行 ${hyup}Mbps / 下行 ${hydown}Mbps）"
+    else
+      hy_bw="            \"ignore_client_bandwidth\": true,"
+    fi
+    # salamander 混淆：把 QUIC 握手特征打乱，主动探测与协议识别更难命中。
+    # 客户端必须同样配置，故分享链接/订阅会带上 obfs 参数。
+    if [ -n "$hyobfs" ]; then
+      hyobfs_pw="${hyobfs_pw:-$uuid}"
+      echo "$hyobfs_pw" > "$SB_HOME/hyobfs_pw"
+      hy_obfs="            \"obfs\": { \"type\": \"salamander\", \"password\": \"$hyobfs_pw\" },"
+      info "Hysteria2 已启用 salamander 混淆"
+    else
+      hy_obfs=""
+      rm -f "$SB_HOME/hyobfs_pw"
+    fi
     cat >> "$SB_CONF" <<EOF
         {
             "type": "hysteria2",
@@ -588,7 +615,8 @@ EOF
             "users": [
                 { "password": "$uuid" }
             ],
-            "ignore_client_bandwidth": true,
+$hy_bw
+${hy_obfs:+$hy_obfs}
             "masquerade": {
                 "type": "string",
                 "status_code": 404,
@@ -613,6 +641,7 @@ EOF
             "tag": "naive-in",
             "listen": "::",
             "listen_port": $port_nv,
+            "tcp_fast_open": true,
             "users": [
                 { "username": "$uuid", "password": "$uuid" }
             ],
@@ -633,6 +662,7 @@ EOF
             "tag": "vless-reality-in",
             "listen": "::",
             "listen_port": $port_vl,
+            "tcp_fast_open": true,
             "users": [
                 { "uuid": "$uuid", "flow": "xtls-rprx-vision" }
             ],
@@ -689,6 +719,18 @@ gen_client() {
   if [ "$CERT_OK" = 1 ]; then msins=false; jhins=0; else msins=true; jhins=1; fi
 
   sxname="${name:+${name}-}"
+
+  # Hysteria2 salamander 混淆：服务端开了客户端就必须跟着开，
+  # 这里按服务端落盘的密码文件推导各客户端格式的片段。
+  hyobfs_json="" ; hyobfs_yaml=""
+  if [ -s "$SB_HOME/hyobfs_pw" ]; then
+    _obfs_pw=$(cat "$SB_HOME/hyobfs_pw")
+    hyobfs_json="
+        \"obfs\": { \"type\": \"salamander\", \"password\": \"$_obfs_pw\" },"
+    hyobfs_yaml="
+    obfs: salamander
+    obfs-password: $_obfs_pw"
+  fi
   : > "$SB_LINK"
 
   if [ -n "$tup" ]; then
@@ -710,7 +752,12 @@ gen_client() {
     local sha pinsha=""
     sha=$(cat "$SB_HOME/SHA256.txt" 2>/dev/null)
     [ -n "$sha" ] && pinsha="&pinSHA256=$sha"
-    hy2_link="hysteria2://$uuid@$add:$port_hy2?security=tls&alpn=h3&insecure=$jhins&allowInsecure=$jhins$hyps&sni=$sni$pinsha#${sxname}hy2-$hostname_s"
+    # 服务端启用 salamander 时，客户端必须带相同 obfs 参数，否则握手不上
+    local hyobfs_q=""
+    if [ -s "$SB_HOME/hyobfs_pw" ]; then
+      hyobfs_q="&obfs=salamander&obfs-password=$(cat "$SB_HOME/hyobfs_pw")"
+    fi
+    hy2_link="hysteria2://$uuid@$add:$port_hy2?security=tls&alpn=h3&insecure=$jhins&allowInsecure=$jhins$hyps&sni=$sni$pinsha$hyobfs_q#${sxname}hy2-$hostname_s"
     echo "$hy2_link" >> "$SB_LINK"
     echo "💣【 Hysteria2 】节点信息如下："
     echo "$hy2_link"; echo
@@ -919,7 +966,7 @@ gen_client_sbox() {
         "tag": "hysteria2",
         "server": "'"$add"'",
         "server_port": '"$port_hy2"',
-        "password": "'"$uuid"'",
+        "password": "'"$uuid"'",'"$hyobfs_json"'
         "tls": { "enabled": true, "server_name": "'"$sni"'", "insecure": '"$msins"', "alpn": ["h3"] }
     }')
     tags+=("hysteria2")
@@ -1036,7 +1083,7 @@ gen_client_clash() {
     port: $port_hy2
     type: hysteria2
     password: $uuid
-    alpn: [h3]
+    alpn: [h3]$hyobfs_yaml
     sni: $sni
     skip-cert-verify: $msins"
     groups="$groups

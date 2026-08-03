@@ -71,6 +71,9 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/ma
 | `ym` | 空 | acme 证书域名（启用 alns 时必需） |
 | `ym_vl_re` | `apple.com` | Reality 回落目标域名 |
 | `hyjpt` | 空 | Hysteria2 跳跃端口，如 `hyjpt="20000 20001 20002"` |
+| `hyobfs` | 空 | Hysteria2 salamander 混淆（`hyobfs=1`），抗协议识别 |
+| `hyobfs_pw` | 同 uuid | 混淆密码 |
+| `hyup` / `hydown` | 空 | Hysteria2 上/下行 Mbps，**两个都设**才启用 Brutal 拥塞控制 |
 | `sub` | 空 | 启用 v2rayN 订阅服务（`sub=1`） |
 | `subport` | 随机 | 订阅服务端口 |
 | `subid` | 同 uuid | 订阅令牌（URL 路径，相当于密码） |
@@ -78,6 +81,50 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/ma
 | `uuid` | 自动生成 | 自定义密码 / UUID |
 | `port_tu` / `port_hy2` / `port_nv` / `port_vl` | 随机 | 指定固定端口 |
 | `name` | 空 | 节点名称前缀 |
+
+---
+
+## 协议参数调优
+
+默认配置已选取「安全且稳妥」的一组参数：
+
+| 协议 | 默认参数 | 理由 |
+|------|---------|------|
+| Tuic | `congestion_control: bbr`、`zero_rtt_handshake: false`、`auth_timeout: 3s` | 关 0-RTT 牺牲 1 个 RTT 换取抗重放攻击 |
+| Hysteria2 | `ignore_client_bandwidth: true`（客户端统一走 BBR）、`masquerade` 404 伪装 | BBR 稳定公平，无需预知带宽 |
+| Naiveproxy | `tcp_fast_open: true`、强制真实证书 | TFO 省 1 个 RTT，与内核 `tcp_fastopen=3` 配套 |
+| Reality | `tcp_fast_open: true`、TLS 1.3、uTLS chrome 指纹 | Vision 流控自带 splice 高性能路径 |
+
+### 进一步提速：Hysteria2 Brutal 拥塞控制
+
+跨境高丢包链路上 Brutal 的吞吐通常显著高于 BBR，但需要**填写接近真实的带宽**：
+
+```bash
+hyup=200 hydown=1000 sbbox list   # 上行 200Mbps / 下行 1000Mbps
+```
+
+> ⚠️ 两个值必须**同时设置**才生效。官方文档明确二者互斥：一旦设定带宽上限，
+> 就不再允许客户端使用 BBR。**填错会比 BBR 更慢**，且 Brutal 会激进抢占带宽、
+> 流量特征更明显。不确定自己带宽时，保持默认的 BBR 更稳妥。
+
+### 进一步加固：Hysteria2 salamander 混淆
+
+打乱 QUIC 握手特征，显著提高主动探测与协议识别的难度：
+
+```bash
+hyobfs=1 sbbox list                        # 混淆密码默认用 uuid
+hyobfs=1 hyobfs_pw=你的密码 sbbox list      # 自定义密码
+```
+
+> 服务端开启后**客户端必须同步配置**，否则握手失败。脚本已自动把 obfs 参数
+> 写入分享链接、sing-box 客户端配置与 Clash/Mihomo 配置，客户端更新订阅即可。
+> 代价是轻微 CPU 开销。
+
+两项可同时开启：
+
+```bash
+hyobfs=1 hyup=200 hydown=1000 sbbox list
+```
 
 ---
 

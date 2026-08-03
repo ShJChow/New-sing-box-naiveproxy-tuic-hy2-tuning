@@ -41,6 +41,8 @@ jobs:
             env: tup=1 hyp=1 vlp=1
           - name: Hysteria2 跳跃端口
             env: hyp=1 hyjpt=20000
+          - name: Hysteria2 混淆+Brutal
+            env: hyp=1 tup=1 hyobfs=1 hyup=200 hydown=1000
     name: 配置校验 - ${{ matrix.name }}
     steps:
       - uses: actions/checkout@v4
@@ -90,6 +92,28 @@ jobs:
             esac
           done
           echo "OK: 所有启用的协议均已生成"
+
+      - name: 断言 Hysteria2 拥塞控制与混淆互斥关系正确
+        run: |
+          set -euo pipefail
+          CONF="$HOME/sbbox/sb.json"
+          jq -e '.inbounds[]|select(.type=="hysteria2")' "$CONF" >/dev/null 2>&1 || exit 0
+          HY=$(jq -c '.inbounds[]|select(.type=="hysteria2")' "$CONF")
+          echo "hysteria2 入站: $HY"
+          if echo '${{ matrix.env }}' | grep -q 'hyup='; then
+            # 设了带宽 → 必须走 Brutal，且不能同时出现 ignore_client_bandwidth
+            echo "$HY" | jq -e '.up_mbps and .down_mbps' >/dev/null || { echo "缺少带宽上限"; exit 1; }
+            echo "$HY" | jq -e 'has("ignore_client_bandwidth")|not' >/dev/null \
+              || { echo "带宽上限与 ignore_client_bandwidth 互斥，不能并存"; exit 1; }
+          else
+            echo "$HY" | jq -e '.ignore_client_bandwidth==true' >/dev/null \
+              || { echo "默认应 ignore_client_bandwidth=true 走 BBR"; exit 1; }
+          fi
+          if echo '${{ matrix.env }}' | grep -q 'hyobfs='; then
+            echo "$HY" | jq -e '.obfs.type=="salamander" and (.obfs.password|length>0)' >/dev/null \
+              || { echo "hyobfs=1 应生成 salamander obfs"; exit 1; }
+          fi
+          echo "OK: Hysteria2 拥塞控制/混淆配置符合预期"
 
       - name: 校验客户端配置（sing-box check）
         run: |
