@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ======================================================
-# sbbox.sh — Sing-box-Only 安全加固代理部署脚本
+# sing-box-naiveproxy (sbbox.sh) — Sing-box 五协议安全加固代理脚本
 #
 # 基于 yonggekkk/argosbx 架构，剥离为 sing-box 单内核，
 # 仅保留 Tuic / Hysteria2 / Naiveproxy(H2+H3) / Reality 五协议。
@@ -37,7 +37,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SBBOX_VERSION="v1.0.0"
-SB_URL="https://raw.githubusercontent.com/ShJChow/sbbox/main/sbbox.sh"
+SB_URL="https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
   SB_BINDIR="/usr/local/bin"
@@ -101,7 +101,7 @@ showmode() {
   echo "sbbox $SBBOX_VERSION — Sing-box-Only 五协议安全代理脚本"
   echo "支持协议：Tuic / Hysteria2 / Naiveproxy(H2+H3) / Reality"
   echo "-----------------------------------------------------------"
-  echo "主脚本：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sbbox/main/sbbox.sh)"
+  echo "主脚本：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/main/sbbox.sh)"
   echo "显示节点信息：sbbox list 【或】 bash sbbox.sh list"
   echo "服务与流控状态：sbbox status"
   echo "重启 sing-box：sbbox res"

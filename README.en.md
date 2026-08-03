@@ -1,6 +1,6 @@
-# sbbox — Sing-box-Only Secure Proxy Deployment Script
+# sing-box-naiveproxy — Sing-box Five-Protocol Secure Proxy Script
 
-[![validate](https://github.com/ShJChow/sbbox/actions/workflows/validate.yml/badge.svg)](https://github.com/ShJChow/sbbox/actions/workflows/validate.yml)
+[![validate](https://github.com/ShJChow/sing-box-naiveproxy/actions/workflows/validate.yml/badge.svg)](https://github.com/ShJChow/sing-box-naiveproxy/actions/workflows/validate.yml)
 
 A **sing-box single-core** deployment script derived from [`yonggekkk/argosbx`](https://github.com/yonggekkk/argosbx), stripped down to five protocols:
 
@@ -49,11 +49,11 @@ Bundled with:
 
 ```bash
 # Tuic + Hysteria2 + Reality only (no domain; self-signed cert + SHA256 pinning)
-bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sbbox/main/sbbox.sh) \
+bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/main/sbbox.sh) \
   tup=1 hyp=1 vlp=1
 
 # All five protocols (domain required; auto-issue a Let's Encrypt certificate)
-bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sbbox/main/sbbox.sh) \
+bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/main/sbbox.sh) \
   tup=1 hyp=1 nvp=1 vlp=1 alns=1 ym=your.domain.com
 ```
 
@@ -108,7 +108,7 @@ Pass `sub=1` at install time and the script generates a base64 subscription
 and serves it over HTTP from the VPS:
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sbbox/main/sbbox.sh) \
+bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/main/sbbox.sh) \
   tup=1 hyp=1 vlp=1 sub=1
 ```
 
