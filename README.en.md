@@ -71,7 +71,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/ma
 | `ym` | empty | ACME certificate domain (required with `alns`) |
 | `ym_vl_re` | `apple.com` | Reality fallback/handshake domain |
 | `hyjpt` | empty | Hysteria2 port hopping, e.g. `hyjpt="20000 20001 20002"` |
-| `hyobfs` | empty | Hysteria2 salamander obfuscation (`hyobfs=1`) — resists protocol fingerprinting |
+| `hyobfs` | **1 (on by default)** | Hysteria2 salamander obfuscation — resists protocol fingerprinting; disable with `hyobfs=0` |
 | `hyobfs_pw` | same as uuid | obfuscation password |
 | `hyup` / `hydown` | empty | Hysteria2 up/down Mbps; **set both** to switch to Brutal congestion control |
 | `sub` | empty | enable the v2rayN subscription server (`sub=1`) |

@@ -42,7 +42,9 @@ jobs:
           - name: Hysteria2 跳跃端口
             env: hyp=1 hyjpt=20000
           - name: Hysteria2 混淆+Brutal
-            env: hyp=1 tup=1 hyobfs=1 hyup=200 hydown=1000
+            env: hyp=1 tup=1 hyup=200 hydown=1000
+          - name: Hysteria2 关闭混淆
+            env: hyp=1 hyobfs=0
     name: 配置校验 - ${{ matrix.name }}
     steps:
       - uses: actions/checkout@v4
@@ -109,9 +111,13 @@ jobs:
             echo "$HY" | jq -e '.ignore_client_bandwidth==true' >/dev/null \
               || { echo "默认应 ignore_client_bandwidth=true 走 BBR"; exit 1; }
           fi
-          if echo '${{ matrix.env }}' | grep -q 'hyobfs='; then
+          # 混淆默认开启，只有显式 hyobfs=0 才应缺失
+          if echo '${{ matrix.env }}' | grep -q 'hyobfs=0'; then
+            echo "$HY" | jq -e 'has("obfs")|not' >/dev/null \
+              || { echo "hyobfs=0 应关闭 obfs"; exit 1; }
+          else
             echo "$HY" | jq -e '.obfs.type=="salamander" and (.obfs.password|length>0)' >/dev/null \
-              || { echo "hyobfs=1 应生成 salamander obfs"; exit 1; }
+              || { echo "默认应启用 salamander obfs"; exit 1; }
           fi
           echo "OK: Hysteria2 拥塞控制/混淆配置符合预期"
 

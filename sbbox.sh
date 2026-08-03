@@ -36,7 +36,7 @@ CERT_DIR="$SB_HOME/cert"
 SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
-SBBOX_VERSION="v1.1.0"
+SBBOX_VERSION="v1.2.0"
 SB_URL="https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -58,7 +58,7 @@ ym="${ym:-}"                                # acme 证书域名（启用 alns �
 alns="${alns:-}"                            # 申请 acme 证书：alns=1
 tup="${tup:-}" hyp="${hyp:-}" nvp="${nvp:-}" vlp="${vlp:-}"
 hyjpt="${hyjpt:-}"                          # Hysteria2 跳跃端口，如 "20000:30000"
-hyobfs="${hyobfs:-}"                        # Hysteria2 salamander 混淆：hyobfs=1
+hyobfs="${hyobfs:-1}"                       # Hysteria2 salamander 混淆，默认开启；关闭用 hyobfs=0
 hyobfs_pw="${hyobfs_pw:-}"                  # 混淆密码（默认用 uuid）
 hyup="${hyup:-}"                            # Hysteria2 上行 Mbps（与 hydown 同时设置才启用 Brutal CC）
 hydown="${hydown:-}"                        # Hysteria2 下行 Mbps
@@ -597,7 +597,12 @@ EOF
     fi
     # salamander 混淆：把 QUIC 握手特征打乱，主动探测与协议识别更难命中。
     # 客户端必须同样配置，故分享链接/订阅会带上 obfs 参数。
-    if [ -n "$hyobfs" ]; then
+    # 默认开启；显式关闭用 hyobfs=0/no/off/false（空串也视为关闭）
+    case "$hyobfs" in
+      ""|0|no|off|false|NO|OFF|FALSE) hyobfs_on="" ;;
+      *) hyobfs_on=1 ;;
+    esac
+    if [ -n "$hyobfs_on" ]; then
       hyobfs_pw="${hyobfs_pw:-$uuid}"
       echo "$hyobfs_pw" > "$SB_HOME/hyobfs_pw"
       hy_obfs="            \"obfs\": { \"type\": \"salamander\", \"password\": \"$hyobfs_pw\" },"
