@@ -120,11 +120,16 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sbbox/main/sbbox.sh) \
 > 请勿分享该地址；不使用时执行 `sbbox sub off`。若需长期开放，建议改用
 > `subport=` 指定端口并在防火墙上限制来源 IP。
 >
-> **默认订阅包含全部 5 个节点（含 Naiveproxy H2/H3）**。
-> 若你的客户端不支持 `naive+` 链接（部分 v2rayN 版本导入会显示延迟 -1），
-> 可用 `sub_nonaive=1 sbbox list` 重新生成、剔除 Naiveproxy。
-> Naiveproxy 请用 [官方 naiveproxy 客户端](https://github.com/klzgrad/naiveproxy)，
-> 参数见 `~/sbbox/nodes.txt`。
+> **默认订阅包含全部节点（含 Naiveproxy H2/H3）**。
+> Naiveproxy 会生成**两套链接**，因为各客户端认的 scheme 不同：
+>
+> | 链接 scheme | 节点名后缀 | 适用客户端 |
+> |---|---|---|
+> | `naive+https://` / `naive+quic://` | `naive-h2` / `naive-h3` | v2rayN、NekoBox |
+> | `http2://` / `http3://` | `naive-h2-rocket` / `naive-h3-rocket` | Shadowrocket |
+>
+> 两套都在订阅里，客户端各取所需——**用不了的那套忽略即可**。
+> 完全不想要 Naiveproxy 可用 `sub_nonaive=1 sbbox list` 重新生成（两套一起剔除）。
 
 ---
 

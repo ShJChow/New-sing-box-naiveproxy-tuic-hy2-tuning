@@ -148,12 +148,15 @@ jobs:
           [ "$(wc -l < "$SUB")" -eq 0 ] || { echo "订阅含换行，v2rayN 无法解析"; exit 1; }
           base64 -d < "$SUB" > /tmp/decoded.txt
           echo "--- 订阅内容 ---"; cat /tmp/decoded.txt
-          grep -q '^naive+https://' /tmp/decoded.txt || { echo "缺少 naive H2 节点"; exit 1; }
-          grep -q '^naive+quic://'  /tmp/decoded.txt || { echo "缺少 naive H3 节点"; exit 1; }
+          # naive 两套 scheme 都要在：naive+ 给 v2rayN/NekoBox，http2/3 给 Shadowrocket
+          grep -q '^naive+https://' /tmp/decoded.txt || { echo "缺少 naive H2 节点(v2rayN)"; exit 1; }
+          grep -q '^naive+quic://'  /tmp/decoded.txt || { echo "缺少 naive H3 节点(v2rayN)"; exit 1; }
+          grep -q '^http2://'       /tmp/decoded.txt || { echo "缺少 naive H2 节点(Shadowrocket)"; exit 1; }
+          grep -q '^http3://'       /tmp/decoded.txt || { echo "缺少 naive H3 节点(Shadowrocket)"; exit 1; }
           grep -q '^vless://'      /tmp/decoded.txt || { echo "缺少 reality 节点"; exit 1; }
           grep -q '^hysteria2://'  /tmp/decoded.txt || { echo "缺少 hysteria2 节点"; exit 1; }
           grep -q '^tuic://'       /tmp/decoded.txt || { echo "缺少 tuic 节点"; exit 1; }
-          echo "OK: 订阅格式正确，包含全部 5 个节点"
+          echo "OK: 订阅含全部节点，naive 双 scheme 齐备"
 
       - name: 断言 sub_nonaive=1 时剔除 naive 但仍合法
         run: |
@@ -163,7 +166,7 @@ jobs:
           SUB="$HOME/sbbox/websub/$TOKEN"
           base64 -d < "$SUB" > /tmp/decoded2.txt
           echo "--- sub_nonaive 订阅内容 ---"; cat /tmp/decoded2.txt
-          grep -q '^naive+' /tmp/decoded2.txt && { echo "sub_nonaive=1 应剔除 naive"; exit 1; }
+          grep -qE '^(naive\+|http2://|http3://)' /tmp/decoded2.txt && { echo "sub_nonaive=1 应剔除 naive 的两套 scheme"; exit 1; }
           grep -q '^tuic://' /tmp/decoded2.txt || { echo "剔除 naive 后仍应有其他节点"; exit 1; }
           echo "OK: sub_nonaive=1 生效"
 

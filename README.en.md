@@ -123,12 +123,18 @@ Run `sbbox sub` any time to reprint the URL, `sbbox sub off` to stop serving it.
 > `sbbox sub off` when you are done. For long-lived use, pin the port with
 > `subport=` and restrict source IPs at the firewall.
 >
-> **By default the subscription includes all 5 nodes, Naiveproxy H2/H3
-> included.** If your client cannot parse `naive+` links (some v2rayN
-> versions import them with -1 latency), regenerate with
-> `sub_nonaive=1 sbbox list` to drop Naiveproxy. For Naiveproxy itself use
-> the [official naiveproxy client](https://github.com/klzgrad/naiveproxy);
-> node parameters are in `~/sbbox/nodes.txt`.
+> **By default the subscription includes every node, Naiveproxy H2/H3
+> included.** Naiveproxy emits **two sets of links** because clients
+> disagree on the URL scheme:
+>
+> | Scheme | Node name suffix | Clients |
+> |---|---|---|
+> | `naive+https://` / `naive+quic://` | `naive-h2` / `naive-h3` | v2rayN, NekoBox |
+> | `http2://` / `http3://` | `naive-h2-rocket` / `naive-h3-rocket` | Shadowrocket |
+>
+> Both sets ship in the subscription — just ignore the set your client
+> cannot use. To drop Naiveproxy entirely (both sets), regenerate with
+> `sub_nonaive=1 sbbox list`.
 
 ---
 

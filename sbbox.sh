@@ -717,12 +717,19 @@ gen_client() {
   fi
 
   if [ -n "$nvp" ] && [ "$CERT_OK" = 1 ]; then
+    # Naiveproxy 同一入站同时服务 H2 与 H3，但不同客户端认的 URL scheme 不同：
+    #   naive+https:// / naive+quic://  —— v2rayN、NekoBox 等
+    #   http2://       / http3://       —— Shadowrocket（认不出 naive+ 前缀）
+    # 两套都放进订阅，各客户端各取所需。
     nv1_link="naive+https://$uuid:$uuid@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1#${sxname}naive-h2-$hostname_s"
     nv2_link="naive+quic://$uuid:$uuid@$add:$port_nv?congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1#${sxname}naive-h3-$hostname_s"
-    echo "$nv1_link" >> "$SB_LINK"
-    echo "$nv2_link" >> "$SB_LINK"
-    echo "💣【 Naiveproxy 】节点信息如下："
-    echo "$nv1_link"; echo "$nv2_link"; echo
+    nv3_link="http2://$uuid:$uuid@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1#${sxname}naive-h2-rocket-$hostname_s"
+    nv4_link="http3://$uuid:$uuid@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1#${sxname}naive-h3-rocket-$hostname_s"
+    for l in "$nv1_link" "$nv2_link" "$nv3_link" "$nv4_link"; do
+      echo "$l" >> "$SB_LINK"
+    done
+    echo "💣【 Naiveproxy 】节点信息如下（前两条 v2rayN/NekoBox，后两条 Shadowrocket）："
+    echo "$nv1_link"; echo "$nv2_link"; echo "$nv3_link"; echo "$nv4_link"; echo
   fi
 
   if [ -n "$vlp" ]; then
@@ -767,7 +774,8 @@ gen_sub() {
   # 默认把全部节点（含 Naiveproxy H2/H3）打进订阅。
   # 若客户端不支持 naive+ 链接（如某些 v2rayN 版本），可加 sub_nonaive=1 剔除。
   if [ -n "$sub_nonaive" ]; then
-    grep -v '^naive+' "$SB_LINK" > "$SB_HOME/.sub.plain"
+    # naive 有两套 scheme：naive+https/naive+quic 与 Shadowrocket 的 http2/http3
+    grep -Ev '^(naive\+|http2://|http3://)' "$SB_LINK" > "$SB_HOME/.sub.plain"
   else
     cp "$SB_LINK" "$SB_HOME/.sub.plain"
   fi
