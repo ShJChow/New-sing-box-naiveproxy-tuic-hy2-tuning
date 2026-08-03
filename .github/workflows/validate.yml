@@ -48,10 +48,10 @@ jobs:
       - name: 安装真实 sing-box 内核
         run: |
           set -euo pipefail
-          VER=$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest \
+          VER=$(curl -fsSL --retry 3 --retry-all-errors https://api.github.com/repos/SagerNet/sing-box/releases/latest \
                 | grep -oP '"tag_name":\s*"v\K[^"]+')
           echo "sing-box 版本: $VER"
-          curl -fsSL "https://github.com/SagerNet/sing-box/releases/download/v${VER}/sing-box-${VER}-linux-amd64.tar.gz" \
+          curl -fsSL --retry 3 --retry-all-errors "https://github.com/SagerNet/sing-box/releases/download/v${VER}/sing-box-${VER}-linux-amd64.tar.gz" \
             | tar -xz --strip-components=1 -C /tmp "sing-box-${VER}-linux-amd64/sing-box"
           sudo install -m755 /tmp/sing-box /usr/local/bin/sing-box
           sing-box version
@@ -110,9 +110,9 @@ jobs:
       - name: 安装真实 sing-box 内核
         run: |
           set -euo pipefail
-          VER=$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest \
+          VER=$(curl -fsSL --retry 3 --retry-all-errors https://api.github.com/repos/SagerNet/sing-box/releases/latest \
                 | grep -oP '"tag_name":\s*"v\K[^"]+')
-          curl -fsSL "https://github.com/SagerNet/sing-box/releases/download/v${VER}/sing-box-${VER}-linux-amd64.tar.gz" \
+          curl -fsSL --retry 3 --retry-all-errors "https://github.com/SagerNet/sing-box/releases/download/v${VER}/sing-box-${VER}-linux-amd64.tar.gz" \
             | tar -xz --strip-components=1 -C /tmp "sing-box-${VER}-linux-amd64/sing-box"
           mkdir -p "$HOME/sbbox"
           install -m755 /tmp/sing-box "$HOME/sbbox/sing-box"
