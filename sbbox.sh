@@ -1071,6 +1071,13 @@ sblog() {
 # ======================================================
 main() {
   detect_env
+  # 支持 `bash sbbox.sh tup=1 hyp=1 ...` 位置参数形式：将 key=value 参数转换为环境变量
+  # （与 `tup=1 bash sbbox.sh` 环境变量前缀形式等价，二者可混用）
+  for arg in "$@"; do
+    case "$arg" in
+      *=*) export "$arg" ;;
+    esac
+  done
   local cmd="${1:-}"
   case "$cmd" in
     list)   v4v6; load_state; gen_client; exit ;;
