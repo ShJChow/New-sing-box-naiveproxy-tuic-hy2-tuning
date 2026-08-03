@@ -1,0 +1,9 @@
+# Third-party reference clones (not part of this project)
+/argosbx/
+/sing-box-yg/
+/acme-yg/
+/xh-tuned/
+
+# Misc
+*.log
+.DS_Store
