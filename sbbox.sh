@@ -485,7 +485,14 @@ installsb() {
   fi
   if [ -n "$alns" ]; then
     if [ -z "$ym" ]; then
-      error "启用 alns=1 需要设置 ym=你的域名（用于申请 acme 证书）"
+      # 交互式输入域名，避免出现在命令行历史记录中
+      if [ -t 0 ]; then
+        printf '%s' "请输入证书域名（申请 Let's Encrypt 证书，需已解析到本机）：" >&2
+        read -r ym
+      fi
+    fi
+    if [ -z "$ym" ]; then
+      error "启用 alns=1 需要提供证书域名。请在安装时输入，或用 ym=你的域名 指定"
       exit 1
     fi
     install_cert

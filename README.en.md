@@ -55,6 +55,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sbbox/main/sbbox.sh) \
 ```
 
 > With `alns=1`, acme.sh uses standalone mode: **port 80 must be free** and the domain's A record must point to this VPS.
+> If `ym=` is omitted, the script will **prompt you to enter the domain interactively** (kept out of shell history).
 
 ---
 

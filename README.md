@@ -55,6 +55,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sbbox/main/sbbox.sh) \
 ```
 
 > `alns=1` 时 acme.sh 走 standalone 模式，需要 **80 端口空闲**、域名 A 记录已解析到本机。
+> 若未提供 `ym=域名`，脚本会**交互提示输入**（不写入命令行历史）。
 
 ---
 
