@@ -31,6 +31,7 @@ SB_BIN="$SB_HOME/sing-box"
 SB_CONF="$SB_HOME/sb.json"
 SB_LOG="$SB_HOME/sb.log"
 SB_LINK="$SB_HOME/nodes.txt"
+SUB_DIR="$SB_HOME/websub"
 CERT_DIR="$SB_HOME/cert"
 SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
@@ -52,6 +53,9 @@ tup="${tup:-}" hyp="${hyp:-}" nvp="${nvp:-}" vlp="${vlp:-}"
 hyjpt="${hyjpt:-}"                          # Hysteria2 跳跃端口，如 "20000:30000"
 ippz="${ippz:-}"                            # 4 / 6 / 双栈
 name="${name:-}"
+sub="${sub:-}"                              # 启用订阅服务：sub=1
+subport="${subport:-}"                      # 订阅端口（默认随机）
+subid="${subid:-}"                          # 订阅令牌（默认用 uuid）
 
 # ---------- 架构 / 系统探测 ----------
 detect_env() {
@@ -96,6 +100,7 @@ showmode() {
   echo "更新内核：sbbox up"
   echo "流控调优：sbbox tune show | sbbox tune off"
   echo "证书管理：sbbox cert status | sbbox cert renew"
+  echo "订阅地址：sbbox sub 【关闭】 sbbox sub off"
   echo "卸载：sbbox del"
   echo "-----------------------------------------------------------"
   echo "环境变量（安装期）：tup=1 hyp=1 nvp=1 vlp=1"
@@ -103,6 +108,7 @@ showmode() {
   echo "  ym=域名  acme 证书域名（Hysteria2/Tuic/Naive 使用）"
   echo "  ym_vl_re=域名  Reality 回落目标域名（默认 apple.com）"
   echo "  hyjpt=20000:30000  Hysteria2 跳跃端口"
+  echo "  sub=1    启用 v2rayN 订阅服务（subport=端口 subid=令牌 可选）"
   echo "  uuid=自定义密码"
   echo "==========================================================="
 }
@@ -719,6 +725,124 @@ gen_client() {
   info "节点信息已保存：$SB_LINK"
   info "sing-box 客户端配置：$SB_HOME/sbox_client.json"
   info "Clash/Mihomo 客户端配置：$SB_HOME/clmi.yaml"
+
+  # ---------- v2rayN / 通用订阅 ----------
+  gen_sub
+}
+
+# ======================================================
+# 订阅：base64 节点列表 + 本机 HTTP 托管（v2rayN 可直接导入）
+# ======================================================
+gen_sub() {
+  [ -n "$sub" ] || return 0
+  [ -s "$SB_LINK" ] || { warn "无节点可生成订阅"; return 0; }
+
+  # 订阅令牌：默认用 UUID，可用 subid= 自定义。URL 靠它保密，勿外泄
+  local token="${subid:-$uuid}"
+  echo "$token" > "$SB_HOME/subtoken"
+
+  # 订阅端口：默认随机高位端口，可用 subport= 固定
+  if [ -z "$subport" ]; then
+    subport=$(cat "$SB_HOME/subport" 2>/dev/null || shuf -i 10000-65535 -n 1)
+  fi
+  echo "$subport" > "$SB_HOME/subport"
+
+  mkdir -p "$SUB_DIR"
+  # 空 index.html：让 HTTP 服务返回它而不是列出目录，避免令牌文件名被直接看到
+  : > "$SUB_DIR/index.html"
+  # v2rayN 订阅格式 = 分享链接换行拼接后的 base64（不能有换行）
+  base64 < "$SB_LINK" | tr -d '\n' > "$SUB_DIR/$token"
+
+  start_sub_server
+
+  local subhost="$server_ip"
+  case "$subhost" in *:*) subhost="[$subhost]" ;; esac   # IPv6 需方括号
+  echo ""
+  echo "==========================================================="
+  info "v2rayN / 通用订阅地址（复制到客户端「订阅设置」）："
+  echo "http://$subhost:$subport/$token"
+  echo "==========================================================="
+  warn "订阅经明文 HTTP 提供，令牌即密码，请勿外泄；不用时执行 sbbox sub off"
+}
+
+start_sub_server() {
+  # 已在运行则不重复拉起
+  pgrep -f "sbbox_sub_server.*$subport" >/dev/null 2>&1 && return 0
+  local runner=""
+  if command -v python3 >/dev/null 2>&1; then
+    runner="python3 -m http.server $subport --bind :: --directory $SUB_DIR"
+  elif command -v busybox >/dev/null 2>&1; then
+    runner="busybox httpd -f -p $subport -h $SUB_DIR"
+  else
+    warn "未找到 python3 或 busybox，无法启动订阅服务；请手动分发 $SUB_DIR/$(cat "$SB_HOME/subtoken" 2>/dev/null)"
+    return 1
+  fi
+  # 用固定标记命名，便于后续 pgrep / kill 精确匹配
+  nohup sh -c "exec -a sbbox_sub_server_$subport $runner" >/dev/null 2>&1 &
+  sleep 1
+  if [ "$SERVICE_TYPE" = "cron" ] || [ "$IS_ROOT" != 1 ]; then
+    crontab -l > /tmp/sbbox_sub_cron.tmp 2>/dev/null || true
+    sed -i '/sbbox_sub_server/d' /tmp/sbbox_sub_cron.tmp 2>/dev/null || true
+    echo "@reboot sleep 12 && /bin/sh -c \"exec -a sbbox_sub_server_$subport $runner\" >/dev/null 2>&1 &" >> /tmp/sbbox_sub_cron.tmp
+    crontab /tmp/sbbox_sub_cron.tmp >/dev/null 2>&1
+    rm -f /tmp/sbbox_sub_cron.tmp
+  elif [ "$SERVICE_TYPE" = "systemd" ]; then
+    cat > /etc/systemd/system/sbbox-sub.service <<EOF
+[Unit]
+Description=sbbox subscription server
+After=network.target
+[Service]
+Type=simple
+ExecStart=/bin/sh -c 'exec -a sbbox_sub_server_$subport $runner'
+Restart=on-failure
+RestartSec=5s
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload >/dev/null 2>&1
+    systemctl enable sbbox-sub >/dev/null 2>&1
+    systemctl restart sbbox-sub >/dev/null 2>&1
+  fi
+}
+
+stop_sub_server() {
+  if [ "$SERVICE_TYPE" = "systemd" ] && [ "$IS_ROOT" = 1 ]; then
+    systemctl stop sbbox-sub >/dev/null 2>&1
+    systemctl disable sbbox-sub >/dev/null 2>&1
+    rm -f /etc/systemd/system/sbbox-sub.service
+    systemctl daemon-reload >/dev/null 2>&1
+  fi
+  pkill -f sbbox_sub_server >/dev/null 2>&1
+  crontab -l > /tmp/sbbox_sub_cron.tmp 2>/dev/null || true
+  sed -i '/sbbox_sub_server/d' /tmp/sbbox_sub_cron.tmp 2>/dev/null || true
+  crontab /tmp/sbbox_sub_cron.tmp >/dev/null 2>&1
+  rm -f /tmp/sbbox_sub_cron.tmp
+  info "订阅服务已停止"
+}
+
+# sbbox sub [show|off]
+cmd_sub() {
+  case "${1:-show}" in
+    show)
+      local token port subhost
+      token=$(cat "$SB_HOME/subtoken" 2>/dev/null)
+      port=$(cat "$SB_HOME/subport" 2>/dev/null)
+      subhost=$(cat "$SB_HOME/server_ip.log" 2>/dev/null)
+      if [ -z "$token" ] || [ -z "$port" ]; then
+        warn "未启用订阅。安装时加 sub=1，或执行：sub=1 sbbox list"
+        return 0
+      fi
+      case "$subhost" in *:*) subhost="[$subhost]" ;; esac
+      if pgrep -f "sbbox_sub_server" >/dev/null 2>&1; then
+        info "订阅服务：运行中"
+      else
+        warn "订阅服务：未运行（执行 sub=1 sbbox list 重新拉起）"
+      fi
+      echo "http://$subhost:$port/$token"
+      ;;
+    off) stop_sub_server ;;
+    *) echo "用法: sbbox sub [show|off]" ;;
+  esac
 }
 
 gen_client_sbox() {
@@ -1017,6 +1141,7 @@ sbrestart() {
 
 cleandel() {
   info "停止 sing-box 并清理……"
+  stop_sub_server >/dev/null 2>&1
   kill -15 $(pgrep -f "sing-box run -c $SB_CONF" 2>/dev/null) >/dev/null 2>&1
   if [ "$SERVICE_TYPE" = "systemd" ]; then
     systemctl stop ${SB_SERVICE} >/dev/null 2>&1
@@ -1107,6 +1232,7 @@ main() {
     log)    sblog "$2"; exit ;;
     tune)   shift; cmd_tune "$@"; exit ;;   # 安装期已自动 on，off 用于回滚
     cert)   shift; cert_mgmt "$@"; exit ;;
+    sub)    shift; cmd_sub "$@"; exit ;;
     del)    cleandel; exit ;;
     help|-h|--help) showmode; exit ;;
   esac
@@ -1218,6 +1344,12 @@ load_state() {
   [ -f "$SB_HOME/rk/short_id" ] && short_id_s=$(cat "$SB_HOME/rk/short_id")
   [ -f "$SB_HOME/rk/private_key" ] && private_key_s=$(cat "$SB_HOME/rk/private_key")
   [ -f "$SB_HOME/hyjpt" ] && hyjpt=$(cat "$SB_HOME/hyjpt")
+  # 订阅曾启用过就保持启用，令牌/端口沿用，避免 list 后订阅地址变化
+  if [ -f "$SB_HOME/subtoken" ]; then
+    sub=1
+    subid=$(cat "$SB_HOME/subtoken")
+    subport=$(cat "$SB_HOME/subport" 2>/dev/null)
+  fi
   if cert_ready; then CERT_OK=1; ym=$(cat "$SB_HOME/ym" 2>/dev/null || echo ""); else CERT_OK=0; fi
   hostname_s=$(hostname 2>/dev/null || echo vps)
 }

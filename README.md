@@ -68,6 +68,9 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sbbox/main/sbbox.sh) \
 | `ym` | 空 | acme 证书域名（启用 alns 时必需） |
 | `ym_vl_re` | `apple.com` | Reality 回落目标域名 |
 | `hyjpt` | 空 | Hysteria2 跳跃端口，如 `hyjpt="20000 20001 20002"` |
+| `sub` | 空 | 启用 v2rayN 订阅服务（`sub=1`） |
+| `subport` | 随机 | 订阅服务端口 |
+| `subid` | 同 uuid | 订阅令牌（URL 路径，相当于密码） |
 | `uuid` | 自动生成 | 自定义密码 / UUID |
 | `port_tu` / `port_hy2` / `port_nv` / `port_vl` | 随机 | 指定固定端口 |
 | `name` | 空 | 节点名称前缀 |
@@ -85,11 +88,36 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sbbox/main/sbbox.sh) \
 | `sbbox res` | 重启 sing-box |
 | `sbbox tune show` | 查看内核流控参数 |
 | `sbbox tune off` | 回滚全部内核调优 |
+| `sbbox sub` | 显示订阅地址 |
+| `sbbox sub off` | 关闭订阅服务 |
 | `sbbox cert status` | 查看证书有效期 |
 | `sbbox cert renew` | 续期证书并重启 |
 | `sbbox up` | 更新 sing-box 内核 |
 | `sbbox log [N]` | 查看最近 N 行日志（默认 20） |
 | `sbbox del` | 完全卸载 |
+
+---
+
+## v2rayN 订阅
+
+安装时加 `sub=1`，脚本会生成 base64 订阅并在本机启动 HTTP 服务：
+
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sbbox/main/sbbox.sh) \
+  tup=1 hyp=1 vlp=1 sub=1
+```
+
+安装结束会打印订阅地址，形如 `http://<IP>:<端口>/<令牌>`。
+在 v2rayN 中：**订阅 → 订阅设置 → 添加**，把该地址填入 URL，然后「更新订阅」。
+
+随时用 `sbbox sub` 再次查看地址，`sbbox sub off` 关闭服务。
+
+> ⚠️ **安全提示**：订阅经**明文 HTTP** 提供，URL 里的令牌就是唯一凭据。
+> 请勿分享该地址；不使用时执行 `sbbox sub off`。若需长期开放，建议改用
+> `subport=` 指定端口并在防火墙上限制来源 IP。
+>
+> Naiveproxy 节点（`naive+https://`）v2rayN 不支持，导入时会被忽略；
+> 该协议请用 sing-box 客户端配置 `~/sbbox/sbox_client.json`。
 
 ---
 

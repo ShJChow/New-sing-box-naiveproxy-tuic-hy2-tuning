@@ -68,6 +68,9 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sbbox/main/sbbox.sh) \
 | `ym` | empty | ACME certificate domain (required with `alns`) |
 | `ym_vl_re` | `apple.com` | Reality fallback/handshake domain |
 | `hyjpt` | empty | Hysteria2 port hopping, e.g. `hyjpt="20000 20001 20002"` |
+| `sub` | empty | enable the v2rayN subscription server (`sub=1`) |
+| `subport` | random | subscription server port |
+| `subid` | same as uuid | subscription token (URL path — acts as the password) |
 | `uuid` | auto-generated | custom password / UUID |
 | `port_tu` / `port_hy2` / `port_nv` / `port_vl` | random | pin a fixed port |
 | `name` | empty | node name prefix |
@@ -85,11 +88,40 @@ After install (reconnect SSH or `source ~/.bashrc`), use the `sbbox` command:
 | `sbbox res` | Restart sing-box |
 | `sbbox tune show` | Show kernel flow-tuning parameters |
 | `sbbox tune off` | Roll back all kernel tuning |
+| `sbbox sub` | Show the subscription URL |
+| `sbbox sub off` | Stop the subscription server |
 | `sbbox cert status` | Show certificate validity |
 | `sbbox cert renew` | Renew the certificate and restart |
 | `sbbox up` | Update the sing-box kernel |
 | `sbbox log [N]` | Show the last N log lines (default 20) |
 | `sbbox del` | Full uninstall |
+
+---
+
+## v2rayN Subscription
+
+Pass `sub=1` at install time and the script generates a base64 subscription
+and serves it over HTTP from the VPS:
+
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sbbox/main/sbbox.sh) \
+  tup=1 hyp=1 vlp=1 sub=1
+```
+
+The install prints a URL of the form `http://<IP>:<port>/<token>`.
+In v2rayN: **Subscription → Subscription settings → Add**, paste the URL,
+then "Update subscription".
+
+Run `sbbox sub` any time to reprint the URL, `sbbox sub off` to stop serving it.
+
+> ⚠️ **Security note**: the subscription is served over **plain HTTP** and the
+> token in the URL is the only credential. Do not share the address, and run
+> `sbbox sub off` when you are done. For long-lived use, pin the port with
+> `subport=` and restrict source IPs at the firewall.
+>
+> v2rayN does not support Naiveproxy nodes (`naive+https://`) — they are
+> ignored on import. Use the sing-box client config at
+> `~/sbbox/sbox_client.json` for that protocol.
 
 ---
 
