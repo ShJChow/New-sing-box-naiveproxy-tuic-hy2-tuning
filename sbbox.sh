@@ -975,6 +975,7 @@ $sel,
     ],
     "route": {
         "auto_detect_interface": true,
+        "default_domain_resolver": { "server": "local" },
         "rules": [
             { "rule_set": "geosite-cn", "outbound": "direct" }
         ],
