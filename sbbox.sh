@@ -63,6 +63,7 @@ name="${name:-}"
 sub="${sub:-}"                              # 启用订阅服务：sub=1
 subport="${subport:-}"                      # 订阅端口（默认随机）
 subid="${subid:-}"                          # 订阅令牌（默认用 uuid）
+sub_nonaive="${sub_nonaive:-}"              # 剔除 Naiveproxy 节点（客户端不支持时用）
 
 # ---------- 架构 / 系统探测 ----------
 detect_env() {
@@ -763,19 +764,21 @@ gen_sub() {
   mkdir -p "$SUB_DIR"
   # 空 index.html：让 HTTP 服务返回它而不是列出目录，避免令牌文件名被直接看到
   : > "$SUB_DIR/index.html"
-  # v2rayN 不支持 NaiveProxy，naive+ 链接导入后只会变成延迟 -1 的死节点，
-  # 故从订阅中剔除；nodes.txt 与 sing-box 客户端配置仍保留该协议。
-  grep -v '^naive+' "$SB_LINK" > "$SB_HOME/.sub.plain"
+  # 默认把全部节点（含 Naiveproxy H2/H3）打进订阅。
+  # 若客户端不支持 naive+ 链接（如某些 v2rayN 版本），可加 sub_nonaive=1 剔除。
+  if [ -n "$sub_nonaive" ]; then
+    grep -v '^naive+' "$SB_LINK" > "$SB_HOME/.sub.plain"
+  else
+    cp "$SB_LINK" "$SB_HOME/.sub.plain"
+  fi
   if [ ! -s "$SB_HOME/.sub.plain" ]; then
-    warn "除 Naiveproxy 外无其他节点，订阅为空；naive 请用 sing-box 客户端配置"
+    warn "无节点可生成订阅（nodes.txt 为空或全部被 sub_nonaive 剔除）"
     rm -f "$SB_HOME/.sub.plain"
     return 0
   fi
   # v2rayN 订阅格式 = 分享链接换行拼接后的 base64（不能有换行）
   base64 < "$SB_HOME/.sub.plain" | tr -d '\n' > "$SUB_DIR/$token"
   rm -f "$SB_HOME/.sub.plain"
-  grep -q '^naive+' "$SB_LINK" && \
-    warn "Naiveproxy 节点已排除出订阅（v2rayN 不支持该协议），请用 sing-box 客户端"
 
   start_sub_server
 

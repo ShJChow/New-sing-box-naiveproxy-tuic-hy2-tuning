@@ -74,6 +74,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sbbox/main/sbbox.sh) \
 | `sub` | 空 | 启用 v2rayN 订阅服务（`sub=1`） |
 | `subport` | 随机 | 订阅服务端口 |
 | `subid` | 同 uuid | 订阅令牌（URL 路径，相当于密码） |
+| `sub_nonaive` | 空 | 剔除 Naiveproxy 节点（客户端不支持 naive+ 链接时用 `sub_nonaive=1`） |
 | `uuid` | 自动生成 | 自定义密码 / UUID |
 | `port_tu` / `port_hy2` / `port_nv` / `port_vl` | 随机 | 指定固定端口 |
 | `name` | 空 | 节点名称前缀 |
@@ -119,10 +120,11 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sbbox/main/sbbox.sh) \
 > 请勿分享该地址；不使用时执行 `sbbox sub off`。若需长期开放，建议改用
 > `subport=` 指定端口并在防火墙上限制来源 IP。
 >
-> Naiveproxy 节点（`naive+https://`）不会进入订阅：v2rayN 不支持该协议。
-> sing-box 客户端同样用不了——它的 naive 出站依赖 Cronet 库，官方发行版
-> 未内置。请使用 [官方 naiveproxy 客户端](https://github.com/klzgrad/naiveproxy)，
-> 节点参数见 `~/sbbox/nodes.txt`。
+> **默认订阅包含全部 5 个节点（含 Naiveproxy H2/H3）**。
+> 若你的客户端不支持 `naive+` 链接（部分 v2rayN 版本导入会显示延迟 -1），
+> 可用 `sub_nonaive=1 sbbox list` 重新生成、剔除 Naiveproxy。
+> Naiveproxy 请用 [官方 naiveproxy 客户端](https://github.com/klzgrad/naiveproxy)，
+> 参数见 `~/sbbox/nodes.txt`。
 
 ---
 

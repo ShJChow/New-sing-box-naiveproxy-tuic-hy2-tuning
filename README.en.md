@@ -74,6 +74,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sbbox/main/sbbox.sh) \
 | `sub` | empty | enable the v2rayN subscription server (`sub=1`) |
 | `subport` | random | subscription server port |
 | `subid` | same as uuid | subscription token (URL path — acts as the password) |
+| `sub_nonaive` | empty | drop Naiveproxy nodes (use `sub_nonaive=1` if your client cannot parse `naive+` links) |
 | `uuid` | auto-generated | custom password / UUID |
 | `port_tu` / `port_hy2` / `port_nv` / `port_vl` | random | pin a fixed port |
 | `name` | empty | node name prefix |
@@ -122,11 +123,11 @@ Run `sbbox sub` any time to reprint the URL, `sbbox sub off` to stop serving it.
 > `sbbox sub off` when you are done. For long-lived use, pin the port with
 > `subport=` and restrict source IPs at the firewall.
 >
-> Naiveproxy nodes (`naive+https://`) are excluded from the subscription:
-> v2rayN does not support the protocol, and neither does a stock sing-box
-> client — its naive outbound needs the Cronet library, which official
-> builds do not ship. Use the
-> [official naiveproxy client](https://github.com/klzgrad/naiveproxy);
+> **By default the subscription includes all 5 nodes, Naiveproxy H2/H3
+> included.** If your client cannot parse `naive+` links (some v2rayN
+> versions import them with -1 latency), regenerate with
+> `sub_nonaive=1 sbbox list` to drop Naiveproxy. For Naiveproxy itself use
+> the [official naiveproxy client](https://github.com/klzgrad/naiveproxy);
 > node parameters are in `~/sbbox/nodes.txt`.
 
 ---

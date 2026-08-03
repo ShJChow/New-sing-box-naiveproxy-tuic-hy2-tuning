@@ -136,7 +136,7 @@ jobs:
       - name: 生成节点与订阅
         run: env sub=1 subport=18080 bash sbbox.sh list
 
-      - name: 断言订阅是合法 base64 且已剔除 naive
+      - name: 断言订阅是合法 base64 且包含全部节点（含 naive）
         run: |
           set -euo pipefail
           TOKEN=$(cat "$HOME/sbbox/subtoken")
@@ -148,13 +148,24 @@ jobs:
           [ "$(wc -l < "$SUB")" -eq 0 ] || { echo "订阅含换行，v2rayN 无法解析"; exit 1; }
           base64 -d < "$SUB" > /tmp/decoded.txt
           echo "--- 订阅内容 ---"; cat /tmp/decoded.txt
-          grep -q '^naive+' /tmp/decoded.txt && { echo "naive 未被剔除，v2rayN 会显示 -1"; exit 1; }
+          grep -q '^naive+https://' /tmp/decoded.txt || { echo "缺少 naive H2 节点"; exit 1; }
+          grep -q '^naive+quic://'  /tmp/decoded.txt || { echo "缺少 naive H3 节点"; exit 1; }
           grep -q '^vless://'      /tmp/decoded.txt || { echo "缺少 reality 节点"; exit 1; }
           grep -q '^hysteria2://'  /tmp/decoded.txt || { echo "缺少 hysteria2 节点"; exit 1; }
           grep -q '^tuic://'       /tmp/decoded.txt || { echo "缺少 tuic 节点"; exit 1; }
-          # naive 仍应保留在完整节点列表中
-          grep -q '^naive+' "$HOME/sbbox/nodes.txt" || { echo "nodes.txt 丢失 naive 节点"; exit 1; }
-          echo "OK: 订阅格式正确，naive 已按预期剔除且保留在 nodes.txt"
+          echo "OK: 订阅格式正确，包含全部 5 个节点"
+
+      - name: 断言 sub_nonaive=1 时剔除 naive 但仍合法
+        run: |
+          set -euo pipefail
+          env sub=1 subport=18081 sub_nonaive=1 bash sbbox.sh list >/dev/null 2>&1
+          TOKEN=$(cat "$HOME/sbbox/subtoken")
+          SUB="$HOME/sbbox/websub/$TOKEN"
+          base64 -d < "$SUB" > /tmp/decoded2.txt
+          echo "--- sub_nonaive 订阅内容 ---"; cat /tmp/decoded2.txt
+          grep -q '^naive+' /tmp/decoded2.txt && { echo "sub_nonaive=1 应剔除 naive"; exit 1; }
+          grep -q '^tuic://' /tmp/decoded2.txt || { echo "剔除 naive 后仍应有其他节点"; exit 1; }
+          echo "OK: sub_nonaive=1 生效"
 
       - name: 断言目录列表不泄露订阅令牌
         run: |
