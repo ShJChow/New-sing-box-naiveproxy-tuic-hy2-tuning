@@ -1387,9 +1387,9 @@ cert_mgmt() {
 port_listening() { # $1=port  $2=tcp|udp  → 0 监听中
   local p=$1 proto=${2:-tcp}
   if command -v ss >/dev/null 2>&1; then
-    ss -"$proto"ln 2>/dev/null | grep -q ":$p[[:space:]]"
+    ss -"$proto"ln 2>/dev/null | grep -q ":${p}[[:space:]]"
   elif command -v netstat >/dev/null 2>&1; then
-    netstat -"$proto"ln 2>/dev/null | grep -q ":$p[[:space:]]"
+    netstat -"$proto"ln 2>/dev/null | grep -q ":${p}[[:space:]]"
   else
     # 无 ss/netstat 时退化为尝试 TCP 连接
     timeout 2 bash -c "echo >/dev/tcp/127.0.0.1/$p" >/dev/null 2>&1
