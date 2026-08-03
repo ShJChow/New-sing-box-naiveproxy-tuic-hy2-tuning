@@ -496,18 +496,23 @@ installsb() {
     exit 1
   fi
   if [ -n "$alns" ]; then
-    if [ -z "$ym" ]; then
-      # 交互式输入域名，避免出现在命令行历史记录中
-      if [ -t 0 ]; then
-        printf '%s' "请输入证书域名（申请 Let's Encrypt 证书，需已解析到本机）：" >&2
-        read -r ym
+    if cert_ready; then
+      # 重装 / 加装协议时不重复签发，避免撞上 Let's Encrypt 的签发频率限制
+      info "检测到已有证书，跳过申请（如需续期请执行 sbbox cert renew）"
+    else
+      if [ -z "$ym" ]; then
+        # 交互式输入域名，避免出现在命令行历史记录中
+        if [ -t 0 ]; then
+          printf '%s' "请输入证书域名（申请 Let's Encrypt 证书，需已解析到本机）：" >&2
+          read -r ym
+        fi
       fi
+      if [ -z "$ym" ]; then
+        error "启用 alns=1 需要提供证书域名。请在安装时输入，或用 ym=你的域名 指定"
+        exit 1
+      fi
+      install_cert
     fi
-    if [ -z "$ym" ]; then
-      error "启用 alns=1 需要提供证书域名。请在安装时输入，或用 ym=你的域名 指定"
-      exit 1
-    fi
-    install_cert
     get_cert_paths
     if [ "$CERT_OK" != 1 ]; then
       warn "证书未就绪，Hysteria2/Tuic 将回退自签证书；Naive 不会启用"
@@ -1275,6 +1280,15 @@ main() {
   [ -x "$SB_BIN" ] || upsingbox
   installsb
   save_state
+
+  # 仅生成并校验配置：产出服务端/客户端配置后退出，不动内核参数、不装服务。
+  # CI 用它以真实内核跑 `sing-box check`，本地排障也可用。
+  if [ -n "$SBBOX_CHECK_ONLY" ]; then
+    gen_client
+    info "SBBOX_CHECK_ONLY=1：配置已生成并校验，跳过调优与服务安装"
+    exit 0
+  fi
+
   apply_tuning
   apply_hy_hop
   install_service

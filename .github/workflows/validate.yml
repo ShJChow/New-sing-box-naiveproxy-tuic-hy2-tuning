@@ -1,0 +1,157 @@
+name: validate
+
+# 用**真实** sing-box 内核校验脚本生成的配置。
+# 之前一连串 bug（hysteria2 masquerade 格式、naive network 取值等）都是
+# schema 错误，本地桩程序拦不住，只有真内核跑 `sing-box check` 才能发现。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash 语法检查
+        run: bash -n sbbox.sh
+      - name: ShellCheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y shellcheck
+          # SC2086(未加引号的变量展开) 等风格项在本脚本里大量属于有意为之，
+          # 只让真正会导致运行期错误的问题使 CI 失败。
+          shellcheck -S error sbbox.sh
+
+  config:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: 全部四协议
+            env: tup=1 hyp=1 nvp=1 vlp=1 alns=1
+          - name: 仅 Reality
+            env: vlp=1
+          - name: 仅 Hysteria2
+            env: hyp=1
+          - name: 仅 Tuic
+            env: tup=1
+          - name: 自签证书组合
+            env: tup=1 hyp=1 vlp=1
+          - name: Hysteria2 跳跃端口
+            env: hyp=1 hyjpt=20000
+    name: 配置校验 - ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装真实 sing-box 内核
+        run: |
+          set -euo pipefail
+          VER=$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest \
+                | grep -oP '"tag_name":\s*"v\K[^"]+')
+          echo "sing-box 版本: $VER"
+          curl -fsSL "https://github.com/SagerNet/sing-box/releases/download/v${VER}/sing-box-${VER}-linux-amd64.tar.gz" \
+            | tar -xz --strip-components=1 -C /tmp "sing-box-${VER}-linux-amd64/sing-box"
+          sudo install -m755 /tmp/sing-box /usr/local/bin/sing-box
+          sing-box version
+
+      - name: 预置内核与证书
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/sbbox/cert"
+          # 脚本会优先复用已存在的内核，省去下载
+          install -m755 /usr/local/bin/sing-box "$HOME/sbbox/sing-box"
+          # 预置证书让 alns=1 路径跳过 ACME 签发，从而覆盖到 naive 入站
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -keyout "$HOME/sbbox/cert/private.key" \
+            -out "$HOME/sbbox/cert/fullchain.cer" \
+            -subj "/CN=ci.example.com" 2>/dev/null
+
+      - name: 生成配置并用真实内核校验
+        run: |
+          set -euo pipefail
+          env SBBOX_CHECK_ONLY=1 ${{ matrix.env }} bash sbbox.sh
+
+      - name: 断言启用的协议确实出现在配置中
+        run: |
+          set -euo pipefail
+          CONF="$HOME/sbbox/sb.json"
+          echo "--- 生成的入站 ---"
+          jq -r '.inbounds[].type' "$CONF"
+          for want in ${{ matrix.env }}; do
+            case "$want" in
+              tup=1) jq -e '.inbounds[]|select(.type=="tuic")'      "$CONF" >/dev/null ;;
+              hyp=1) jq -e '.inbounds[]|select(.type=="hysteria2")' "$CONF" >/dev/null ;;
+              nvp=1) jq -e '.inbounds[]|select(.type=="naive")'     "$CONF" >/dev/null ;;
+              vlp=1) jq -e '.inbounds[]|select(.type=="vless")'     "$CONF" >/dev/null ;;
+            esac
+          done
+          echo "OK: 所有启用的协议均已生成"
+
+      - name: 校验客户端配置（sing-box check）
+        run: |
+          set -euo pipefail
+          CLIENT="$HOME/sbbox/sbox_client.json"
+          jq -e . "$CLIENT" >/dev/null
+          sing-box check -c "$CLIENT"
+          echo "OK: 客户端配置通过真实内核校验"
+
+      - name: 校验 Clash/Mihomo YAML 与订阅
+        run: |
+          set -euo pipefail
+          python3 -c "import yaml; yaml.safe_load(open('$HOME/sbbox/clmi.yaml')); print('OK: clmi.yaml 是合法 YAML')"
+
+  subscription:
+    runs-on: ubuntu-latest
+    name: 订阅格式校验
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装真实 sing-box 内核
+        run: |
+          set -euo pipefail
+          VER=$(curl -fsSL https://api.github.com/repos/SagerNet/sing-box/releases/latest \
+                | grep -oP '"tag_name":\s*"v\K[^"]+')
+          curl -fsSL "https://github.com/SagerNet/sing-box/releases/download/v${VER}/sing-box-${VER}-linux-amd64.tar.gz" \
+            | tar -xz --strip-components=1 -C /tmp "sing-box-${VER}-linux-amd64/sing-box"
+          mkdir -p "$HOME/sbbox"
+          install -m755 /tmp/sing-box "$HOME/sbbox/sing-box"
+          sudo install -m755 /tmp/sing-box /usr/local/bin/sing-box
+
+      - name: 预置证书（覆盖 naive，用于验证订阅剔除逻辑）
+        run: |
+          mkdir -p "$HOME/sbbox/cert"
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -keyout "$HOME/sbbox/cert/private.key" \
+            -out "$HOME/sbbox/cert/fullchain.cer" \
+            -subj "/CN=ci.example.com" 2>/dev/null
+
+      - name: 生成配置
+        run: env SBBOX_CHECK_ONLY=1 tup=1 hyp=1 nvp=1 vlp=1 alns=1 bash sbbox.sh
+
+      - name: 生成节点与订阅
+        run: env sub=1 subport=18080 bash sbbox.sh list
+
+      - name: 断言订阅是合法 base64 且已剔除 naive
+        run: |
+          set -euo pipefail
+          TOKEN=$(cat "$HOME/sbbox/subtoken")
+          SUB="$HOME/sbbox/websub/$TOKEN"
+          test -s "$SUB" || { echo "订阅文件为空"; exit 1; }
+          # v2rayN 要求单行 base64，不能含换行
+          grep -q $'\n' "$SUB" && { echo "订阅含换行，v2rayN 无法解析"; exit 1; }
+          base64 -d < "$SUB" > /tmp/decoded.txt
+          echo "--- 订阅内容 ---"; cat /tmp/decoded.txt
+          grep -q '^naive+' /tmp/decoded.txt && { echo "naive 未被剔除，v2rayN 会显示 -1"; exit 1; }
+          grep -q '^vless://'      /tmp/decoded.txt || { echo "缺少 reality 节点"; exit 1; }
+          grep -q '^hysteria2://'  /tmp/decoded.txt || { echo "缺少 hysteria2 节点"; exit 1; }
+          grep -q '^tuic://'       /tmp/decoded.txt || { echo "缺少 tuic 节点"; exit 1; }
+          # naive 仍应保留在完整节点列表中
+          grep -q '^naive+' "$HOME/sbbox/nodes.txt" || { echo "nodes.txt 丢失 naive 节点"; exit 1; }
+          echo "OK: 订阅格式正确，naive 已按预期剔除且保留在 nodes.txt"
+
+      - name: 断言目录列表不泄露订阅令牌
+        run: |
+          test -f "$HOME/sbbox/websub/index.html" \
+            && echo "OK: index.html 存在，根路径不会列出令牌文件名" \
+            || { echo "缺少 index.html，访问根路径会暴露令牌"; exit 1; }
