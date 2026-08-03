@@ -899,19 +899,9 @@ gen_client_sbox() {
     tags+=("hysteria2")
   fi
 
-  if [ -n "$nvp" ] && [ "$CERT_OK" = 1 ]; then
-    ob+=('{
-        "type": "naive",
-        "tag": "naive",
-        "server": "'"$add"'",
-        "server_port": '"$port_nv"',
-        "username": "'"$uuid"'",
-        "password": "'"$uuid"'",
-        "udp_over_tcp": true,
-        "tls": { "enabled": true, "insecure": false, "server_name": "'"$sni"'" }
-    }')
-    tags+=("naive")
-  fi
+  # 不生成 naive 出站：sing-box 的 naive 出站依赖 Cronet 库，官方发行版未内置，
+  # 加进去会让整份客户端配置以 "cronet: library not found" 启动失败。
+  # 服务端 naive 入站不受影响（无此依赖），客户端请用官方 naiveproxy。
 
   if [ -n "$vlp" ]; then
     ob+=('{

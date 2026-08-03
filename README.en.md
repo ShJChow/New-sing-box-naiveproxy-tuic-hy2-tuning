@@ -119,9 +119,12 @@ Run `sbbox sub` any time to reprint the URL, `sbbox sub off` to stop serving it.
 > `sbbox sub off` when you are done. For long-lived use, pin the port with
 > `subport=` and restrict source IPs at the firewall.
 >
-> v2rayN does not support Naiveproxy nodes (`naive+https://`) — they are
-> ignored on import. Use the sing-box client config at
-> `~/sbbox/sbox_client.json` for that protocol.
+> Naiveproxy nodes (`naive+https://`) are excluded from the subscription:
+> v2rayN does not support the protocol, and neither does a stock sing-box
+> client — its naive outbound needs the Cronet library, which official
+> builds do not ship. Use the
+> [official naiveproxy client](https://github.com/klzgrad/naiveproxy);
+> node parameters are in `~/sbbox/nodes.txt`.
 
 ---
 

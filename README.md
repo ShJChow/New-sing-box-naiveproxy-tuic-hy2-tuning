@@ -116,8 +116,10 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sbbox/main/sbbox.sh) \
 > 请勿分享该地址；不使用时执行 `sbbox sub off`。若需长期开放，建议改用
 > `subport=` 指定端口并在防火墙上限制来源 IP。
 >
-> Naiveproxy 节点（`naive+https://`）v2rayN 不支持，导入时会被忽略；
-> 该协议请用 sing-box 客户端配置 `~/sbbox/sbox_client.json`。
+> Naiveproxy 节点（`naive+https://`）不会进入订阅：v2rayN 不支持该协议。
+> sing-box 客户端同样用不了——它的 naive 出站依赖 Cronet 库，官方发行版
+> 未内置。请使用 [官方 naiveproxy 客户端](https://github.com/klzgrad/naiveproxy)，
+> 节点参数见 `~/sbbox/nodes.txt`。
 
 ---
 
