@@ -36,7 +36,13 @@ CERT_DIR="$SB_HOME/cert"
 SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
-SB_BINDIR="$HOME/bin"
+SB_URL="https://raw.githubusercontent.com/ShJChow/sbbox/main/sbbox.sh"
+# root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
+if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
+  SB_BINDIR="/usr/local/bin"
+else
+  SB_BINDIR="$HOME/bin"
+fi
 
 # ---------- 颜色输出 ----------
 NC='\033[0m'; RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; BLUE='\033[0;34m'; CYAN='\033[0;36m'
@@ -1263,20 +1269,42 @@ main() {
   install_service
   gen_client
 
-  # 安装常驻管理命令
-  mkdir -p "$SB_BINDIR"
-  cp "$0" "$SB_BINDIR/sbbox" 2>/dev/null
-  if [ ! -x "$SB_BINDIR/sbbox" ] || ! bash -n "$SB_BINDIR/sbbox" >/dev/null 2>&1; then
-    rm -f "$SB_BINDIR/sbbox"
-    warn "管理命令复制失败（脚本由管道执行时 \$0 不是文件）。请手动执行：cp sbbox.sh $SB_BINDIR/sbbox && chmod +x $SB_BINDIR/sbbox"
-  else
-    chmod +x "$SB_BINDIR/sbbox" 2>/dev/null
-    grep -qxF 'export PATH="$HOME/bin:$PATH"' "$HOME/.bashrc" 2>/dev/null || echo 'export PATH="$HOME/bin:$PATH"' >> "$HOME/.bashrc" 2>/dev/null
-    info "sbbox 管理命令已安装：$SB_BINDIR/sbbox"
-  fi
-  info "安装完成！重连 SSH 后可使用 sbbox 管理命令"
+  install_cmd
+  info "安装完成！可直接使用 sbbox 管理命令"
   echo ""
   showmode
+}
+
+# 安装常驻管理命令。
+# 经 `bash <(curl ...)` 运行时 $0 是已读完的管道（/dev/fd/NN），拷不出内容，
+# 因此优先复制本地文件，不可用时从仓库重新下载。
+install_cmd() {
+  local dest="$SB_BINDIR/sbbox" tmp="$SB_HOME/.sbbox.new"
+  mkdir -p "$SB_BINDIR" 2>/dev/null
+
+  if [ -f "$0" ] && [ -r "$0" ] && head -1 "$0" 2>/dev/null | grep -q '^#!'; then
+    cp "$0" "$tmp" 2>/dev/null
+  fi
+  if [ ! -s "$tmp" ] || ! bash -n "$tmp" >/dev/null 2>&1; then
+    (command -v curl >/dev/null 2>&1 && curl -fsSL "$SB_URL" -o "$tmp") || \
+      (command -v wget >/dev/null 2>&1 && wget -qO "$tmp" "$SB_URL")
+  fi
+
+  if [ -s "$tmp" ] && bash -n "$tmp" >/dev/null 2>&1; then
+    mv -f "$tmp" "$dest" && chmod +x "$dest"
+    # ~/bin 不一定在 PATH 中（/usr/local/bin 一定在）
+    if [ "$SB_BINDIR" != "/usr/local/bin" ]; then
+      grep -qxF 'export PATH="$HOME/bin:$PATH"' "$HOME/.bashrc" 2>/dev/null || \
+        echo 'export PATH="$HOME/bin:$PATH"' >> "$HOME/.bashrc" 2>/dev/null
+      export PATH="$SB_BINDIR:$PATH"
+      warn "$SB_BINDIR 已加入 PATH，当前会话生效；新会话请重连 SSH"
+    fi
+    info "sbbox 管理命令已安装：$dest"
+  else
+    rm -f "$tmp"
+    warn "管理命令安装失败。可手动执行："
+    warn "  curl -fsSL $SB_URL -o $SB_BINDIR/sbbox && chmod +x $SB_BINDIR/sbbox"
+  fi
 }
 
 # 保存已启用协议与关键参数（供 list/status 恢复）
