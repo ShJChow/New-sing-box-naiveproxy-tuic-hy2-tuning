@@ -46,11 +46,11 @@
 
 ```bash
 # 只装 Tuic + Hysteria2 + Reality（无域名，自签证书 + SHA256 固定指纹）
-bash <(curl -Ls https://raw.githubusercontent.com/ShJChow26/sbbox/main/sbbox.sh) \
+bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sbbox/main/sbbox.sh) \
   tup=1 hyp=1 vlp=1
 
 # 装全部四个协议（需域名，自动申请 Let's Encrypt 证书）
-bash <(curl -Ls https://raw.githubusercontent.com/ShJChow26/sbbox/main/sbbox.sh) \
+bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sbbox/main/sbbox.sh) \
   tup=1 hyp=1 nvp=1 vlp=1 alns=1 ym=your.domain.com
 ```
 

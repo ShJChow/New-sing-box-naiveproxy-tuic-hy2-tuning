@@ -89,7 +89,7 @@ showmode() {
   echo "sbbox — Sing-box-Only 四协议安全代理脚本"
   echo "支持协议：Tuic / Hysteria2 / Naiveproxy / Reality"
   echo "-----------------------------------------------------------"
-  echo "主脚本：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow26/sbbox/main/sbbox.sh)"
+  echo "主脚本：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sbbox/main/sbbox.sh)"
   echo "显示节点信息：sbbox list 【或】 bash sbbox.sh list"
   echo "服务与流控状态：sbbox status"
   echo "重启 sing-box：sbbox res"

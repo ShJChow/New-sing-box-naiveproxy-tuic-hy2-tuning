@@ -46,11 +46,11 @@ Bundled with:
 
 ```bash
 # Tuic + Hysteria2 + Reality only (no domain; self-signed cert + SHA256 pinning)
-bash <(curl -Ls https://raw.githubusercontent.com/ShJChow26/sbbox/main/sbbox.sh) \
+bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sbbox/main/sbbox.sh) \
   tup=1 hyp=1 vlp=1
 
 # All four protocols (domain required; auto-issue a Let's Encrypt certificate)
-bash <(curl -Ls https://raw.githubusercontent.com/ShJChow26/sbbox/main/sbbox.sh) \
+bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sbbox/main/sbbox.sh) \
   tup=1 hyp=1 nvp=1 vlp=1 alns=1 ym=your.domain.com
 ```
 
