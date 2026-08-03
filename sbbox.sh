@@ -569,7 +569,12 @@ EOF
                 { "password": "$uuid" }
             ],
             "ignore_client_bandwidth": true,
-            "masquerade": "<html><head><title>404 Not Found</title></head><body><h1>Not Found</h1></body></html>",
+            "masquerade": {
+                "type": "string",
+                "status_code": 404,
+                "headers": { "Content-Type": "text/html" },
+                "content": "<html><head><title>404 Not Found</title></head><body><center><h1>404 Not Found</h1></center></body></html>"
+            },
             "tls": {
                 "enabled": true,
                 "alpn": [ "h3" ],
@@ -588,7 +593,6 @@ EOF
             "tag": "naive-in",
             "listen": "::",
             "listen_port": $port_nv,
-            "network": "tcp,udp",
             "users": [
                 { "username": "$uuid", "password": "$uuid" }
             ],
@@ -643,6 +647,15 @@ EOF
 }
 EOF
   info "服务端配置已生成：$SB_CONF"
+
+  # 配置自检：把 JSON/字段错误在安装期暴露出来，而不是留到服务静默启动失败
+  if ! "$SB_BIN" check -c "$SB_CONF" 2>"$SB_HOME/check.err"; then
+    error "sing-box 配置校验失败，服务不会启动。错误信息："
+    cat "$SB_HOME/check.err" >&2
+    error "配置文件保留在 $SB_CONF 供排查"
+    exit 1
+  fi
+  info "配置校验通过"
 }
 
 # ======================================================
