@@ -131,12 +131,12 @@ install_deps() {
   if [ ! -f "$SB_HOME/deps_done" ]; then
     info "安装系统依赖……"
     if command -v apk >/dev/null 2>&1; then
-      apk update >/dev/null 2>&1 && apk add --no-cache bash coreutils curl wget openssl iptables ip6tables ca-certificates >/dev/null 2>&1
+      apk update >/dev/null 2>&1 && apk add --no-cache bash coreutils curl wget openssl iptables ip6tables ca-certificates ethtool iproute2 >/dev/null 2>&1
     elif command -v apt >/dev/null 2>&1; then
       export DEBIAN_FRONTEND=noninteractive
-      apt update >/dev/null 2>&1 && apt install -y curl wget openssl ca-certificates iptables iptables-persistent net-tools >/dev/null 2>&1
+      apt update >/dev/null 2>&1 && apt install -y curl wget openssl ca-certificates iptables iptables-persistent net-tools ethtool iproute2 >/dev/null 2>&1
     elif command -v dnf >/dev/null 2>&1; then
-      dnf install -y curl wget openssl ca-certificates iptables >/dev/null 2>&1
+      dnf install -y curl wget openssl ca-certificates iptables ethtool iproute >/dev/null 2>&1
     fi
     touch "$SB_HOME/deps_done"
   fi
@@ -297,6 +297,50 @@ install_cert() {
 # ======================================================
 sysctl_get() { sysctl -n "$1" 2>/dev/null || true; }
 
+# 默认路由所在网卡（QUIC 调优要作用在真正出流量的接口上）
+default_nic() {
+  ip route show default 2>/dev/null | awk '/default/{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}'
+}
+
+# 网卡层调优：全部 best-effort，失败只告警。
+#   1) fq：QUIC 强依赖 pacing，sysctl 的 default_qdisc 不会改已存在的网卡
+#   2) GRO/GSO：让内核合并/分片 UDP 段，高速 QUIC 下显著降低 CPU 占用
+apply_nic_tuning() {
+  local nic
+  nic=$(default_nic)
+  if [ -z "$nic" ]; then
+    warn "未识别到默认路由网卡，跳过网卡层调优"
+    return 0
+  fi
+  echo "$nic" > "$SB_HOME/nic" 2>/dev/null || true
+
+  if command -v tc >/dev/null 2>&1; then
+    local before_qd
+    before_qd=$(tc qdisc show dev "$nic" 2>/dev/null | head -1 | awk '{print $2}')
+    if tc qdisc replace dev "$nic" root fq >/dev/null 2>&1; then
+      info "网卡 $nic 队列规则：${before_qd:-未知} → fq（QUIC pacing 生效）"
+    else
+      warn "网卡 $nic 设置 fq 失败（容器/受限环境常见），跳过"
+    fi
+  else
+    warn "未安装 tc(iproute2)，跳过 fq 队列设置"
+  fi
+
+  if command -v ethtool >/dev/null 2>&1; then
+    local ok=""
+    ethtool -K "$nic" gro on  >/dev/null 2>&1 && ok="gro"
+    ethtool -K "$nic" gso on  >/dev/null 2>&1 && ok="$ok gso"
+    ethtool -K "$nic" tso on  >/dev/null 2>&1 && ok="$ok tso"
+    if [ -n "$ok" ]; then
+      info "网卡 $nic 已开启分片卸载：$ok"
+    else
+      warn "网卡 $nic 不支持或不允许修改卸载选项（虚拟网卡常见），跳过"
+    fi
+  else
+    warn "未安装 ethtool，跳过 GRO/GSO（apt install ethtool 后重跑 sbbox tune on 可启用）"
+  fi
+}
+
 apply_tuning() {
   local SYSCTL_APPLIED=() SYSCTL_SKIPPED=() TUNING_BBR_OK=false
   local MEM_MB CPU_CORES ARCH PAGE_SIZE MEM_PAGES
@@ -319,7 +363,10 @@ apply_tuning() {
   MEM_PAGES=$(awk -v ps="$PAGE_SIZE" '/^MemTotal:/{printf "%d", $2*1024/ps}' /proc/meminfo 2>/dev/null || echo 262144)
 
   if [ "$MEM_MB" -ge 16384 ]; then
-    TUNE_TIER="large";  SOCK_MEM_MAX=67108864; TCP_MEM_MAX=33554432; NETDEV_BACKLOG=65536; CONNTRACK_MAX=1048576; NETDEV_BUDGET=6000
+    # 大内存档抬到 128MB：QUIC(Tuic/Hysteria2) 的 UDP socket 不像 TCP 那样自动
+    # 扩缩，quic-go 直接按 rmem_max 上限申请缓冲，上限偏小会打印
+    # "failed to sufficiently increase receive buffer size" 并压低吞吐。
+    TUNE_TIER="large";  SOCK_MEM_MAX=134217728; TCP_MEM_MAX=33554432; NETDEV_BACKLOG=65536; CONNTRACK_MAX=1048576; NETDEV_BUDGET=6000
   elif [ "$MEM_MB" -ge 4096 ]; then
     TUNE_TIER="medium"; SOCK_MEM_MAX=33554432; TCP_MEM_MAX=16777216; NETDEV_BACKLOG=32768; CONNTRACK_MAX=262144; NETDEV_BUDGET=6000
   else
@@ -444,6 +491,12 @@ DROPINEOF
     info "已为 sing-box 写入 rc_ulimit"
   fi
 
+  # ---------- 网卡层：fq 队列 + UDP 分片卸载 ----------
+  # net.core.default_qdisc=fq 只对**此后新建**的 qdisc 生效，已存在的网卡不会
+  # 自动切换，所以必须显式对当前网卡再设一次，否则 QUIC 依赖的 pacing 拿不到。
+  apply_nic_tuning
+  echo "$(date +%s)" > "$SB_HOME/nic_tuned" 2>/dev/null || true
+
   # ---------- Before / After ----------
   echo ""
   echo -e "${YELLOW}[+] 流控调优 Before / After${NC}"
@@ -458,6 +511,14 @@ DROPINEOF
 
 tune_off() {
   info "回滚 sbbox 流控调优……"
+  # 网卡层：把队列规则交还给系统默认（default_qdisc 此时已随 sysctl 一起移除），
+  # 卸载选项保持开启——GRO/GSO 属于网卡通用能力，关掉反而可能损害其他服务。
+  if [ -s "$SB_HOME/nic" ] && command -v tc >/dev/null 2>&1; then
+    local nic; nic=$(cat "$SB_HOME/nic")
+    tc qdisc del dev "$nic" root >/dev/null 2>&1 && \
+      info "网卡 $nic 队列规则已交还系统默认" || true
+  fi
+  rm -f "$SB_HOME/nic" "$SB_HOME/nic_tuned" 2>/dev/null
   rm -f "$SYSCTL_CONF" 2>/dev/null
   rm -f "$LIMITS_CONF" 2>/dev/null
   rm -rf "/etc/systemd/system/${SB_SERVICE}.service.d" 2>/dev/null
@@ -480,6 +541,16 @@ tune_show() {
   printf '  %-32s %s\n' "net.core.rmem_max"               "$(sysctl_get net.core.rmem_max)"
   printf '  %-32s %s\n' "net.ipv4.tcp_fastopen"           "$(sysctl_get net.ipv4.tcp_fastopen)"
   printf '  %-32s %s\n' "机型 / 调优档位" "${CPU_CORES} 核 / ${MEM_MB} MB / ${ARCH} → ${TUNE_TIER}"
+  # 网卡层：QUIC 的 pacing 取决于真实网卡的队列规则，而非 sysctl 的 default_qdisc
+  local _nic; _nic=$(default_nic)
+  if [ -n "$_nic" ]; then
+    printf '  %-32s %s\n' "网卡 $_nic 队列规则" \
+      "$(tc qdisc show dev "$_nic" 2>/dev/null | head -1 | awk '{print $2}' || echo n/a)"
+    if command -v ethtool >/dev/null 2>&1; then
+      printf '  %-32s %s\n' "网卡 $_nic 卸载(GRO/GSO)" \
+        "$(ethtool -k "$_nic" 2>/dev/null | awk -F': ' '/^(generic-receive-offload|generic-segmentation-offload)/{printf "%s=%s ",substr($1,9,3),$2}' || echo n/a)"
+    fi
+  fi
   if [ -f "$SYSCTL_CONF" ]; then
     printf '  %-32s %s\n' "调优配置文件" "$SYSCTL_CONF（已启用）"
   else
@@ -571,6 +642,7 @@ EOF
             "congestion_control": "bbr",
             "zero_rtt_handshake": false,
             "auth_timeout": "3s",
+            "heartbeat": "10s",
             "tls": {
                 "enabled": true,
                 "alpn": [ "h3" ],
@@ -652,6 +724,7 @@ EOF
             ],
             "tls": {
                 "enabled": true,
+                "min_version": "1.3",
                 "certificate_path": "$CERT_DIR/fullchain.cer",
                 "key_path": "$CERT_DIR/private.key"
             }

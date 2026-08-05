@@ -90,10 +90,22 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/ma
 
 | 协议 | 默认参数 | 理由 |
 |------|---------|------|
-| Tuic | `congestion_control: bbr`、`zero_rtt_handshake: false`、`auth_timeout: 3s` | 关 0-RTT 牺牲 1 个 RTT 换取抗重放攻击 |
+| Tuic | `congestion_control: bbr`、`zero_rtt_handshake: false`、`auth_timeout: 3s`、`heartbeat: 10s` | 关 0-RTT 牺牲 1 个 RTT 换取抗重放；心跳保活 NAT 映射 |
 | Hysteria2 | **`obfs: salamander`（默认开启）**、`ignore_client_bandwidth: true`（客户端统一走 BBR）、`masquerade` 404 伪装 | 混淆抗协议识别；BBR 稳定公平，无需预知带宽 |
-| Naiveproxy | `tcp_fast_open: true`、强制真实证书 | TFO 省 1 个 RTT，与内核 `tcp_fastopen=3` 配套 |
+| Naiveproxy | `tcp_fast_open: true`、`min_version: "1.3"`、强制真实证书 | TFO 省 1 个 RTT；仅 TLS 1.3 可用，杜绝降级 |
 | Reality | `tcp_fast_open: true`、TLS 1.3、uTLS chrome 指纹 | Vision 流控自带 splice 高性能路径 |
+
+### 系统层：QUIC 相关调优（安装期自动生效）
+
+| 项 | 做法 | 为什么需要 |
+|---|---|---|
+| `fq` 队列规则 | `tc qdisc replace dev <网卡> root fq` | QUIC 强依赖 pacing。`net.core.default_qdisc=fq` **只影响此后新建的 qdisc**，已存在的网卡不会自动切换，必须显式设置 |
+| UDP GRO/GSO | `ethtool -K <网卡> gro/gso/tso on` | 让内核合并/分片 UDP 段，高速 QUIC 下明显降低 CPU |
+| UDP 缓冲区 | 大内存档 `rmem_max/wmem_max` 提到 **128MB** | QUIC 的 UDP socket 不像 TCP 自动扩缩，quic-go 直接按 `rmem_max` 申请，上限偏小会打印 `failed to sufficiently increase receive buffer size` 并压低吞吐 |
+
+`sbbox tune show` 会显示当前网卡的队列规则与卸载状态，`sbbox tune off` 把队列规则交还系统默认。
+
+> 容器 / OpenVZ 等受限环境下 `tc` 与 `ethtool` 可能无权限，脚本会告警并跳过，不影响其余调优。
 
 ### 进一步提速：Hysteria2 Brutal 拥塞控制
 
