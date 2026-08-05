@@ -205,3 +205,67 @@ jobs:
           test -f "$HOME/sbbox/websub/index.html" \
             && echo "OK: index.html 存在，根路径不会列出令牌文件名" \
             || { echo "缺少 index.html，访问根路径会暴露令牌"; exit 1; }
+
+  # 探测：官方 tarball 附带的 libcronet.so 能否让 naive 出站可用。
+  # 结论会决定客户端配置是否恢复 Naiveproxy 节点。continue-on-error 让它只报告不阻塞。
+  naive-cronet-probe:
+    runs-on: ubuntu-latest
+    name: 探测 naive 出站 + libcronet
+    steps:
+      - name: 安装官方内核（保留 libcronet.so）
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VER=$(curl -fsSL --retry 3 -H "Authorization: Bearer $GITHUB_TOKEN" \
+                https://api.github.com/repos/SagerNet/sing-box/releases/latest \
+                | grep -oP '"tag_name":\s*"v\K[^"]+')
+          echo "sing-box $VER"
+          curl -fsSL --retry 3 "https://github.com/SagerNet/sing-box/releases/download/v${VER}/sing-box-${VER}-linux-amd64.tar.gz" \
+            | tar -xz -C /tmp
+          sudo mkdir -p /opt/sing-box
+          sudo cp /tmp/sing-box-${VER}-linux-amd64/sing-box /tmp/sing-box-${VER}-linux-amd64/libcronet.so /opt/sing-box/
+          ls -la /opt/sing-box/
+
+      - name: 构造含 naive 出站的客户端配置
+        run: |
+          cat > /tmp/naive-client.json <<'EOF'
+          {
+            "log": { "level": "info" },
+            "outbounds": [
+              {
+                "type": "naive",
+                "tag": "naive",
+                "server": "example.com",
+                "server_port": 443,
+                "username": "u",
+                "password": "p",
+                "udp_over_tcp": true,
+                "tls": { "enabled": true, "insecure": false, "server_name": "example.com" }
+              },
+              { "type": "direct", "tag": "direct" }
+            ],
+            "route": { "default_domain_resolver": { "server": "l" }, "final": "direct" },
+            "dns": { "servers": [ { "tag": "l", "type": "udp", "server": "223.5.5.5" } ] }
+          }
+          EOF
+          jq -e . /tmp/naive-client.json >/dev/null && echo "配置 JSON 合法"
+
+      - name: A) 同目录加载
+        continue-on-error: true
+        run: |
+          cd /opt/sing-box
+          ./sing-box check -c /tmp/naive-client.json && echo "RESULT_A=同目录即可加载 libcronet" || echo "RESULT_A=失败"
+
+      - name: B) LD_LIBRARY_PATH 加载
+        continue-on-error: true
+        run: |
+          LD_LIBRARY_PATH=/opt/sing-box /opt/sing-box/sing-box check -c /tmp/naive-client.json \
+            && echo "RESULT_B=LD_LIBRARY_PATH 可加载" || echo "RESULT_B=失败"
+
+      - name: C) 仅二进制（对照组，应失败）
+        continue-on-error: true
+        run: |
+          sudo mkdir -p /opt/nolib && sudo cp /opt/sing-box/sing-box /opt/nolib/
+          /opt/nolib/sing-box check -c /tmp/naive-client.json \
+            && echo "RESULT_C=无 libcronet 也能过（说明之前判断有误）" || echo "RESULT_C=失败（符合预期）"
