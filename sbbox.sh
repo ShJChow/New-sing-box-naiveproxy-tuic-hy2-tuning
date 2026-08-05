@@ -36,7 +36,7 @@ CERT_DIR="$SB_HOME/cert"
 SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
-SBBOX_VERSION="v1.2.0"
+SBBOX_VERSION="v1.3.0"
 SB_URL="https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -64,6 +64,7 @@ hyup="${hyup:-}"                            # Hysteria2 上行 Mbps（与 hydown
 hydown="${hydown:-}"                        # Hysteria2 下行 Mbps
 ippz="${ippz:-}"                            # 4 / 6 / 双栈
 name="${name:-}"
+noautoup="${noautoup:-}"                    # 关闭每周内核自动升级：noautoup=1
 sub="${sub:-}"                              # 启用订阅服务：sub=1
 subport="${subport:-}"                      # 订阅端口（默认随机）
 subid="${subid:-}"                          # 订阅令牌（默认用 uuid）
@@ -143,27 +144,75 @@ install_deps() {
 }
 
 # ---------- sing-box 内核下载/更新 ----------
-upsingbox() {
-  info "下载 sing-box 内核 (linux-$cpu)……"
-  local url="https://github.com/yonggekkk/argosbx/releases/download/argosbx/sing-box-$cpu"
-  (command -v curl >/dev/null 2>&1 && curl -Lo "$SB_BIN" -# --retry 2 "$url") || \
-    (command -v wget >/dev/null 2>&1 && timeout 3 wget -O "$SB_BIN" --tries=2 "$url")
-  if [ ! -s "$SB_BIN" ]; then
-    # 回退到官方 release
-    local ver sbtgz
-    ver=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest 2>/dev/null | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4)
-    [ -z "$ver" ] && ver="1.11.8"
-    sbtgz="$SB_HOME/sing-box-$ver.tar.gz"
-    curl -Lo "$sbtgz" "https://github.com/SagerNet/sing-box/releases/download/$ver/sing-box-$ver-linux-$cpu.tar.gz" 2>/dev/null || return 1
-    tar -xzf "$sbtgz" -C "$SB_HOME" "sing-box-$ver-linux-$cpu/sing-box" 2>/dev/null
-    mv "$SB_HOME/sing-box-$ver-linux-$cpu/sing-box" "$SB_BIN" 2>/dev/null
-    rm -rf "$SB_HOME/sing-box-$ver-linux-$cpu" "$sbtgz" 2>/dev/null
+# 查询 SagerNet 官方最新正式版版本号（去掉 tag 的 v 前缀）
+latest_sb_version() {
+  local api="https://api.github.com/repos/SagerNet/sing-box/releases/latest"
+  { (command -v curl >/dev/null 2>&1 && curl -fsSL --retry 2 "$api" 2>/dev/null) || \
+    (command -v wget >/dev/null 2>&1 && wget -qO- --tries=2 "$api" 2>/dev/null); } \
+    | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
+    | cut -d'"' -f4 | sed 's/^v//'
+}
+
+sb_installed_version() {
+  [ -x "$SB_BIN" ] || return 1
+  "$SB_BIN" version 2>/dev/null | awk '/version/{print $NF; exit}'
+}
+
+# 从官方 release 安装指定版本；成功返回 0
+install_sb_official() {
+  local ver="$1" tmp="$SB_HOME/.sbdl" tgz
+  [ -n "$ver" ] || return 1
+  tgz="$tmp/sing-box-${ver}-linux-${cpu}.tar.gz"
+  rm -rf "$tmp"; mkdir -p "$tmp"
+  local url="https://github.com/SagerNet/sing-box/releases/download/v${ver}/sing-box-${ver}-linux-${cpu}.tar.gz"
+  if ! { (command -v curl >/dev/null 2>&1 && curl -fL --retry 2 -o "$tgz" "$url" 2>/dev/null) || \
+         (command -v wget >/dev/null 2>&1 && wget -qO "$tgz" --tries=2 "$url" 2>/dev/null); }; then
+    rm -rf "$tmp"; return 1
   fi
-  chmod +x "$SB_BIN"
-  if [ -x "$SB_BIN" ]; then
-    local ver
-    ver=$("$SB_BIN" version 2>/dev/null | awk '/version/{print $NF}')
-    info "sing-box 内核版本：${ver:-未知}"
+  tar -xzf "$tgz" -C "$tmp" "sing-box-${ver}-linux-${cpu}/sing-box" 2>/dev/null || { rm -rf "$tmp"; return 1; }
+  # 先落到临时文件校验可执行，再覆盖，避免下载损坏把可用内核冲掉
+  if [ -s "$tmp/sing-box-${ver}-linux-${cpu}/sing-box" ]; then
+    chmod +x "$tmp/sing-box-${ver}-linux-${cpu}/sing-box"
+    if "$tmp/sing-box-${ver}-linux-${cpu}/sing-box" version >/dev/null 2>&1; then
+      mv -f "$tmp/sing-box-${ver}-linux-${cpu}/sing-box" "$SB_BIN"
+      chmod +x "$SB_BIN"
+      rm -rf "$tmp"; return 0
+    fi
+  fi
+  rm -rf "$tmp"; return 1
+}
+
+upsingbox() {
+  local cur latest
+  cur=$(sb_installed_version)
+  latest=$(latest_sb_version)
+
+  if [ -z "$latest" ]; then
+    warn "无法查询 sing-box 最新版本（GitHub API 不可达）"
+    if [ -x "$SB_BIN" ]; then
+      info "保留现有内核：${cur:-未知}"
+      return 0
+    fi
+  else
+    if [ -n "$cur" ] && [ "$cur" = "$latest" ]; then
+      info "sing-box 已是最新正式版：$cur"
+      return 0
+    fi
+    info "下载 sing-box 官方正式版 ${latest} (linux-$cpu)……"
+    if install_sb_official "$latest"; then
+      info "sing-box 内核：${cur:-无} → $(sb_installed_version)"
+      return 0
+    fi
+    warn "官方源下载失败，尝试镜像源"
+  fi
+
+  # 回退：argosbx 镜像（版本可能滞后，仅在官方源不可达时使用）
+  local url="https://github.com/yonggekkk/argosbx/releases/download/argosbx/sing-box-$cpu"
+  (command -v curl >/dev/null 2>&1 && curl -fLo "$SB_BIN" -# --retry 2 "$url") || \
+    (command -v wget >/dev/null 2>&1 && wget -O "$SB_BIN" --tries=2 "$url")
+  chmod +x "$SB_BIN" 2>/dev/null
+  if [ -x "$SB_BIN" ] && "$SB_BIN" version >/dev/null 2>&1; then
+    warn "已使用镜像源内核：$(sb_installed_version)（可能非最新，稍后可重试 sbbox up）"
   else
     error "sing-box 内核下载失败" && exit 1
   fi
@@ -1398,7 +1447,7 @@ main() {
     list)   v4v6; load_state; gen_client; exit ;;
     status) status_show; exit ;;
     res)    sbrestart; exit ;;
-    up)     upsingbox; sbrestart; exit ;;
+    up)     cmd_update; exit ;;
     log)    sblog "$2"; exit ;;
     tune)   shift; cmd_tune "$@"; exit ;;   # 安装期已自动 on，off 用于回滚
     cert)   shift; cert_mgmt "$@"; exit ;;
@@ -1444,6 +1493,7 @@ main() {
   gen_client
 
   install_cmd
+  setup_autoupdate
   info "安装完成！可直接使用 sbbox 管理命令"
   echo ""
   showmode
@@ -1489,6 +1539,56 @@ save_state() {
   [ -n "$vlp" ] && touch "$SB_HOME/proto_vlp"
   echo "$ym" > "$SB_HOME/ym"
   [ -n "$hyjpt" ] && echo "$hyjpt" > "$SB_HOME/hyjpt"
+}
+
+# 内核升级：备份 → 升级 → 用新内核校验配置 → 重启；任一步失败即回滚旧内核。
+# 新版本偶尔会收紧配置 schema（本项目就被 1.12 的 DNS 格式变更打过），
+# 没有回滚的话一次自动升级就能让所有节点掉线。
+cmd_update() {
+  local bak="$SB_HOME/sing-box.bak" before after
+  before=$(sb_installed_version)
+  [ -x "$SB_BIN" ] && cp -f "$SB_BIN" "$bak" 2>/dev/null
+
+  upsingbox || { warn "升级未执行"; return 1; }
+  after=$(sb_installed_version)
+  if [ "$before" = "$after" ]; then
+    rm -f "$bak"; return 0
+  fi
+
+  if [ -f "$SB_CONF" ] && ! "$SB_BIN" check -c "$SB_CONF" 2>"$SB_HOME/check.err"; then
+    error "新内核 $after 校验现有配置失败，回滚到 $before："
+    cat "$SB_HOME/check.err" >&2
+    [ -s "$bak" ] && mv -f "$bak" "$SB_BIN" && chmod +x "$SB_BIN"
+    sbrestart
+    error "已回滚。配置可能需要按新版本调整后再升级"
+    return 1
+  fi
+
+  sbrestart
+  sleep 2
+  if pgrep -f "sing-box run -c $SB_CONF" >/dev/null 2>&1; then
+    info "升级完成：${before:-无} → $after"
+    rm -f "$bak"
+  else
+    error "新内核启动失败，回滚到 $before"
+    [ -s "$bak" ] && mv -f "$bak" "$SB_BIN" && chmod +x "$SB_BIN"
+    sbrestart
+    return 1
+  fi
+}
+
+# 每周自动升级内核（带上面的回滚保护）
+setup_autoupdate() {
+  command -v crontab >/dev/null 2>&1 || return 0
+  crontab -l > /tmp/sbbox_up_cron.tmp 2>/dev/null || true
+  sed -i '/sbbox up/d' /tmp/sbbox_up_cron.tmp 2>/dev/null || true
+  if [ -z "$noautoup" ]; then
+    # 每周日 4 点，随机延迟避免整点打爆 GitHub
+    echo "0 4 * * 0 sleep \$((RANDOM \\% 3600)); $SB_BINDIR/sbbox up >/dev/null 2>&1" >> /tmp/sbbox_up_cron.tmp
+  fi
+  crontab /tmp/sbbox_up_cron.tmp >/dev/null 2>&1
+  rm -f /tmp/sbbox_up_cron.tmp
+  [ -z "$noautoup" ] && info "已开启每周内核自动升级（关闭：noautoup=1 重装，或 crontab -e 删除该行）"
 }
 
 # 流控调优管理命令

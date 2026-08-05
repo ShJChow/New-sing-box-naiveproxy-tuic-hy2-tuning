@@ -81,6 +81,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/ma
 | `uuid` | 自动生成 | 自定义密码 / UUID |
 | `port_tu` / `port_hy2` / `port_nv` / `port_vl` | 随机 | 指定固定端口 |
 | `name` | 空 | 节点名称前缀 |
+| `noautoup` | 空 | 关闭每周内核自动升级（`noautoup=1`） |
 
 ---
 
@@ -158,9 +159,27 @@ hyup=200 hydown=1000 sbbox list
 | `sbbox sub off` | 关闭订阅服务 |
 | `sbbox cert status` | 查看证书有效期 |
 | `sbbox cert renew` | 续期证书并重启 |
-| `sbbox up` | 更新 sing-box 内核 |
+| `sbbox up` | 升级 sing-box 内核到官方最新正式版（失败自动回滚） |
 | `sbbox log [N]` | 查看最近 N 行日志（默认 20） |
 | `sbbox del` | 完全卸载 |
+
+---
+
+## 内核版本管理
+
+安装与 `sbbox up` 都从 **SagerNet 官方 release 拉取最新正式版**，
+仅在官方源不可达时才回退到镜像源（版本可能滞后，会有告警）。
+
+```bash
+sbbox up          # 升级到最新正式版；已是最新则直接跳过
+```
+
+升级流程带回滚保护：**备份旧内核 → 下载新版 → 用新内核校验现有配置 → 重启**，
+任一步失败自动还原旧内核并重启。新版本偶尔会收紧配置 schema
+（本项目就被 sing-box 1.12 的 DNS 格式变更打过），没有回滚会让所有节点掉线。
+
+默认启用**每周日自动升级**（含上述回滚保护，带随机延迟避免整点集中请求）。
+关闭方式：安装时加 `noautoup=1`，或 `crontab -e` 删掉含 `sbbox up` 的行。
 
 ---
 
