@@ -211,6 +211,11 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/ma
 >
 > 两套都在订阅里，客户端各取所需——**用不了的那套忽略即可**。
 > 完全不想要 Naiveproxy 可用 `sub_nonaive=1 sbbox list` 重新生成（两套一起剔除）。
+>
+> **sing-box 客户端也能用 Naiveproxy**：`~/sbbox/sbox_client.json` 已包含 naive 出站。
+> 前提是客户端的 `libcronet.so` 与 sing-box 二进制**放在同一目录**——官方 release
+> tarball 本来就一并提供，解压时别只取二进制。自行编译的精简内核若缺该库，
+> 会以 `cronet: library not found` 启动失败，此时删掉这条出站即可。
 
 ---
 

@@ -36,7 +36,7 @@ CERT_DIR="$SB_HOME/cert"
 SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
-SBBOX_VERSION="v1.3.0"
+SBBOX_VERSION="v1.4.0"
 SB_URL="https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -169,13 +169,18 @@ install_sb_official() {
          (command -v wget >/dev/null 2>&1 && wget -qO "$tgz" --tries=2 "$url" 2>/dev/null); }; then
     rm -rf "$tmp"; return 1
   fi
+  # 连同 libcronet.so 一起解压：naive **出站**（客户端方向）靠 dlopen 加载它，
+  # 缺库会以 "cronet: library not found" 启动失败。放在二进制同目录即可被找到。
   tar -xzf "$tgz" -C "$tmp" "sing-box-${ver}-linux-${cpu}/sing-box" 2>/dev/null || { rm -rf "$tmp"; return 1; }
+  tar -xzf "$tgz" -C "$tmp" "sing-box-${ver}-linux-${cpu}/libcronet.so" 2>/dev/null || true
   # 先落到临时文件校验可执行，再覆盖，避免下载损坏把可用内核冲掉
   if [ -s "$tmp/sing-box-${ver}-linux-${cpu}/sing-box" ]; then
     chmod +x "$tmp/sing-box-${ver}-linux-${cpu}/sing-box"
     if "$tmp/sing-box-${ver}-linux-${cpu}/sing-box" version >/dev/null 2>&1; then
       mv -f "$tmp/sing-box-${ver}-linux-${cpu}/sing-box" "$SB_BIN"
       chmod +x "$SB_BIN"
+      [ -s "$tmp/sing-box-${ver}-linux-${cpu}/libcronet.so" ] && \
+        mv -f "$tmp/sing-box-${ver}-linux-${cpu}/libcronet.so" "$SB_HOME/libcronet.so"
       rm -rf "$tmp"; return 0
     fi
   fi
@@ -1099,9 +1104,22 @@ gen_client_sbox() {
     tags+=("hysteria2")
   fi
 
-  # 不生成 naive 出站：sing-box 的 naive 出站依赖 Cronet 库，官方发行版未内置，
-  # 加进去会让整份客户端配置以 "cronet: library not found" 启动失败。
-  # 服务端 naive 入站不受影响（无此依赖），客户端请用官方 naiveproxy。
+  # naive 出站需要 libcronet.so 与 sing-box 二进制同目录（官方 tarball 已附带，
+  # 本脚本安装时会一并保留）。缺库时该出站会以 "cronet: library not found" 启动失败，
+  # 故客户端若用自行编译/精简版内核，需自行补上该库或删掉这条出站。
+  if [ -n "$nvp" ] && [ "$CERT_OK" = 1 ]; then
+    ob+=('{
+        "type": "naive",
+        "tag": "naive",
+        "server": "'"$add"'",
+        "server_port": '"$port_nv"',
+        "username": "'"$uuid"'",
+        "password": "'"$uuid"'",
+        "udp_over_tcp": true,
+        "tls": { "enabled": true, "insecure": false, "server_name": "'"$sni"'" }
+    }')
+    tags+=("naive")
+  fi
 
   if [ -n "$vlp" ]; then
     ob+=('{

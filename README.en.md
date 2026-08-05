@@ -138,6 +138,13 @@ Run `sbbox sub` any time to reprint the URL, `sbbox sub off` to stop serving it.
 > Both sets ship in the subscription — just ignore the set your client
 > cannot use. To drop Naiveproxy entirely (both sets), regenerate with
 > `sub_nonaive=1 sbbox list`.
+>
+> **A sing-box client can use Naiveproxy too**: `~/sbbox/sbox_client.json`
+> includes a naive outbound. It requires `libcronet.so` to sit in the same
+> directory as the sing-box binary — the official release tarball ships it
+> alongside, so do not extract the binary alone. A trimmed self-built kernel
+> without the library fails to start with `cronet: library not found`; drop
+> that outbound in that case.
 
 ---
 
