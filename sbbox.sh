@@ -1320,6 +1320,19 @@ EOF
 # 服务管理
 # ======================================================
 install_service() {
+  # 覆盖安装：先停掉在跑的旧实例，避免旧进程仍占着端口导致新实例起不来。
+  # unit 文件下面会整体重写，无需单独删除。
+  if pgrep -f "sing-box run -c $SB_CONF" >/dev/null 2>&1; then
+    info "检测到已运行的实例，停止后覆盖安装"
+    if [ "$SERVICE_TYPE" = "systemd" ] && [ "$IS_ROOT" = 1 ]; then
+      systemctl stop "$SB_SERVICE" >/dev/null 2>&1
+    elif [ "$SERVICE_TYPE" = "openrc" ] && [ "$IS_ROOT" = 1 ]; then
+      rc-service sing-box stop >/dev/null 2>&1
+    fi
+    kill -15 $(pgrep -f "sing-box run -c $SB_CONF" 2>/dev/null) >/dev/null 2>&1
+    sleep 1
+  fi
+
   if [ "$SERVICE_TYPE" = "systemd" ] && [ "$IS_ROOT" = 1 ]; then
     cat > /etc/systemd/system/${SB_SERVICE}.service <<EOF
 [Unit]
@@ -1519,7 +1532,8 @@ main() {
   chmod 700 "$SB_HOME" 2>/dev/null
   v4v6
   install_deps
-  [ -x "$SB_BIN" ] || upsingbox
+  # 重装即升级：upsingbox 内部会比对版本，已是最新则直接跳过，不会重复下载
+  upsingbox
   installsb
   save_state
 
@@ -1578,6 +1592,9 @@ install_cmd() {
 
 # 保存已启用协议与关键参数（供 list/status 恢复）
 save_state() {
+  # 先清空再按本次实际启用写入：重装若减少协议，旧标记必须消失，
+  # 否则 list 会生成服务端已不存在的节点链接
+  rm -f "$SB_HOME"/proto_tup "$SB_HOME"/proto_hyp "$SB_HOME"/proto_nvp "$SB_HOME"/proto_vlp 2>/dev/null
   [ -n "$tup" ] && touch "$SB_HOME/proto_tup"
   [ -n "$hyp" ] && touch "$SB_HOME/proto_hyp"
   [ -n "$nvp" ] && touch "$SB_HOME/proto_nvp"
