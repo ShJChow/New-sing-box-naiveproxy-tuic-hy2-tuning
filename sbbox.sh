@@ -1716,18 +1716,31 @@ cert_mgmt() {
 # 发现不通自动修复（重启服务 → 仍不通则重新生成配置再重启）
 # ======================================================
 port_listening() { # $1=port  $2=tcp|udp  → 0 监听中
-  local p=$1 proto=${2:-tcp}
+  local p=$1 proto=${2:-tcp} flag
+  # 必须显式给出短选项：拼接 "-${proto}ln" 会得到 -tcpln / -udpln，
+  # 被解析成组合短选项（-t -c -p -l -n）。ss 无 -c 选项会直接失败，
+  # 而 netstat 的 -c 是 continuous，会无限循环。
+  case "$proto" in
+    udp) flag="-uln" ;;
+    *)   flag="-tln" ;;
+  esac
   if command -v ss >/dev/null 2>&1; then
-    ss -"$proto"ln 2>/dev/null | grep -q ":${p}[[:space:]]"
+    ss "$flag" 2>/dev/null | grep -qE "[:.]${p}([[:space:]]|$)"
   elif command -v netstat >/dev/null 2>&1; then
-    netstat -"$proto"ln 2>/dev/null | grep -q ":${p}[[:space:]]"
-  else
-    # 无 ss/netstat 时退化为尝试 TCP 连接
+    netstat "$flag" 2>/dev/null | grep -qE "[:.]${p}([[:space:]]|$)"
+  elif [ "$proto" != udp ]; then
+    # 无 ss/netstat 时退化为尝试 TCP 连接（UDP 无法这样探测）
     timeout 2 bash -c "echo >/dev/tcp/127.0.0.1/$p" >/dev/null 2>&1
+  else
+    return 0   # 无工具且是 UDP，无法判定，不误报
   fi
 }
 
-tcp_reachable() { timeout 3 bash -c "echo >/dev/tcp/127.0.0.1/$1" >/dev/null 2>&1; }
+# 握手探测：入站监听 "::"，纯 IPv6 栈上 127.0.0.1 连不通，两个回环都试
+tcp_reachable() {
+  timeout 3 bash -c "echo >/dev/tcp/127.0.0.1/$1" >/dev/null 2>&1 && return 0
+  timeout 3 bash -c "echo >/dev/tcp/::1/$1" >/dev/null 2>&1
+}
 
 doctor() {
   detect_env
@@ -1766,7 +1779,7 @@ doctor() {
     fi
   }
 
-  [ "$tup" = yes ] && check_one Tuic "$port_tu" tcp
+  [ "$tup" = yes ] && check_one Tuic "$port_tu" udp
   [ "$hyp" = yes ] && check_one Hysteria2 "$port_hy2" udp
   [ "$nvp" = yes ] && check_one Naiveproxy "$port_nv" tcp
   [ "$vlp" = yes ] && check_one Reality "$port_vl" tcp
@@ -1792,7 +1805,7 @@ doctor() {
     sbrestart
     sleep 2
     # 重启后复查每个有问题的端口，仍未恢复则重新生成配置
-    for spec in "Tuic:$port_tu:tcp" "Hysteria2:$port_hy2:udp" "Naiveproxy:$port_nv:tcp" "Reality:$port_vl:tcp"; do
+    for spec in "Tuic:$port_tu:udp" "Hysteria2:$port_hy2:udp" "Naiveproxy:$port_nv:tcp" "Reality:$port_vl:tcp"; do
       name=${spec%%:*}; rest=${spec#*:}; p=${rest%%:*}; proto=${rest##*:}
       case "$name" in
         Tuic)       [ "$tup" = yes ] || continue ;;
