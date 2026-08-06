@@ -36,7 +36,7 @@ CERT_DIR="$SB_HOME/cert"
 SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
-SBBOX_VERSION="v1.4.0"
+SBBOX_VERSION="v1.5.0"
 SB_URL="https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -675,7 +675,7 @@ installsb() {
 {
     "log": {
         "disabled": false,
-        "level": "info",
+        "level": "warn",
         "timestamp": true,
         "output": "$SB_LOG"
     },
@@ -838,6 +838,12 @@ EOF
     exit 1
   fi
   info "配置校验通过"
+
+  # sb.json 含全部明文密码，证书私钥同理；仅属主可读
+  chmod 600 "$SB_CONF" 2>/dev/null
+  chmod 700 "$CERT_DIR" 2>/dev/null
+  chmod 600 "$CERT_DIR"/private.key "$CERT_DIR"/fullchain.cer 2>/dev/null
+  chmod 600 "$SB_HOME/uuid" "$SB_HOME/selfsigned.key" 2>/dev/null
 }
 
 # ======================================================
@@ -937,9 +943,21 @@ gen_sub() {
   [ -n "$sub" ] || return 0
   [ -s "$SB_LINK" ] || { warn "无节点可生成订阅"; return 0; }
 
-  # 订阅令牌：默认用 UUID，可用 subid= 自定义。URL 靠它保密，勿外泄
-  local token="${subid:-$uuid}"
+  # 订阅令牌：独立随机值，**不复用 uuid**。
+  # uuid 同时是各协议的连接密码，若拿它当令牌，订阅 URL（明文 HTTP）一旦泄露
+  # 就等同于泄露代理密码。已有安装沿用旧令牌，避免客户端订阅地址失效。
+  local token
+  if [ -n "$subid" ]; then
+    token="$subid"
+  elif [ -s "$SB_HOME/subtoken" ]; then
+    token=$(cat "$SB_HOME/subtoken")
+  else
+    token=$("$SB_BIN" generate rand --hex 16 2>/dev/null || openssl rand -hex 16 2>/dev/null)
+    [ -n "$token" ] || token=$(head -c32 /dev/urandom | od -An -tx1 | tr -d ' 
+')
+  fi
   echo "$token" > "$SB_HOME/subtoken"
+  chmod 600 "$SB_HOME/subtoken" 2>/dev/null
 
   # 订阅端口：默认随机高位端口，可用 subport= 固定
   if [ -z "$subport" ]; then
@@ -1157,7 +1175,7 @@ gen_client_sbox() {
 
   cat > "$json_file" <<EOF
 {
-    "log": { "level": "info", "timestamp": true },
+    "log": { "level": "warn", "timestamp": true },
     "dns": {
         "servers": [
             { "tag": "remote", "type": "https", "server": "1.1.1.1", "detour": "auto" },
@@ -1312,8 +1330,14 @@ Type=simple
 NoNewPrivileges=yes
 TimeoutStartSec=0
 ExecStart=$SB_BIN run -c $SB_CONF
-Restart=on-failure
+# always 而非 on-failure：进程以 exit 0 退出时也要拉起，长期运行不留缺口
+Restart=always
 RestartSec=5s
+# 句柄上限直接写进主 unit，不再依赖 tune 的 drop-in（用户可能执行过 tune off）
+LimitNOFILE=1048576
+# 优雅退出：先 SIGTERM 让 sing-box 收敛连接，超时再强杀
+KillSignal=SIGTERM
+TimeoutStopSec=10
 StandardOutput=journal
 StandardError=journal
 [Install]
@@ -1491,6 +1515,8 @@ main() {
   fi
 
   mkdir -p "$SB_HOME"
+  # 目录内含证书私钥、uuid（即各协议连接密码）与订阅令牌，收敛到仅属主可读
+  chmod 700 "$SB_HOME" 2>/dev/null
   v4v6
   install_deps
   [ -x "$SB_BIN" ] || upsingbox
@@ -1511,6 +1537,7 @@ main() {
   gen_client
 
   install_cmd
+  setup_logrotate
   setup_autoupdate
   info "安装完成！可直接使用 sbbox 管理命令"
   echo ""
@@ -1593,6 +1620,26 @@ cmd_update() {
     sbrestart
     return 1
   fi
+}
+
+# 日志轮转：sing-box 自身不做轮转，长期运行会把 sb.log 写到撑爆磁盘。
+# 交给系统 logrotate（Debian/Ubuntu 默认每日触发），无该组件时跳过。
+setup_logrotate() {
+  [ -d /etc/logrotate.d ] || { warn "无 logrotate，日志不会自动轮转（注意 $SB_LOG 增长）"; return 0; }
+  cat > /etc/logrotate.d/sbbox <<EOF 2>/dev/null || { warn "写入 logrotate 配置失败"; return 0; }
+$SB_LOG {
+    weekly
+    rotate 4
+    maxsize 10M
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    su root root
+}
+EOF
+  info "已配置日志轮转（周轮转 / 单文件上限 10M / 保留 4 份）"
 }
 
 # 每周自动升级内核（带上面的回滚保护）
