@@ -82,6 +82,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/ma
 | `port_tu` / `port_hy2` / `port_nv` / `port_vl` | 随机 | 指定固定端口 |
 | `name` | 空 | 节点名称前缀 |
 | `noautoup` | 空 | 关闭每周内核自动升级（`noautoup=1`） |
+| `tuicuos` | **1（默认开启）** | Tuic UDP over QUIC 流；退回原生 UDP 用 `tuicuos=0` |
 
 ---
 
@@ -95,6 +96,27 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/ma
 | Hysteria2 | **`obfs: salamander`（默认开启）**、`ignore_client_bandwidth: true`（客户端统一走 BBR）、`masquerade` 404 伪装 | 混淆抗协议识别；BBR 稳定公平，无需预知带宽 |
 | Naiveproxy | `tcp_fast_open: true`、`min_version: "1.3"`、强制真实证书 | TFO 省 1 个 RTT；仅 TLS 1.3 可用，杜绝降级 |
 | Reality | `tcp_fast_open: true`、TLS 1.3、uTLS chrome 指纹 | Vision 流控自带 splice 高性能路径 |
+
+### 客户端嗅探（默认开启）
+
+客户端路由首条为 `{"action": "sniff", "timeout": "300ms"}`。
+
+没有它，`geosite-cn` 直连规则**按域名匹配**，而以纯 IP 抵达的连接
+（TUN/透明代理常见）根本匹配不上——国内直连规则等于半失效。
+`inbound.sniff` 已在 sing-box 1.11+ 废弃，现统一用路由动作。
+
+### Tuic UDP 中继模式
+
+| 模式 | 配置 | 特点 |
+|---|---|---|
+| **UDP over QUIC 流**（默认） | `udp_over_stream: true` | 可靠有序，适合中继 QUIC 类流式流量 |
+| 原生 UDP | `tuicuos=0` → `udp_relay_mode: native` | 保留 UDP 语义，不保证可靠 |
+
+> ⚠️ 两者**互斥**，脚本只会生成其中之一（CI 已断言）。
+> sing-box 官方文档对 `udp_over_stream` 的原话是：该模式
+> **「在正常 UDP 代理场景下没有正面效果」**，只应用于中继流式 UDP 流量。
+> 对普通 UDP 会引入队头阻塞。若你的 UDP 以游戏、实时音视频为主，
+> 建议用 `tuicuos=0` 退回原生模式。
 
 ### 系统层：QUIC 相关调优（安装期自动生效）
 
