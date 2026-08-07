@@ -2,7 +2,7 @@
 
 [![validate](https://github.com/ShJChow/sing-box-naiveproxy/actions/workflows/validate.yml/badge.svg)](https://github.com/ShJChow/sing-box-naiveproxy/actions/workflows/validate.yml)
 
-基于 [`yonggekkk/argosbx`](https://github.com/yonggekkk/argosbx) 架构精简而成的 **sing-box 单内核**部署脚本，只保留五个协议：
+基于架构 **sing-box 单内核**部署脚本，只保留五个协议：
 
 | 协议 | 用途 | 传输 |
 |------|------|------|
