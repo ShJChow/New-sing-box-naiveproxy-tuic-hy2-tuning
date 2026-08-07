@@ -139,7 +139,7 @@ hyobfs=0 sbbox list             # 关闭混淆
 混淆 + Brutal 同时使用：
 
 ```bash
-hyup=200 hydown=1000 sbbox list
+hyup=600 hydown=600 sbbox list
 ```
 
 ---
