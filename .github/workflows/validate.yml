@@ -45,6 +45,8 @@ jobs:
             env: hyp=1 tup=1 hyup=200 hydown=1000
           - name: Hysteria2 关闭混淆
             env: hyp=1 hyobfs=0
+          - name: Tuic 原生 UDP
+            env: tup=1 tuicuos=0
     name: 配置校验 - ${{ matrix.name }}
     steps:
       - uses: actions/checkout@v4
@@ -139,6 +141,20 @@ jobs:
             jq -e '.outbounds[]|select(.type=="naive")' "$HOME/sbbox/sbox_client.json" >/dev/null               || { echo "启用 naive 时客户端配置应包含 naive 出站"; exit 1; }
             echo "OK: 客户端含 naive 出站并通过内核校验（libcronet 生效）"
           fi
+
+      - name: 断言客户端嗅探与 Tuic UDP 模式互斥
+        run: |
+          set -euo pipefail
+          CLIENT="$HOME/sbbox/sbox_client.json"
+          # 没有 sniff，按域名匹配的 geosite-cn 直连规则对纯 IP 连接会失效
+          jq -e '.route.rules[0].action=="sniff"' "$CLIENT" >/dev/null             || { echo "客户端路由首条应为 sniff 动作"; exit 1; }
+          if jq -e '.outbounds[]|select(.type=="tuic")' "$CLIENT" >/dev/null 2>&1; then
+            T=$(jq -c '.outbounds[]|select(.type=="tuic")' "$CLIENT")
+            echo "tuic 出站: $T"
+            # 官方文档：udp_over_stream 与 udp_relay_mode 互斥，不可并存
+            echo "$T" | jq -e '(has("udp_over_stream") and (has("udp_relay_mode")|not)) or (has("udp_relay_mode") and (has("udp_over_stream")|not))' >/dev/null               || { echo "udp_over_stream 与 udp_relay_mode 互斥，只能出现其一"; exit 1; }
+          fi
+          echo "OK: 嗅探已启用，Tuic UDP 模式互斥正确"
 
       - name: 校验 Clash/Mihomo YAML 与订阅
         run: |

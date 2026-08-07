@@ -36,7 +36,7 @@ CERT_DIR="$SB_HOME/cert"
 SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
-SBBOX_VERSION="v1.5.1"
+SBBOX_VERSION="v1.6.0"
 SB_URL="https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -65,6 +65,7 @@ hydown="${hydown:-}"                        # Hysteria2 下行 Mbps
 ippz="${ippz:-}"                            # 4 / 6 / 双栈
 name="${name:-}"
 noautoup="${noautoup:-}"                    # 关闭每周内核自动升级：noautoup=1
+tuicuos="${tuicuos:-1}"                     # Tuic UDP over QUIC 流，默认开；退回原生 UDP 用 tuicuos=0
 sub="${sub:-}"                              # 启用订阅服务：sub=1
 subport="${subport:-}"                      # 订阅端口（默认随机）
 subid="${subid:-}"                          # 订阅令牌（默认用 uuid）
@@ -1093,6 +1094,18 @@ cmd_sub() {
 gen_client_sbox() {
   local ob=() tags=() json_file="$SB_HOME/sbox_client.json"
 
+  # Tuic 的 UDP 中继二选一，官方文档标明两者互斥：
+  #   udp_relay_mode=native  原生 UDP，保留 UDP 语义、不保证可靠（默认）
+  #   udp_over_stream=true   把 UDP 封进 QUIC 流，可靠有序
+  # 文档原文：该模式「在正常 UDP 代理场景下没有正面效果，只应用于中继流式
+  # UDP 流量（基本上就是 QUIC 流）」。对 QUIC 类站点可能有益，对普通 UDP
+  # 会引入队头阻塞。默认按需开启，tuicuos=0 可退回 native。
+  local tuic_udp
+  case "$tuicuos" in
+    ""|0|no|off|false) tuic_udp='"udp_relay_mode": "native",' ;;
+    *)                 tuic_udp='"udp_over_stream": true,' ;;
+  esac
+
   if [ -n "$tup" ]; then
     ob+=('{
         "type": "tuic",
@@ -1102,7 +1115,7 @@ gen_client_sbox() {
         "uuid": "'"$uuid"'",
         "password": "'"$uuid"'",
         "congestion_control": "bbr",
-        "udp_relay_mode": "native",
+        '"$tuic_udp"'
         "zero_rtt_handshake": false,
         "heartbeat": "10s",
         "tls": { "enabled": true, "server_name": "'"$sni"'", "insecure": '"$msins"', "alpn": ["h3"] }
@@ -1203,6 +1216,10 @@ $sel,
         "auto_detect_interface": true,
         "default_domain_resolver": { "server": "local" },
         "rules": [
+            {
+                "action": "sniff",
+                "timeout": "300ms"
+            },
             { "rule_set": "geosite-cn", "outbound": "direct" }
         ],
         "rule_set": [
