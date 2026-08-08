@@ -908,10 +908,12 @@ gen_client() {
     #   naive+https:// / naive+quic://  —— v2rayN、NekoBox 等
     #   http2://       / http3://       —— Shadowrocket（认不出 naive+ 前缀）
     # 两套都放进订阅，各客户端各取所需。
-    nv1_link="naive+https://$uuid:$uuid@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1#${sxname}naive-h2-$hostname_s"
-    nv2_link="naive+quic://$uuid:$uuid@$add:$port_nv?congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1#${sxname}naive-h3-$hostname_s"
-    nv3_link="http2://$uuid:$uuid@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1#${sxname}naive-h2-rocket-$hostname_s"
-    nv4_link="http3://$uuid:$uuid@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1#${sxname}naive-h3-rocket-$hostname_s"
+    # UDP over TCP 默认关闭，v2rayN/Shadowrocket 导入后要手动开；链接参数直接带上
+    # udp-over-tcp=true 让其默认生效。H3(naive+quic/http3) 拥塞控制用 congestion_control=bbr。
+    nv1_link="naive+https://$uuid:$uuid@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&udp-over-tcp=true#${sxname}naive-h2-$hostname_s"
+    nv2_link="naive+quic://$uuid:$uuid@$add:$port_nv?congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&udp-over-tcp=true#${sxname}naive-h3-$hostname_s"
+    nv3_link="http2://$uuid:$uuid@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&udp-over-tcp=true#${sxname}naive-h2-rocket-$hostname_s"
+    nv4_link="http3://$uuid:$uuid@$add:$port_nv?congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&udp-over-tcp=true#${sxname}naive-h3-rocket-$hostname_s"
     for l in "$nv1_link" "$nv2_link" "$nv3_link" "$nv4_link"; do
       echo "$l" >> "$SB_LINK"
     done
@@ -1167,9 +1169,25 @@ gen_client_sbox() {
         "username": "'"$uuid"'",
         "password": "'"$uuid"'",
         "udp_over_tcp": true,
+        "quic_congestion_control": "bbr",
         "tls": { "enabled": true, "insecure": false, "server_name": "'"$sni"'" }
     }')
     tags+=("naive")
+    # 独立 H3(QUIC) 出站：H2 走 TCP，H3 走 QUIC，两个传输不可共用同一出站。
+    # quic_congestion_control 默认即 bbr（QUICHE/Chromium 默认），此处显式写出。
+    ob+=('{
+        "type": "naive",
+        "tag": "naive-h3",
+        "server": "'"$add"'",
+        "server_port": '"$port_nv"',
+        "username": "'"$uuid"'",
+        "password": "'"$uuid"'",
+        "udp_over_tcp": true,
+        "quic": true,
+        "quic_congestion_control": "bbr",
+        "tls": { "enabled": true, "insecure": false, "server_name": "'"$sni"'" }
+    }')
+    tags+=("naive-h3")
   fi
 
   if [ -n "$vlp" ]; then

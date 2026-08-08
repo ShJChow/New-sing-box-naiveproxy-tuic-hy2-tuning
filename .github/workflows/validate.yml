@@ -136,13 +136,18 @@ jobs:
           (cd /usr/local/bin && ./sing-box check -c "$CLIENT")
           echo "OK: 客户端配置通过真实内核校验"
 
-      - name: 断言启用 naive 时客户端生成 naive 出站
+      - name: 断言 naive H2/H3 出站开启 UDP-over-TCP 与拥塞控制
         run: |
           set -euo pipefail
-          if echo '${{ matrix.env }}' | grep -q 'nvp=1'; then
-            jq -e '.outbounds[]|select(.type=="naive")' "$HOME/sbbox/sbox_client.json" >/dev/null               || { echo "启用 naive 时客户端配置应包含 naive 出站"; exit 1; }
-            echo "OK: 客户端含 naive 出站并通过内核校验（libcronet 生效）"
-          fi
+          if ! echo '${{ matrix.env }}' | grep -q 'nvp=1'; then exit 0; fi
+          CLIENT="$HOME/sbbox/sbox_client.json"
+          # H2 出站 + H3(QUIC) 出站都要在，且都开启 udp_over_tcp 与拥塞控制
+          jq -e '.outbounds[]|select(.tag=="naive")|.udp_over_tcp==true' "$CLIENT" >/dev/null             || { echo "naive H2 出站应开 udp_over_tcp"; exit 1; }
+          jq -e '.outbounds[]|select(.tag=="naive-h3")|.quic==true and .quic_congestion_control=="bbr" and .udp_over_tcp==true' "$CLIENT" >/dev/null             || { echo "naive H3 出站应 quic=true + cc=bbr + udp_over_tcp"; exit 1; }
+          echo "OK: naive H2/H3 出站 UDP-over-TCP 与拥塞控制均开启"
+          # 分享链接同样要带参数（v2rayN 导入即生效）
+          grep -c 'udp-over-tcp=true' "$HOME/sbbox/nodes.txt" | grep -qx '4'             || { echo "4 条 naive 链接都应带 udp-over-tcp=true"; exit 1; }
+          echo "OK: 分享链接已带 udp-over-tcp 与拥塞控制参数"
 
       - name: 断言 Tuic TLS 加固（utls + 公钥固定）
         run: |
