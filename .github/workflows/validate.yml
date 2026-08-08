@@ -47,6 +47,8 @@ jobs:
             env: hyp=1 hyobfs=0
           - name: Tuic 原生 UDP
             env: tup=1 tuicuos=0
+          - name: Tuic 关闭 TLS 加固
+            env: tup=1 alns=1 tuils=0
     name: 配置校验 - ${{ matrix.name }}
     steps:
       - uses: actions/checkout@v4
@@ -141,6 +143,21 @@ jobs:
             jq -e '.outbounds[]|select(.type=="naive")' "$HOME/sbbox/sbox_client.json" >/dev/null               || { echo "启用 naive 时客户端配置应包含 naive 出站"; exit 1; }
             echo "OK: 客户端含 naive 出站并通过内核校验（libcronet 生效）"
           fi
+
+      - name: 断言 Tuic TLS 加固（utls + 公钥固定）
+        run: |
+          set -euo pipefail
+          if ! echo '${{ matrix.env }}' | grep -q 'tup=1'; then exit 0; fi
+          CLIENT="$HOME/sbbox/sbox_client.json"
+          T=$(jq -c '.outbounds[]|select(.type=="tuic")' "$CLIENT")
+          if echo '${{ matrix.env }}' | grep -q 'tuils=0'; then
+            echo "$T" | jq -e '.tls.utls==null and (.tls.certificate_public_key_sha256==null)' >/dev/null               || { echo "tuils=0 应移除 utls 与公钥固定"; exit 1; }
+          else
+            # 有真实证书时（alns=1 且 CI 预置了证书）应生成 chrome 指纹 + 非空公钥固定
+            echo "$T" | jq -e '.tls.utls.fingerprint=="chrome"' >/dev/null               || { echo "默认应启用 uTLS chrome 指纹"; exit 1; }
+            echo "$T" | jq -e '.tls.certificate_public_key_sha256 | length>0' >/dev/null               || { echo "有真实证书时默认应固定证书公钥 SHA-256"; exit 1; }
+          fi
+          echo "OK: Tuic TLS 加固符合预期"
 
       - name: 断言客户端嗅探与 Tuic UDP 模式互斥
         run: |

@@ -36,7 +36,7 @@ CERT_DIR="$SB_HOME/cert"
 SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
-SBBOX_VERSION="v1.6.0"
+SBBOX_VERSION="v1.6.1"
 SB_URL="https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -66,6 +66,7 @@ ippz="${ippz:-}"                            # 4 / 6 / 双栈
 name="${name:-}"
 noautoup="${noautoup:-}"                    # 关闭每周内核自动升级：noautoup=1
 tuicuos="${tuicuos:-1}"                     # Tuic UDP over QUIC 流，默认开；退回原生 UDP 用 tuicuos=0
+tuils="${tuils:-1}"                         # Tuic TLS 加固（uTLS 指纹 + 证书公钥 SHA-256 固定），关闭用 tuils=0
 sub="${sub:-}"                              # 启用订阅服务：sub=1
 subport="${subport:-}"                      # 订阅端口（默认随机）
 subid="${subid:-}"                          # 订阅令牌（默认用 uuid）
@@ -1106,6 +1107,25 @@ gen_client_sbox() {
     *)                 tuic_udp='"udp_over_stream": true,' ;;
   esac
 
+  # Tuic TLS 加固：uTLS 指纹 + 证书公钥 SHA-256 固定（防中间人）
+  #   utls.fingerprint 只对 TCP 的 ClientHello 生效；QUIC 的 TLS 握手由
+  #   quic-go 内部完成，uTLS 通常不接管——对 Tuic 更多是防御纵深。
+  #   certificate_public_key_sha256 是证书验证层，QUIC 同样适用，价值更大。
+  #   tuils=0 可整体关闭；公钥固定仅在持有真实证书（CERT_OK=1）时生成，
+  #   且需要 sing-box >= 1.13.0。
+  local tuic_tls_extra sb64
+  tuic_tls_extra=""
+  case "$tuils" in
+    ""|0|no|off|false) : ;;
+    *)
+      tuic_tls_extra=', "utls": { "enabled": true, "fingerprint": "chrome" }'
+      if [ "$CERT_OK" = 1 ] && [ -s "$CERT_DIR/fullchain.cer" ]; then
+        sb64=$(openssl x509 -in "$CERT_DIR/fullchain.cer" -pubkey -noout 2>/dev/null               | openssl pkey -pubin -outform DER 2>/dev/null               | openssl dgst -sha256 -binary 2>/dev/null               | openssl base64 2>/dev/null)
+        [ -n "$sb64" ] && tuic_tls_extra="$tuic_tls_extra, \"certificate_public_key_sha256\": [\"$sb64\"]"
+      fi
+      ;;
+  esac
+
   if [ -n "$tup" ]; then
     ob+=('{
         "type": "tuic",
@@ -1118,7 +1138,7 @@ gen_client_sbox() {
         '"$tuic_udp"'
         "zero_rtt_handshake": false,
         "heartbeat": "10s",
-        "tls": { "enabled": true, "server_name": "'"$sni"'", "insecure": '"$msins"', "alpn": ["h3"] }
+        "tls": { "enabled": true, "server_name": "'"$sni"'", "insecure": '"$msins"', "alpn": ["h3"]'"$tuic_tls_extra"' }
     }')
     tags+=("tuic")
   fi
