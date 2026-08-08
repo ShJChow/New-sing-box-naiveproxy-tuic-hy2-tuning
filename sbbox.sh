@@ -67,6 +67,8 @@ name="${name:-}"
 noautoup="${noautoup:-}"                    # 关闭每周内核自动升级：noautoup=1
 tuicuos="${tuicuos:-1}"                     # Tuic UDP over QUIC 流，默认开；退回原生 UDP 用 tuicuos=0
 tuils="${tuils:-1}"                         # Tuic TLS 加固（uTLS 指纹 + 证书公钥 SHA-256 固定），关闭用 tuils=0
+tuech="${tuech:-}"                          # Tuic ECH：tuech=1 且 tuech_config=<base64> 时启用（需服务端支持）
+tuech_config="${tuech_config:-}"            # ECH config list（base64）
 sub="${sub:-}"                              # 启用订阅服务：sub=1
 subport="${subport:-}"                      # 订阅端口（默认随机）
 subid="${subid:-}"                          # 订阅令牌（默认用 uuid）
@@ -851,6 +853,12 @@ EOF
 # ======================================================
 # 客户端节点链接生成 + 聚合订阅
 # ======================================================
+# 证书 SHA-256 指纹（hex，无冒号）——v2rayN 固定证书/naive 用
+_cert_fp() {
+  [ "$CERT_OK" = 1 ] && [ -s "$CERT_DIR/fullchain.cer" ] || return 0
+  openssl x509 -in "$CERT_DIR/fullchain.cer" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d ':'
+}
+
 gen_client() {
   # add：有真实证书用域名（TLS 校验通过），否则用 IP
   if [ "$CERT_OK" = 1 ] && [ -n "$ym" ]; then add="$ym"; else add="$server_ip"; fi
@@ -874,7 +882,17 @@ gen_client() {
   : > "$SB_LINK"
 
   if [ -n "$tup" ]; then
-    tuic_link="tuic://$uuid:$uuid@$add:$port_tu?congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=$sni&insecure=$jhins&allowInsecure=$jhins&allow_insecure=$jhins#${sxname}tuic-$hostname_s"
+    # v2rayN 通用 URL 参数：fp=Fingerprint、pcs=固定证书(SHA-256 指纹)、ech=ECH config list。
+    # 指纹从真实证书算出，导入后「固定证书」字段显示已设置。
+    # ECH 默认不加：Encrypted ClientHello 需要服务端(CDN)配置 ECH keys，直连 VPS 没有，
+    # 填了反而会导致握手失败。确有必要时用 tuech=1 tuech_config=<base64> 自定义。
+    local tuic_fp="" tuic_ech=""
+    [ "$CERT_OK" = 1 ] && tuic_fp="&fp=chrome&pcs=$(_cert_fp)"
+    case "$tuech" in
+      1|on|yes|true) [ -n "$tuech_config" ] && tuic_ech="&ech=$(printf %s "$tuech_config" | base64 | tr -d '
+')" ;;
+    esac
+    tuic_link="tuic://$uuid:$uuid@$add:$port_tu?congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=$sni&insecure=$jhins&allowInsecure=$jhins&allow_insecure=$jhins$tuic_fp$tuic_ech#${sxname}tuic-$hostname_s"
     echo "$tuic_link" >> "$SB_LINK"
     echo "💣【 Tuic 】节点信息如下："
     echo "$tuic_link"; echo

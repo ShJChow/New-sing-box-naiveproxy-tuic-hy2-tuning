@@ -180,6 +180,18 @@ jobs:
           fi
           echo "OK: 嗅探已启用，Tuic UDP 模式互斥正确"
 
+      - name: 断言 Tuic 分享链接带 Fingerprint 与证书固定
+        run: |
+          set -euo pipefail
+          if ! echo '${{ matrix.env }}' | grep -q 'tup=1'; then exit 0; fi
+          LINK=$(grep '^tuic://' "$HOME/sbbox/nodes.txt" | head -1)
+          # 指纹参数：fp=chrome + 64 位 hex pcs（真实证书场景 alns=1 才有）
+          echo "$LINK" | grep -q 'fp=chrome' || { echo "tuic 链接应带 fp=chrome"; exit 1; }
+          if echo '${{ matrix.env }}' | grep -q 'alns=1'; then
+            echo "$LINK" | grep -qE 'pcs=[0-9a-fA-F]{64}' || { echo "有证书时 tuic 链接应带 pcs 指纹"; exit 1; }
+          fi
+          echo "OK: Tuic 链接已带 Fingerprint 与证书固定"
+
       - name: 校验 Clash/Mihomo YAML 与订阅
         run: |
           set -euo pipefail
