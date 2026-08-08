@@ -908,12 +908,23 @@ gen_client() {
     #   naive+https:// / naive+quic://  —— v2rayN、NekoBox 等
     #   http2://       / http3://       —— Shadowrocket（认不出 naive+ 前缀）
     # 两套都放进订阅，各客户端各取所需。
-    # UDP over TCP 默认关闭，v2rayN/Shadowrocket 导入后要手动开；链接参数直接带上
-    # udp-over-tcp=true 让其默认生效。H3(naive+quic/http3) 拥塞控制用 congestion_control=bbr。
-    nv1_link="naive+https://$uuid:$uuid@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&udp-over-tcp=true#${sxname}naive-h2-$hostname_s"
-    nv2_link="naive+quic://$uuid:$uuid@$add:$port_nv?congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&udp-over-tcp=true#${sxname}naive-h3-$hostname_s"
-    nv3_link="http2://$uuid:$uuid@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&udp-over-tcp=true#${sxname}naive-h2-rocket-$hostname_s"
-    nv4_link="http3://$uuid:$uuid@$add:$port_nv?congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&udp-over-tcp=true#${sxname}naive-h3-rocket-$hostname_s"
+    # UDP over TCP 默认关闭，链接直接带 udp-over-tcp=true 让能解析的客户端默认开启。
+    # 注意：v2rayN 的 naive 节点**不解析**该 URL 参数（源码里 Uot 仅 UI 手动开关），
+    # 因此 v2rayN 里仍需在节点属性手动勾选一次 UDP over TCP；sing-box 客户端则确定开启。
+    # H3(naive+quic/http3) 拥塞控制用 congestion_control=bbr（H3 默认本就是 bbr）。
+    #
+    # 固定证书：v2rayN 解析 pcs= 参数填充节点「固定证书」字段（CertSha，证书 SHA-256 指纹）。
+    # 不加的话导入后显示「证书未设置」。有真实证书时算指纹带上。
+    local nv_pcs=""
+    if [ "$CERT_OK" = 1 ] && [ -s "$CERT_DIR/fullchain.cer" ]; then
+      local _fp
+      _fp=$(openssl x509 -in "$CERT_DIR/fullchain.cer" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d ':')
+      [ -n "$_fp" ] && nv_pcs="&pcs=$_fp"
+    fi
+    nv1_link="naive+https://$uuid:$uuid@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&udp-over-tcp=true$nv_pcs#${sxname}naive-h2-$hostname_s"
+    nv2_link="naive+quic://$uuid:$uuid@$add:$port_nv?congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&udp-over-tcp=true$nv_pcs#${sxname}naive-h3-$hostname_s"
+    nv3_link="http2://$uuid:$uuid@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&udp-over-tcp=true$nv_pcs#${sxname}naive-h2-rocket-$hostname_s"
+    nv4_link="http3://$uuid:$uuid@$add:$port_nv?congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&udp-over-tcp=true$nv_pcs#${sxname}naive-h3-rocket-$hostname_s"
     for l in "$nv1_link" "$nv2_link" "$nv3_link" "$nv4_link"; do
       echo "$l" >> "$SB_LINK"
     done

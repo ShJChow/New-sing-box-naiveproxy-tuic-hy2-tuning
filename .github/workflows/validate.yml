@@ -147,7 +147,9 @@ jobs:
           echo "OK: naive H2/H3 出站 UDP-over-TCP 与拥塞控制均开启"
           # 分享链接同样要带参数（v2rayN 导入即生效）
           grep -c 'udp-over-tcp=true' "$HOME/sbbox/nodes.txt" | grep -qx '4'             || { echo "4 条 naive 链接都应带 udp-over-tcp=true"; exit 1; }
-          echo "OK: 分享链接已带 udp-over-tcp 与拥塞控制参数"
+          # 固定证书：pcs= 应为 64 位 hex 指纹，且与证书一致（naive 仅真实证书场景生成）
+          grep -c 'pcs=[0-9a-fA-F]\{64\}' "$HOME/sbbox/nodes.txt" | grep -qx '4'             || { echo "4 条 naive 链接都应带证书 SHA-256 指纹 pcs="; exit 1; }
+          echo "OK: 分享链接已带 udp-over-tcp、拥塞控制与证书指纹参数"
 
       - name: 断言 Tuic TLS 加固（utls + 公钥固定）
         run: |
