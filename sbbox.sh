@@ -36,7 +36,7 @@ CERT_DIR="$SB_HOME/cert"
 SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
-SBBOX_VERSION="v1.6.2"
+SBBOX_VERSION="v1.7.0"
 SB_URL="https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -65,6 +65,7 @@ hydown="${hydown:-}"                        # Hysteria2 下行 Mbps
 ippz="${ippz:-}"                            # 4 / 6 / 双栈
 name="${name:-}"
 noautoup="${noautoup:-}"                    # 关闭每周内核自动升级：noautoup=1
+sbrel="${sbrel:-}"                          # 内核版本通道：sbrel=pre 跟踪 pre-release；默认跟踪正式版
 tuicuos="${tuicuos:-1}"                     # Tuic UDP over QUIC 流，默认开；退回原生 UDP 用 tuicuos=0
 tuils="${tuils:-1}"                         # Tuic TLS 加固（uTLS 指纹 + 证书公钥 SHA-256 固定），关闭用 tuils=0
 tuech="${tuech:-}"                          # Tuic ECH：tuech=1 且 tuech_config=<base64> 时启用（需服务端支持）
@@ -127,6 +128,7 @@ showmode() {
   echo "  ym_vl_re=域名  Reality 回落目标域名（默认 apple.com）"
   echo "  hyjpt=20000:30000  Hysteria2 跳跃端口"
   echo "  sub=1    启用 v2rayN 订阅服务（subport=端口 subid=令牌 可选）"
+  echo "  sbrel=pre  内核跟踪 pre-release 通道（默认跟踪正式版）"
   echo "  uuid=自定义密码"
   echo "==========================================================="
 }
@@ -148,9 +150,16 @@ install_deps() {
 }
 
 # ---------- sing-box 内核下载/更新 ----------
-# 查询 SagerNet 官方最新正式版版本号（去掉 tag 的 v 前缀）
+# 查询 sing-box 最新版本号（去掉 tag 的 v 前缀）。
+# sbrel=pre 时跟踪 pre-release（含正式版），默认只跟踪正式版。
 latest_sb_version() {
-  local api="https://api.github.com/repos/SagerNet/sing-box/releases/latest"
+  local api
+  if [ "$sbrel" = "pre" ]; then
+    # 列表 API 包含 pre-release；按发布时间倒序，取第一条（最新的）
+    api="https://api.github.com/repos/SagerNet/sing-box/releases?per_page=5"
+  else
+    api="https://api.github.com/repos/SagerNet/sing-box/releases/latest"
+  fi
   { (command -v curl >/dev/null 2>&1 && curl -fsSL --retry 2 "$api" 2>/dev/null) || \
     (command -v wget >/dev/null 2>&1 && wget -qO- --tries=2 "$api" 2>/dev/null); } \
     | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
@@ -204,10 +213,18 @@ upsingbox() {
     fi
   else
     if [ -n "$cur" ] && [ "$cur" = "$latest" ]; then
-      info "sing-box 已是最新正式版：$cur"
+      if [ "$sbrel" = "pre" ]; then
+        info "sing-box 已是最新 pre-release 通道版本：$cur"
+      else
+        info "sing-box 已是最新正式版：$cur"
+      fi
       return 0
     fi
-    info "下载 sing-box 官方正式版 ${latest} (linux-$cpu)……"
+    if [ "$sbrel" = "pre" ]; then
+        info "下载 sing-box pre-release 通道 ${latest} (linux-$cpu)……"
+      else
+        info "下载 sing-box 官方正式版 ${latest} (linux-$cpu)……"
+      fi
     if install_sb_official "$latest"; then
       info "sing-box 内核：${cur:-无} → $(sb_installed_version)"
       return 0
@@ -1685,12 +1702,15 @@ save_state() {
   [ -n "$vlp" ] && touch "$SB_HOME/proto_vlp"
   echo "$ym" > "$SB_HOME/ym"
   [ -n "$hyjpt" ] && echo "$hyjpt" > "$SB_HOME/hyjpt"
+  [ -n "$sbrel" ] && echo "$sbrel" > "$SB_HOME/sbrel"
 }
 
 # 内核升级：备份 → 升级 → 用新内核校验配置 → 重启；任一步失败即回滚旧内核。
 # 新版本偶尔会收紧配置 schema（本项目就被 1.12 的 DNS 格式变更打过），
 # 没有回滚的话一次自动升级就能让所有节点掉线。
 cmd_update() {
+  # 从持久化状态恢复 sbrel，保证 cron 自动升级也遵守首装时选择的通道
+  [ -z "$sbrel" ] && [ -f "$SB_HOME/sbrel" ] && sbrel=$(cat "$SB_HOME/sbrel")
   local bak="$SB_HOME/sing-box.bak" before after
   before=$(sb_installed_version)
   [ -x "$SB_BIN" ] && cp -f "$SB_BIN" "$bak" 2>/dev/null
@@ -1935,6 +1955,7 @@ load_state() {
   [ -f "$SB_HOME/rk/short_id" ] && short_id_s=$(cat "$SB_HOME/rk/short_id")
   [ -f "$SB_HOME/rk/private_key" ] && private_key_s=$(cat "$SB_HOME/rk/private_key")
   [ -f "$SB_HOME/hyjpt" ] && hyjpt=$(cat "$SB_HOME/hyjpt")
+  [ -f "$SB_HOME/sbrel" ] && sbrel=$(cat "$SB_HOME/sbrel")
   # 订阅曾启用过就保持启用，令牌/端口沿用，避免 list 后订阅地址变化
   if [ -f "$SB_HOME/subtoken" ]; then
     sub=1

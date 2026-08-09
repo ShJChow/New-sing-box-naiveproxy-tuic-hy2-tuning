@@ -80,6 +80,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/ma
 | `sub_nonaive` | empty | drop Naiveproxy nodes (use `sub_nonaive=1` if your client cannot parse `naive+` links) |
 | `uuid` | auto-generated | custom password / UUID |
 | `port_tu` / `port_hy2` / `port_nv` / `port_vl` | random | pin a fixed port |
+| `sbrel` | empty | kernel release channel: `sbrel=pre` tracks pre-releases (default: stable only) |
 | `name` | empty | node name prefix |
 
 ---

@@ -82,6 +82,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/ma
 | `port_tu` / `port_hy2` / `port_nv` / `port_vl` | 随机 | 指定固定端口 |
 | `name` | 空 | 节点名称前缀 |
 | `noautoup` | 空 | 关闭每周内核自动升级（`noautoup=1`） |
+| `sbrel` | 空 | 内核版本通道：`sbrel=pre` 跟踪 pre-release（默认只跟踪正式版） |
 | `tuicuos` | **1（默认开启）** | Tuic UDP over QUIC 流；退回原生 UDP 用 `tuicuos=0` |
 
 ---
@@ -192,8 +193,13 @@ hyup=600 hydown=600 sbbox list
 安装与 `sbbox up` 都从 **SagerNet 官方 release 拉取最新正式版**，
 仅在官方源不可达时才回退到镜像源（版本可能滞后，会有告警）。
 
+预发布版本通道（`sbrel=pre`）会在每次 `sbbox up` 或每周自动升级时
+获取最新的 pre-release（含 beta/rc），适合需要尝鲜新特性的用户：
+
 ```bash
-sbbox up          # 升级到最新正式版；已是最新则直接跳过
+sbbox up                      # 升级到最新正式版；已是最新则直接跳过
+sbrel=pre sbbox up            # 临时切到 pre-release 通道升级一次
+sbrel=pre bash sbbox.sh list  # 安装时指定，之后自动记住该通道
 ```
 
 升级流程带回滚保护：**备份旧内核 → 下载新版 → 用新内核校验现有配置 → 重启**，
