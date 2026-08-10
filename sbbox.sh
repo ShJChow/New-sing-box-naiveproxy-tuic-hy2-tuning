@@ -36,7 +36,8 @@ CERT_DIR="$SB_HOME/cert"
 SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
-SBBOX_VERSION="v1.7.1"
+SB_SEC_DIR="$SB_HOME/sec"
+SBBOX_VERSION="v1.8.0"
 SB_URL="https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -53,13 +54,16 @@ error() { echo -e "${RED}[-]${NC} $*"; }
 
 # ---------- 环境变量默认值 ----------
 uuid="${uuid:-}"
-ym_vl_re="${ym_vl_re:-apple.com}"          # Reality 回落目标域名
+ym_vl_re="${ym_vl_re:-www.apple.com}"      # Reality 回落目标域名（须支持 TLS1.3+H2 且非自家 CDN）
 ym="${ym:-}"                                # acme 证书域名（启用 alns 时必需）
 alns="${alns:-}"                            # 申请 acme 证书：alns=1
 tup="${tup:-}" hyp="${hyp:-}" nvp="${nvp:-}" vlp="${vlp:-}"
 hyjpt="${hyjpt:-}"                          # Hysteria2 跳跃端口，如 "20000:30000"
 hyobfs="${hyobfs:-1}"                       # Hysteria2 salamander 混淆，默认开启；关闭用 hyobfs=0
-hyobfs_pw="${hyobfs_pw:-}"                  # 混淆密码（默认用 uuid）
+hyobfs_pw="${hyobfs_pw:-}"                  # 混淆密码（默认独立随机值）
+hymask="${hymask:-https://www.bing.com}"    # Hysteria2 伪装：反代真实站点；静态 404 用 hymask=none
+sblevel="${sblevel:-error}"                 # 服务端日志级别：error（默认，少留痕）/ warn / info / off
+blkport="${blkport:-1}"                     # 阻断出站邮件/SMB 端口（防凭据外泄后被拿去发垃圾邮件），关闭用 blkport=0
 hyup="${hyup:-}"                            # Hysteria2 上行 Mbps（与 hydown 同时设置才启用 Brutal CC）
 hydown="${hydown:-}"                        # Hysteria2 下行 Mbps
 ippz="${ippz:-}"                            # 4 / 6 / 双栈
@@ -129,11 +133,14 @@ showmode() {
   echo "环境变量（安装期）：tup=1 hyp=1 nvp=1 vlp=1"
   echo "  alns=1   启用 acme 证书（需 ym=你的域名）"
   echo "  ym=域名  acme 证书域名（Hysteria2/Tuic/Naive 使用）"
-  echo "  ym_vl_re=域名  Reality 回落目标域名（默认 apple.com）"
+  echo "  ym_vl_re=域名  Reality 回落目标域名（默认 www.apple.com）"
   echo "  hyjpt=20000:30000  Hysteria2 跳跃端口"
   echo "  sub=1    启用 v2rayN 订阅服务（subport=端口 subid=令牌 可选）"
   echo "  sbrel=stable  内核只跟踪正式版（默认 pre，跟踪 beta/rc）"
-  echo "  uuid=自定义密码"
+  echo "  uuid=自定义 UUID（VLESS/Tuic 用；各协议密码独立随机，不再复用）"
+  echo "  hymask=URL  Hysteria2 伪装反代目标（默认 https://www.bing.com，none=静态 404）"
+  echo "  sblevel=error|warn|info|off  服务端日志级别（默认 error）"
+  echo "轮换全部密码：sbbox rotate（各协议独立新密钥，需重新导入客户端）"
   echo "==========================================================="
 }
 
@@ -259,13 +266,50 @@ insuuid() {
     echo "$uuid" > "$SB_HOME/uuid"
   fi
   uuid=$(cat "$SB_HOME/uuid")
-  info "UUID/密码：$uuid"
+  info "UUID：$uuid"
+}
+
+# ---------- 每协议独立密钥 ----------
+# v1.8.0 起，Tuic/Hysteria2/Naive 的密码与 obfs 密码不再复用 uuid：
+# 复用意味着任一节点链接（或订阅 URL）泄露即等于交出全部协议的凭据，
+# 且 obfs 密码等于认证密码时，抓到一个就能同时通过混淆层与认证层。
+# 每个密钥独立随机 32 hex（128 bit），单独落盘、单独轮换。
+gen_secret() {
+  "$SB_BIN" generate rand --hex 16 2>/dev/null || \
+    openssl rand -hex 16 2>/dev/null || \
+    head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n'
+}
+
+load_secrets() {
+  mkdir -p "$SB_SEC_DIR" 2>/dev/null
+  chmod 700 "$SB_SEC_DIR" 2>/dev/null
+  # 平滑升级：老版本（<=v1.7.1）装好的机器所有协议共用 uuid。
+  # 此时若直接生成新密钥，用户现网客户端会在一次 `sbbox up` 后全部掉线且毫无提示，
+  # 故沿用 uuid 保持兼容，只提示可用 `sbbox rotate` 主动升级到独立密钥。
+  local legacy=0
+  if [ -s "$SB_CONF" ] && [ ! -s "$SB_SEC_DIR/tuic_pw" ] && [ -z "$SBBOX_ROTATE" ]; then legacy=1; fi
+  _load_sec() { # $1=文件名
+    local f="$SB_SEC_DIR/$1"
+    if [ ! -s "$f" ]; then
+      if [ "$legacy" = 1 ]; then printf '%s\n' "$uuid" > "$f"; else gen_secret > "$f"; fi
+    fi
+    chmod 600 "$f" 2>/dev/null
+    cat "$f"
+  }
+  pw_tu=$(_load_sec tuic_pw)
+  pw_hy=$(_load_sec hy2_pw)
+  nv_user=$(_load_sec naive_user)
+  nv_pw=$(_load_sec naive_pw)
+  if [ "$legacy" = 1 ]; then
+    warn "检测到旧版共用密码的安装，已沿用以免现网客户端掉线"
+    warn "建议执行 sbbox rotate 换成各协议独立密钥（之后需重新导入订阅）"
+  fi
 }
 
 # ---------- Reality 密钥生成 ----------
 gen_reality_keys() {
   if [ -n "$vlp" ]; then
-    if [ -z "$ym_vl_re" ]; then ym_vl_re=apple.com; fi
+    if [ -z "$ym_vl_re" ]; then ym_vl_re=www.apple.com; fi
     echo "$ym_vl_re" > "$SB_HOME/ym_vl_re"
     mkdir -p "$SB_HOME/rk"
     if [ ! -e "$SB_HOME/rk/private_key" ]; then
@@ -486,8 +530,10 @@ apply_tuning() {
   try_sysctl net.ipv4.tcp_mem "$(( MEM_PAGES * 6 / 100 )) $(( MEM_PAGES * 8 / 100 )) $(( MEM_PAGES * 12 / 100 ))"
   # QUIC / HTTP3：Hysteria2 / Tuic 关键
   try_sysctl net.core.optmem_max 65536
-  try_sysctl net.ipv4.udp_rmem_min 8192
-  try_sysctl net.ipv4.udp_wmem_min 8192
+  # UDP 每 socket 的保底缓冲。QUIC 单连接吞吐大、突发强，8K 保底在丢包重排时
+  # 容易触发 receive buffer 溢出（quic-go 计入 "dropped packets"），抬到 16K。
+  try_sysctl net.ipv4.udp_rmem_min 16384
+  try_sysctl net.ipv4.udp_wmem_min 16384
 
   # ---------- 队列与并发 ----------
   try_sysctl net.core.netdev_max_backlog "$NETDEV_BACKLOG"
@@ -509,6 +555,9 @@ apply_tuning() {
   try_sysctl net.ipv4.tcp_fastopen 3
   try_sysctl net.ipv4.tcp_mtu_probing 1
   try_sysctl net.ipv4.tcp_slow_start_after_idle 0
+  # 不缓存上条连接的 cwnd/ssthresh：跨境链路抖动大，缓存下来的坏指标会让
+  # 后续新连接一开始就被压在低速率上
+  try_sysctl net.ipv4.tcp_no_metrics_save 1
   try_sysctl net.ipv4.tcp_notsent_lowat 16384
   try_sysctl net.ipv4.tcp_syncookies 1
   try_sysctl net.ipv4.tcp_tw_reuse 1
@@ -647,6 +696,7 @@ installsb() {
   echo "========= 启用 Sing-box 内核 ========="
   if [ ! -e "$SB_BIN" ]; then upsingbox; fi
   insuuid
+  load_secrets
   gen_reality_keys
 
   # ---------- 证书准备 ----------
@@ -698,13 +748,32 @@ installsb() {
   [ -n "$vlp" ] && { assign_port vl "$port_vl"; echo "Reality 端口：$port_vl"; }
 
   # ---------- 生成 sb.json ----------
+  # 日志隐私：sing-box 的 warn/info 级别会把失败连接的目标域名写进磁盘日志，
+  # 等于在服务器上留了一份用户访问记录。默认收到 error，sblevel=off 则完全不落盘。
+  local log_block
+  case "$sblevel" in
+    off|no|0|false)
+      log_block='    "log": { "disabled": true },'
+      ;;
+    *)
+      log_block="    \"log\": {
+        \"disabled\": false,
+        \"level\": \"$sblevel\",
+        \"timestamp\": true,
+        \"output\": \"$SB_LOG\"
+    },"
+      ;;
+  esac
   cat > "$SB_CONF" <<EOF
 {
-    "log": {
-        "disabled": false,
-        "level": "warn",
-        "timestamp": true,
-        "output": "$SB_LOG"
+$log_block
+    "dns": {
+        "servers": [
+            { "type": "tls", "tag": "dns-secure", "server": "1.1.1.1" },
+            { "type": "tls", "tag": "dns-backup", "server": "9.9.9.9" }
+        ],
+        "strategy": "prefer_ipv4",
+        "disable_cache": false
     },
     "inbounds": [
 EOF
@@ -718,7 +787,7 @@ EOF
             "listen": "::",
             "listen_port": $port_tu,
             "users": [
-                { "uuid": "$uuid", "password": "$uuid" }
+                { "uuid": "$uuid", "password": "$pw_tu" }
             ],
             "congestion_control": "bbr",
             "zero_rtt_handshake": false,
@@ -756,14 +825,38 @@ EOF
       *) hyobfs_on=1 ;;
     esac
     if [ -n "$hyobfs_on" ]; then
-      hyobfs_pw="${hyobfs_pw:-$uuid}"
+      # obfs 密码必须独立于认证密码：两者相同的话，一份泄露就同时破掉混淆层与认证层
+      if [ -z "$hyobfs_pw" ]; then
+        [ -s "$SB_SEC_DIR/hy2_obfs" ] || gen_secret > "$SB_SEC_DIR/hy2_obfs"
+        chmod 600 "$SB_SEC_DIR/hy2_obfs" 2>/dev/null
+        hyobfs_pw=$(cat "$SB_SEC_DIR/hy2_obfs")
+      fi
       echo "$hyobfs_pw" > "$SB_HOME/hyobfs_pw"
+      chmod 600 "$SB_HOME/hyobfs_pw" 2>/dev/null
       hy_obfs="            \"obfs\": { \"type\": \"salamander\", \"password\": \"$hyobfs_pw\" },"
       info "Hysteria2 已启用 salamander 混淆"
     else
       hy_obfs=""
       rm -f "$SB_HOME/hyobfs_pw"
     fi
+    # 主动探测防护：静态 404 页面对探测者是明显信号——一个只回 404、
+    # 没有任何真实资源的 HTTPS 端口本身就可疑。反代一个真站点后，
+    # 未通过认证的 HTTP 请求会拿到该站点的真实响应，探测结果与普通反代无异。
+    case "$hymask" in
+      none|off|0|"")
+        hy_mask='            "masquerade": {
+                "type": "string",
+                "status_code": 404,
+                "headers": { "Content-Type": "text/html" },
+                "content": "<html><head><title>404 Not Found</title></head><body><center><h1>404 Not Found</h1></center></body></html>"
+            },' ;;
+      *)
+        hy_mask="            \"masquerade\": {
+                \"type\": \"proxy\",
+                \"url\": \"$hymask\",
+                \"rewrite_host\": true
+            }," ;;
+    esac
     cat >> "$SB_CONF" <<EOF
         {
             "type": "hysteria2",
@@ -771,16 +864,11 @@ EOF
             "listen": "::",
             "listen_port": $port_hy2,
             "users": [
-                { "password": "$uuid" }
+                { "password": "$pw_hy" }
             ],
 $hy_bw
 ${hy_obfs:+$hy_obfs}
-            "masquerade": {
-                "type": "string",
-                "status_code": 404,
-                "headers": { "Content-Type": "text/html" },
-                "content": "<html><head><title>404 Not Found</title></head><body><center><h1>404 Not Found</h1></center></body></html>"
-            },
+$hy_mask
             "tls": {
                 "enabled": true,
                 "alpn": [ "h3" ],
@@ -801,7 +889,7 @@ EOF
             "listen_port": $port_nv,
             "tcp_fast_open": true,
             "users": [
-                { "username": "$uuid", "password": "$uuid" }
+                { "username": "$nv_user", "password": "$nv_pw" }
             ],
             "tls": {
                 "enabled": true,
@@ -844,6 +932,17 @@ EOF
   fi
 
   # 收尾：outbounds + route
+  # 出站防护：
+  #   1) 私网/回环一律拒绝 —— 否则任何持有节点凭据的人都能拿这台机器当跳板，
+  #      打内网服务与 169.254.169.254 云元数据接口（可读出实例凭据）。
+  #   2) 邮件与 SMB 端口拒绝 —— 凭据外泄后最常见的滥用是发垃圾邮件，
+  #      直接导致 VPS 被投诉停机。确需用代理发信时 blkport=0 关闭。
+  local route_rules='            { "action": "reject", "ip_is_private": true }'
+  case "$blkport" in
+    0|no|off|false) : ;;
+    *) route_rules="$route_rules,
+            { \"action\": \"reject\", \"port\": [ 25, 135, 137, 138, 139, 445, 465, 587 ] }" ;;
+  esac
   sed -i '${s/,$//}' "$SB_CONF"
   cat >> "$SB_CONF" <<EOF
     ],
@@ -851,7 +950,11 @@ EOF
         { "type": "direct", "tag": "direct" }
     ],
     "route": {
-        "final": "direct"
+        "rules": [
+$route_rules
+        ],
+        "final": "direct",
+        "default_domain_resolver": "dns-secure"
     }
 }
 EOF
@@ -915,7 +1018,7 @@ gen_client() {
       1|on|yes|true) [ -n "$tuech_config" ] && tuic_ech="&ech=$(printf %s "$tuech_config" | base64 | tr -d '
 ')" ;;
     esac
-    tuic_link="tuic://$uuid:$uuid@$add:$port_tu?congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=$sni&insecure=$jhins&allowInsecure=$jhins&allow_insecure=$jhins$tuic_fp$tuic_ech#${sxname}tuic-$hostname_s"
+    tuic_link="tuic://$uuid:$pw_tu@$add:$port_tu?congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=$sni&insecure=$jhins&allowInsecure=$jhins&allow_insecure=$jhins$tuic_fp$tuic_ech#${sxname}tuic-$hostname_s"
     echo "$tuic_link" >> "$SB_LINK"
     echo "💣【 Tuic 】节点信息如下："
     echo "$tuic_link"; echo
@@ -938,7 +1041,7 @@ gen_client() {
     if [ -s "$SB_HOME/hyobfs_pw" ]; then
       hyobfs_q="&obfs=salamander&obfs-password=$(cat "$SB_HOME/hyobfs_pw")"
     fi
-    hy2_link="hysteria2://$uuid@$add:$port_hy2?security=tls&alpn=h3&insecure=$jhins&allowInsecure=$jhins$hyps&sni=$sni$pinsha$hyobfs_q#${sxname}hy2-$hostname_s"
+    hy2_link="hysteria2://$pw_hy@$add:$port_hy2?security=tls&alpn=h3&insecure=$jhins&allowInsecure=$jhins$hyps&sni=$sni$pinsha$hyobfs_q#${sxname}hy2-$hostname_s"
     echo "$hy2_link" >> "$SB_LINK"
     echo "💣【 Hysteria2 】节点信息如下："
     echo "$hy2_link"; echo
@@ -962,10 +1065,10 @@ gen_client() {
       _fp=$(openssl x509 -in "$CERT_DIR/fullchain.cer" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d ':')
       [ -n "$_fp" ] && nv_pcs="&pcs=$_fp"
     fi
-    nv1_link="naive+https://$uuid:$uuid@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-h2-$hostname_s"
-    nv2_link="naive+quic://$uuid:$uuid@$add:$port_nv?congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-h3-$hostname_s"
-    nv3_link="http2://$uuid:$uuid@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-h2-rocket-$hostname_s"
-    nv4_link="http3://$uuid:$uuid@$add:$port_nv?congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-h3-rocket-$hostname_s"
+    nv1_link="naive+https://$nv_user:$nv_pw@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-h2-$hostname_s"
+    nv2_link="naive+quic://$nv_user:$nv_pw@$add:$port_nv?congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-h3-$hostname_s"
+    nv3_link="http2://$nv_user:$nv_pw@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-h2-rocket-$hostname_s"
+    nv4_link="http3://$nv_user:$nv_pw@$add:$port_nv?congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-h3-rocket-$hostname_s"
     for l in "$nv1_link" "$nv2_link" "$nv3_link" "$nv4_link"; do
       echo "$l" >> "$SB_LINK"
     done
@@ -1172,7 +1275,11 @@ gen_client_sbox() {
   case "$tuils" in
     ""|0|no|off|false) : ;;
     *)
-      tuic_tls_extra=', "utls": { "enabled": true, "fingerprint": "chrome" }'
+      # uTLS 只作用于 TCP 上的 TLS 握手，Tuic 跑在 QUIC 上：
+      # 加了它 sing-box 客户端会在建连时直接报 "unsupported usage for uTLS"，
+      # 该出站完全不可用（sing-box check 不会报错，只在实际连接时炸）。
+      # 因此 Tuic 的 TLS 加固只保留证书公钥固定。
+      tuic_tls_extra=''
       if [ "$CERT_OK" = 1 ] && [ -s "$CERT_DIR/fullchain.cer" ]; then
         sb64=$(openssl x509 -in "$CERT_DIR/fullchain.cer" -pubkey -noout 2>/dev/null               | openssl pkey -pubin -outform DER 2>/dev/null               | openssl dgst -sha256 -binary 2>/dev/null               | openssl base64 2>/dev/null)
         [ -n "$sb64" ] && tuic_tls_extra="$tuic_tls_extra, \"certificate_public_key_sha256\": [\"$sb64\"]"
@@ -1187,7 +1294,7 @@ gen_client_sbox() {
         "server": "'"$add"'",
         "server_port": '"$port_tu"',
         "uuid": "'"$uuid"'",
-        "password": "'"$uuid"'",
+        "password": "'"$pw_tu"'",
         "congestion_control": "bbr",
         '"$tuic_udp"'
         "zero_rtt_handshake": false,
@@ -1203,7 +1310,7 @@ gen_client_sbox() {
         "tag": "hysteria2",
         "server": "'"$add"'",
         "server_port": '"$port_hy2"',
-        "password": "'"$uuid"'",'"$hyobfs_json"'
+        "password": "'"$pw_hy"'",'"$hyobfs_json"'
         "tls": { "enabled": true, "server_name": "'"$sni"'", "insecure": '"$msins"', "alpn": ["h3"] }
     }')
     tags+=("hysteria2")
@@ -1218,8 +1325,8 @@ gen_client_sbox() {
         "tag": "naive",
         "server": "'"$add"'",
         "server_port": '"$port_nv"',
-        "username": "'"$uuid"'",
-        "password": "'"$uuid"'",
+        "username": "'"$nv_user"'",
+        "password": "'"$nv_pw"'",
         "udp_over_tcp": true,
         "quic_congestion_control": "bbr",
         "tls": { "enabled": true, "insecure": false, "server_name": "'"$sni"'" }
@@ -1232,8 +1339,8 @@ gen_client_sbox() {
         "tag": "naive-h3",
         "server": "'"$add"'",
         "server_port": '"$port_nv"',
-        "username": "'"$uuid"'",
-        "password": "'"$uuid"'",
+        "username": "'"$nv_user"'",
+        "password": "'"$nv_pw"'",
         "udp_over_tcp": true,
         "quic": true,
         "quic_congestion_control": "bbr",
@@ -1337,7 +1444,7 @@ gen_client_clash() {
     port: $port_tu
     type: tuic
     uuid: $uuid
-    password: $uuid
+    password: $pw_tu
     alpn: [h3]
     reduce-rtt: true
     congestion-controller: bbr
@@ -1352,7 +1459,7 @@ gen_client_clash() {
     server: $add
     port: $port_hy2
     type: hysteria2
-    password: $uuid
+    password: $pw_hy
     alpn: [h3]$hyobfs_yaml
     sni: $sni
     skip-cert-verify: $msins"
@@ -1365,8 +1472,8 @@ gen_client_clash() {
     server: $add
     port: $port_nv
     type: http
-    username: $uuid
-    password: $uuid
+    username: $nv_user
+    password: $nv_pw
     tls: true
     sni: $sni
     skip-cert-verify: false"
@@ -1562,6 +1669,30 @@ apply_hy_hop() {
   fi
 }
 
+# 密钥轮换：各协议密码、obfs 密码、订阅令牌全部换成新的独立随机值。
+# UUID、端口、证书、Reality 密钥对保持不变（换 Reality 密钥会连带作废公钥，
+# 且它本身不是共享密码，没有轮换必要）。
+cmd_rotate() {
+  [ -x "$SB_BIN" ] || { error "未安装 sbbox，无需轮换"; exit 1; }
+  if [ -t 0 ]; then
+    printf '%s' "轮换后所有客户端必须重新导入节点/订阅，确认继续？(y/N) " >&2
+    read -r _c
+    case "$_c" in y|Y|yes|YES) : ;; *) warn "已取消"; return 0 ;; esac
+  fi
+  export SBBOX_ROTATE=1
+  rm -f "$SB_SEC_DIR"/* "$SB_HOME/hyobfs_pw" "$SB_HOME/subtoken" 2>/dev/null
+  hyobfs_pw=""
+  v4v6
+  load_state
+  subid=""                       # 令牌一并换新：旧订阅 URL 里存的是旧密码
+  [ -s "$SB_HOME/subport" ] && sub=1
+  [ "$CERT_OK" = 1 ] && alns=1   # 证书已在本地，installsb 不会重新签发
+  installsb
+  sbrestart
+  gen_client
+  info "密钥轮换完成，请用上面的新节点信息重新导入客户端"
+}
+
 status_show() {
   echo "========= sbbox 服务状态 ========="
   if pgrep -f "sing-box run -c $SB_CONF" >/dev/null 2>&1; then
@@ -1615,6 +1746,7 @@ main() {
     cert)   shift; cert_mgmt "$@"; exit ;;
     sub)    shift; cmd_sub "$@"; exit ;;
     doctor) doctor; exit ;;
+    rotate) cmd_rotate; exit ;;
     del)    cleandel; exit ;;
     help|-h|--help) showmode; exit ;;
   esac
@@ -1708,6 +1840,13 @@ save_state() {
   [ -n "$vlp" ] && touch "$SB_HOME/proto_vlp"
   echo "$ym" > "$SB_HOME/ym"
   [ -n "$hyjpt" ] && echo "$hyjpt" > "$SB_HOME/hyjpt"
+  # Brutal 带宽必须持久化：否则 rotate / 重新生成配置时静默退回 BBR，
+  # 用户看不出配置为何变了
+  if [ -n "$hyup" ] && [ -n "$hydown" ]; then
+    echo "$hyup $hydown" > "$SB_HOME/hybw"
+  else
+    rm -f "$SB_HOME/hybw"
+  fi
   [ -n "$sbrel" ] && echo "$sbrel" > "$SB_HOME/sbrel"
 }
 
@@ -1948,7 +2087,8 @@ doctor() {
 # 从磁盘恢复已保存状态（用于 list）
 load_state() {
   uuid=$(cat "$SB_HOME/uuid" 2>/dev/null || echo "")
-  ym_vl_re=$(cat "$SB_HOME/ym_vl_re" 2>/dev/null || echo "apple.com")
+  load_secrets
+  ym_vl_re=$(cat "$SB_HOME/ym_vl_re" 2>/dev/null || echo "www.apple.com")
   ym=$(cat "$SB_HOME/ym" 2>/dev/null || echo "")
   [ -f "$SB_HOME/proto_tup" ] && tup=yes
   [ -f "$SB_HOME/proto_hyp" ] && hyp=yes
@@ -1962,6 +2102,10 @@ load_state() {
   [ -f "$SB_HOME/rk/short_id" ] && short_id_s=$(cat "$SB_HOME/rk/short_id")
   [ -f "$SB_HOME/rk/private_key" ] && private_key_s=$(cat "$SB_HOME/rk/private_key")
   [ -f "$SB_HOME/hyjpt" ] && hyjpt=$(cat "$SB_HOME/hyjpt")
+  if [ -z "$hyup" ] && [ -z "$hydown" ] && [ -s "$SB_HOME/hybw" ]; then
+    hyup=$(awk '{print $1}' "$SB_HOME/hybw"); hydown=$(awk '{print $2}' "$SB_HOME/hybw")
+  fi
+  [ -s "$SB_HOME/hyobfs_pw" ] && hyobfs_pw=$(cat "$SB_HOME/hyobfs_pw")
   [ -z "$sbrel_explicit" ] && [ -f "$SB_HOME/sbrel" ] && sbrel=$(cat "$SB_HOME/sbrel")
   # 订阅曾启用过就保持启用，令牌/端口沿用，避免 list 后订阅地址变化
   if [ -f "$SB_HOME/subtoken" ]; then
