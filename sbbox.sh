@@ -65,7 +65,11 @@ hydown="${hydown:-}"                        # Hysteria2 下行 Mbps
 ippz="${ippz:-}"                            # 4 / 6 / 双栈
 name="${name:-}"
 noautoup="${noautoup:-}"                    # 关闭每周内核自动升级：noautoup=1
-sbrel="${sbrel:-}"                          # 内核版本通道：sbrel=pre 跟踪 pre-release；默认跟踪正式版
+# 内核版本通道：默认 pre，跟踪 pre-release（beta/rc）；只要正式版用 sbrel=stable。
+# 先记下用户是否显式指定，再套默认值 —— 否则「没传」与「传了 pre」无法区分，
+# 已持久化的通道选择会被默认值静默覆盖。
+sbrel_explicit="${sbrel:+1}"
+sbrel="${sbrel:-pre}"
 tuicuos="${tuicuos:-1}"                     # Tuic UDP over QUIC 流，默认开；退回原生 UDP 用 tuicuos=0
 tuils="${tuils:-1}"                         # Tuic TLS 加固（uTLS 指纹 + 证书公钥 SHA-256 固定），关闭用 tuils=0
 tuech="${tuech:-}"                          # Tuic ECH：tuech=1 且 tuech_config=<base64> 时启用（需服务端支持）
@@ -128,7 +132,7 @@ showmode() {
   echo "  ym_vl_re=域名  Reality 回落目标域名（默认 apple.com）"
   echo "  hyjpt=20000:30000  Hysteria2 跳跃端口"
   echo "  sub=1    启用 v2rayN 订阅服务（subport=端口 subid=令牌 可选）"
-  echo "  sbrel=pre  内核跟踪 pre-release 通道（默认跟踪正式版）"
+  echo "  sbrel=stable  内核只跟踪正式版（默认 pre，跟踪 beta/rc）"
   echo "  uuid=自定义密码"
   echo "==========================================================="
 }
@@ -151,7 +155,9 @@ install_deps() {
 
 # ---------- sing-box 内核下载/更新 ----------
 # 查询 sing-box 最新版本号（去掉 tag 的 v 前缀）。
-# sbrel=pre 时跟踪 pre-release（含正式版），默认只跟踪正式版。
+# 默认通道是 pre：跟踪最新 pre-release（beta/rc），正式版本身也在该列表里，
+# 所以「pre」等价于「最新的一个 release，不论是否预发布」。
+# sbrel=stable 时改用 releases/latest，GitHub 只在该端点返回正式版。
 latest_sb_version() {
   local api
   if [ "$sbrel" = "pre" ]; then
@@ -1709,8 +1715,9 @@ save_state() {
 # 新版本偶尔会收紧配置 schema（本项目就被 1.12 的 DNS 格式变更打过），
 # 没有回滚的话一次自动升级就能让所有节点掉线。
 cmd_update() {
-  # 从持久化状态恢复 sbrel，保证 cron 自动升级也遵守首装时选择的通道
-  [ -z "$sbrel" ] && [ -f "$SB_HOME/sbrel" ] && sbrel=$(cat "$SB_HOME/sbrel")
+  # 优先级：本次显式指定 > 首装时持久化的通道 > 默认值。
+  # cron 自动升级不带任何环境变量，走的就是持久化那一档。
+  [ -z "$sbrel_explicit" ] && [ -f "$SB_HOME/sbrel" ] && sbrel=$(cat "$SB_HOME/sbrel")
   local bak="$SB_HOME/sing-box.bak" before after
   before=$(sb_installed_version)
   [ -x "$SB_BIN" ] && cp -f "$SB_BIN" "$bak" 2>/dev/null
@@ -1955,7 +1962,7 @@ load_state() {
   [ -f "$SB_HOME/rk/short_id" ] && short_id_s=$(cat "$SB_HOME/rk/short_id")
   [ -f "$SB_HOME/rk/private_key" ] && private_key_s=$(cat "$SB_HOME/rk/private_key")
   [ -f "$SB_HOME/hyjpt" ] && hyjpt=$(cat "$SB_HOME/hyjpt")
-  [ -f "$SB_HOME/sbrel" ] && sbrel=$(cat "$SB_HOME/sbrel")
+  [ -z "$sbrel_explicit" ] && [ -f "$SB_HOME/sbrel" ] && sbrel=$(cat "$SB_HOME/sbrel")
   # 订阅曾启用过就保持启用，令牌/端口沿用，避免 list 后订阅地址变化
   if [ -f "$SB_HOME/subtoken" ]; then
     sub=1

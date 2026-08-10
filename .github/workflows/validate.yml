@@ -58,8 +58,11 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          VER=$(curl -fsSL --retry 3 --retry-all-errors -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/repos/SagerNet/sing-box/releases/latest \
-                | grep -oP '"tag_name":\s*"v\K[^"]+')
+          # 与脚本默认的 pre 通道保持一致：取仓库里最新的一个 release，不论是否
+          # 标记预发布。CI 必须校验用户实际会装到的那个内核 —— sing-box 的新版本
+          # 收紧过配置 schema（1.12 的 DNS 格式就是），只校验正式版等于放过这类回归。
+          VER=$(curl -fsSL --retry 3 --retry-all-errors -H "Authorization: Bearer $GITHUB_TOKEN" "https://api.github.com/repos/SagerNet/sing-box/releases?per_page=5" \
+                | grep -oP '"tag_name":\s*"v\K[^"]+' | head -1)
           echo "sing-box 版本: $VER"
           curl -fsSL --retry 3 --retry-all-errors "https://github.com/SagerNet/sing-box/releases/download/v${VER}/sing-box-${VER}-linux-amd64.tar.gz" \
             | tar -xz --strip-components=1 -C /tmp "sing-box-${VER}-linux-amd64/sing-box" "sing-box-${VER}-linux-amd64/libcronet.so"
@@ -208,8 +211,11 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          VER=$(curl -fsSL --retry 3 --retry-all-errors -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/repos/SagerNet/sing-box/releases/latest \
-                | grep -oP '"tag_name":\s*"v\K[^"]+')
+          # 与脚本默认的 pre 通道保持一致：取仓库里最新的一个 release，不论是否
+          # 标记预发布。CI 必须校验用户实际会装到的那个内核 —— sing-box 的新版本
+          # 收紧过配置 schema（1.12 的 DNS 格式就是），只校验正式版等于放过这类回归。
+          VER=$(curl -fsSL --retry 3 --retry-all-errors -H "Authorization: Bearer $GITHUB_TOKEN" "https://api.github.com/repos/SagerNet/sing-box/releases?per_page=5" \
+                | grep -oP '"tag_name":\s*"v\K[^"]+' | head -1)
           curl -fsSL --retry 3 --retry-all-errors "https://github.com/SagerNet/sing-box/releases/download/v${VER}/sing-box-${VER}-linux-amd64.tar.gz" \
             | tar -xz --strip-components=1 -C /tmp "sing-box-${VER}-linux-amd64/sing-box" "sing-box-${VER}-linux-amd64/libcronet.so"
           mkdir -p "$HOME/sbbox"

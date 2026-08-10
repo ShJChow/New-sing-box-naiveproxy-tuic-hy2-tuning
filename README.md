@@ -82,7 +82,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/ma
 | `port_tu` / `port_hy2` / `port_nv` / `port_vl` | 随机 | 指定固定端口 |
 | `name` | 空 | 节点名称前缀 |
 | `noautoup` | 空 | 关闭每周内核自动升级（`noautoup=1`） |
-| `sbrel` | 空 | 内核版本通道：`sbrel=pre` 跟踪 pre-release（默认只跟踪正式版） |
+| `sbrel` | **`pre`（默认）** | 内核版本通道：默认取最新 release（含 beta/rc）；只要正式版用 `sbrel=stable` |
 | `tuicuos` | **1（默认开启）** | Tuic UDP over QUIC 流；退回原生 UDP 用 `tuicuos=0` |
 
 ---
@@ -182,7 +182,7 @@ hyup=600 hydown=600 sbbox list
 | `sbbox sub off` | 关闭订阅服务 |
 | `sbbox cert status` | 查看证书有效期 |
 | `sbbox cert renew` | 续期证书并重启 |
-| `sbbox up` | 升级 sing-box 内核到官方最新正式版（失败自动回滚） |
+| `sbbox up` | 升级 sing-box 内核（默认 pre 通道，取最新 release；失败自动回滚） |
 | `sbbox log [N]` | 查看最近 N 行日志（默认 20） |
 | `sbbox del` | 完全卸载 |
 
@@ -190,17 +190,32 @@ hyup=600 hydown=600 sbbox list
 
 ## 内核版本管理
 
-安装与 `sbbox up` 都从 **SagerNet 官方 release 拉取最新正式版**，
+安装与 `sbbox up` 都从 **SagerNet 官方 release 拉取内核**，
 仅在官方源不可达时才回退到镜像源（版本可能滞后，会有告警）。
 
-预发布版本通道（`sbrel=pre`）会在每次 `sbbox up` 或每周自动升级时
-获取最新的 pre-release（含 beta/rc），适合需要尝鲜新特性的用户：
+**默认通道是 `pre`**：取仓库里最新的一个 release，不论它是否标记为预发布。
+正式版本身也在这个列表里，所以「pre」的实际含义是「永远最新」，
+而不是「只要 beta」——正式版发布当天它拿到的就是正式版。
+
+只想跟正式版就用 `sbrel=stable`，GitHub 的 `releases/latest` 端点不返回预发布版：
 
 ```bash
-sbbox up                      # 升级到最新正式版；已是最新则直接跳过
-sbrel=pre sbbox up            # 临时切到 pre-release 通道升级一次
-sbrel=pre bash sbbox.sh list  # 安装时指定，之后自动记住该通道
+# 安装时指定通道（安装是无子命令形式，协议变量必须带上）
+tup=1 hyp=1 nvp=1 vlp=1 bash sbbox.sh                # 默认 pre 通道
+sbrel=stable tup=1 hyp=1 nvp=1 vlp=1 bash sbbox.sh   # 只跟正式版
+
+# 安装后
+sbbox up                  # 按首装时记住的通道升级；已是最新则跳过
+sbrel=stable sbbox up     # 临时切到正式版通道升级一次
+sbrel=pre sbbox up        # 临时切到 pre 通道升级一次
 ```
+
+通道选择会写进 `$SB_HOME/sbrel` 持久化，每周的 cron 自动升级遵守它。
+优先级是 **本次显式指定 > 首装时记住的通道 > 默认值**。
+
+> ⚠️ 从旧版本升级上来的用户请注意：旧版默认跟正式版，且只有显式传过 `sbrel` 才会落盘。
+> 没有那个文件的话，下次升级会按新默认走 pre 通道。要保持正式版，跑一次
+> `sbrel=stable sbbox up` 把选择固化下来。
 
 升级流程带回滚保护：**备份旧内核 → 下载新版 → 用新内核校验现有配置 → 重启**，
 任一步失败自动还原旧内核并重启。新版本偶尔会收紧配置 schema
