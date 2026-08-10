@@ -11,7 +11,7 @@
 | **Naiveproxy H2** | 高隐匿性 HTTP/2 代理 | HTTP/2 |
 | **Naiveproxy H3** | 高隐匿性 HTTP/3 代理 | HTTP/3 (QUIC) |
 | **Reality (VLESS)** | 零证书抗检测 | TCP + Vision 流控 |
-
+建议选择**Naiveproxy H2** | 高隐匿性 HTTP/2 代理 | HTTP/2 |，请手动打开QUIC bbr， UDP over tls
 集成了：
 - **内核级流控调优**（移植自 [`ShJChow/Xray-core-xhttp-cdn-tuned`](https://github.com/ShJChow/Xray-core-xhttp-cdn-tuned) 的 `xh tuning on`）：BBR、内存分档缓冲区、TFO、文件句柄等，安装期自动开启，可一键回滚
 - **acme.sh 证书申请**：Naiveproxy / Hysteria2 / Tuic 使用真实 TLS 证书 ：若证书申请失败，可使用acme：
