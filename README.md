@@ -25,7 +25,7 @@
 |--------|-------------|-----------|
 | TLS 证书校验 | `insecure=1`（自签绕过） | `insecure=0`（强制验证） |
 | Naiveproxy 证书 | 允许自签回退 | **强制 acme 真实证书** |
-| Hysteria2 伪装 | 无 | `masquerade` 返回 404 页面 |
+| Hysteria2 伪装 | 无 | `masquerade` 反代真实站点（默认 www.bing.com），未认证探测拿到真实页面 |
 | Hysteria2 带宽声明 | 信任客户端 | `ignore_client_bandwidth: true`（服务端主导） |
 | Hysteria2 SNI | 固定 `www.bing.com` | 用户自定义（证书域名） |
 | Reality TLS 版本 | 未指定 | 强制 `min_version: "1.3"` |
@@ -33,6 +33,12 @@
 | Tuic 0-RTT | 未显式关闭 | `zero_rtt_handshake: false`（防重放） |
 | 文件句柄 | 系统默认 | 1048576（systemd drop-in） |
 | 内核调优 | 未配置 | 安装期自动应用，`sbbox tune off` 可回滚 |
+| 协议凭据 | 全部复用同一 uuid | **每协议独立随机密钥**（v1.8.0），任一泄露不牵连其他 |
+| Hysteria2 obfs 密码 | 同认证密码 | 独立随机值，混淆层与认证层不共用秘密 |
+| 出站 DNS | 跟随系统（明文 UDP，VPS 侧可见全部查询） | **DoT 加密**（1.1.1.1 / 9.9.9.9） |
+| 内网访问 | 未限制，可拿服务器当跳板打内网与云元数据接口 | `ip_is_private` 一律拒绝 |
+| 垃圾邮件滥用 | 未限制 | 默认阻断出站 25/465/587 与 SMB 端口（`blkport=0` 关闭） |
+| 服务端日志 | `warn`，失败连接的目标域名落盘 | 默认 `error`；`sblevel=off` 完全不落盘 |
 
 > **传输层混淆说明**：sing-box 不支持 xray 的 xpadding / VLESS Encryption / ECH 专有扩展。本脚本使用 sing-box 原生等价方案：Reality 协议本身即抗检测混淆、Naiveproxy HTTP/2 padding、Hysteria2 QUIC + 跳跃端口、uTLS 指纹。
 
@@ -70,16 +76,19 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/ma
 | `tup` / `hyp` / `nvp` / `vlp` | 空 | 协议开关，非空即启用 |
 | `alns` | 空 | 启用 acme 证书申请（`alns=1`） |
 | `ym` | 空 | acme 证书域名（启用 alns 时必需） |
-| `ym_vl_re` | `apple.com` | Reality 回落目标域名 |
+| `ym_vl_re` | `www.apple.com` | Reality 回落目标域名 |
 | `hyjpt` | 空 | Hysteria2 跳跃端口，如 `hyjpt="20000 20001 20002"` |
 | `hyobfs` | **1（默认开启）** | Hysteria2 salamander 混淆，抗协议识别；关闭用 `hyobfs=0` |
-| `hyobfs_pw` | 同 uuid | 混淆密码 |
+| `hyobfs_pw` | 独立随机 | Hysteria2 混淆密码（与认证密码分离） |
+| `hymask` | `https://www.bing.com` | Hysteria2 伪装：反代真实站点抗主动探测；静态 404 用 `hymask=none` |
+| `sblevel` | `error` | 服务端日志级别，`off` 完全不落盘（日志会记录访问过的域名） |
+| `blkport` | **1（默认开启）** | 阻断出站 25/465/587/SMB 端口，防凭据外泄后被拿去发垃圾邮件；关闭用 `blkport=0` |
 | `hyup` / `hydown` | 空 | Hysteria2 上/下行 Mbps，**两个都设**才启用 Brutal 拥塞控制 |
 | `sub` | 空 | 启用 v2rayN 订阅服务（`sub=1`） |
 | `subport` | 随机 | 订阅服务端口 |
-| `subid` | 同 uuid | 订阅令牌（URL 路径，相当于密码） |
+| `subid` | 独立随机 | 订阅令牌（URL 路径，相当于密码） |
 | `sub_nonaive` | 空 | 剔除 Naiveproxy 节点（客户端不支持 naive+ 链接时用 `sub_nonaive=1`） |
-| `uuid` | 自动生成 | 自定义密码 / UUID |
+| `uuid` | 自动生成 | 自定义 UUID（VLESS/Tuic 用；各协议密码自 v1.8.0 起独立随机，不再复用 UUID） |
 | `port_tu` / `port_hy2` / `port_nv` / `port_vl` | 随机 | 指定固定端口 |
 | `name` | 空 | 节点名称前缀 |
 | `noautoup` | 空 | 关闭每周内核自动升级（`noautoup=1`） |
@@ -95,7 +104,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/ma
 | 协议 | 默认参数 | 理由 |
 |------|---------|------|
 | Tuic | `congestion_control: bbr`、`zero_rtt_handshake: false`、`auth_timeout: 3s`、`heartbeat: 10s` | 关 0-RTT 牺牲 1 个 RTT 换取抗重放；心跳保活 NAT 映射 |
-| Hysteria2 | **`obfs: salamander`（默认开启）**、`ignore_client_bandwidth: true`（客户端统一走 BBR）、`masquerade` 404 伪装 | 混淆抗协议识别；BBR 稳定公平，无需预知带宽 |
+| Hysteria2 | **`obfs: salamander`（默认开启）**、`ignore_client_bandwidth: true`（客户端统一走 BBR）、`masquerade` 反代真实站点 | 混淆抗协议识别；BBR 稳定公平，无需预知带宽；反代伪装让主动探测拿到真实页面 |
 | Naiveproxy | `tcp_fast_open: true`、`min_version: "1.3"`、强制真实证书 | TFO 省 1 个 RTT；仅 TLS 1.3 可用，杜绝降级 |
 | Reality | `tcp_fast_open: true`、TLS 1.3、uTLS chrome 指纹 | Vision 流控自带 splice 高性能路径 |
 
@@ -185,6 +194,8 @@ hyup=600 hydown=600 sbbox list
 | `sbbox cert renew` | 续期证书并重启 |
 | `sbbox up` | 升级 sing-box 内核（默认 pre 通道，取最新 release；失败自动回滚） |
 | `sbbox log [N]` | 查看最近 N 行日志（默认 20） |
+| `sbbox rotate` | 轮换全部协议密码、混淆密码与订阅令牌（端口/UUID/证书不变，客户端需重新导入） |
+| `sbbox doctor` | 自检并尝试修复 |
 | `sbbox del` | 完全卸载 |
 
 ---
@@ -272,6 +283,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/ma
 | `~/sbbox/clmi.yaml` | Clash / Mihomo 客户端配置 |
 | `~/sbbox/nodes.txt` | 纯文本节点分享链接 |
 | `~/sbbox/cert/` | acme 证书（fullchain.cer + private.key） |
+| `~/sbbox/sec/` | 各协议独立密钥（0600，`sbbox rotate` 轮换） |
 | `/etc/sysctl.d/99-sbbox.conf` | 内核流控调优参数（`sbbox tune off` 删除） |
 | `/etc/systemd/system/sbbox.service` | systemd 服务 |
 
