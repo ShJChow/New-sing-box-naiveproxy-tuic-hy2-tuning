@@ -826,8 +826,13 @@ EOF
     esac
     if [ -n "$hyobfs_on" ]; then
       # obfs 密码必须独立于认证密码：两者相同的话，一份泄露就同时破掉混淆层与认证层
-      hyobfs_pw="${hyobfs_pw:-$(cat "$SB_SEC_DIR/hy2_obfs" 2>/dev/null || { gen_secret > "$SB_SEC_DIR/hy2_obfs"; cat "$SB_SEC_DIR/hy2_obfs"; })}"
+      if [ -z "$hyobfs_pw" ]; then
+        [ -s "$SB_SEC_DIR/hy2_obfs" ] || gen_secret > "$SB_SEC_DIR/hy2_obfs"
+        chmod 600 "$SB_SEC_DIR/hy2_obfs" 2>/dev/null
+        hyobfs_pw=$(cat "$SB_SEC_DIR/hy2_obfs")
+      fi
       echo "$hyobfs_pw" > "$SB_HOME/hyobfs_pw"
+      chmod 600 "$SB_HOME/hyobfs_pw" 2>/dev/null
       hy_obfs="            \"obfs\": { \"type\": \"salamander\", \"password\": \"$hyobfs_pw\" },"
       info "Hysteria2 已启用 salamander 混淆"
     else
