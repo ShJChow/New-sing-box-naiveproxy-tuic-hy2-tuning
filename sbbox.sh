@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # ======================================================
-# sing-box-naiveproxy (sbbox.sh) — Sing-box 五协议安全加固代理脚本
+# sing-box-naiveproxy (sbbox.sh) — Sing-box 三协议安全加固代理脚本
 #
 # 基于 yonggekkk/argosbx 架构，剥离为 sing-box 单内核，
-# 仅保留 Tuic / Hysteria2 / Naiveproxy(H2+H3) / Reality 五协议。
+# 仅保留 Tuic / Hysteria2 / Naiveproxy(H2+H3) 三协议。
+# v1.9.0 起移除 Reality/VLESS：它是四者中唯一无法与 QUIC/HTTP3 共用一套
+# 证书与调优路径的协议，且在本项目的定位（真实证书 + Naive 伪装）下与
+# Naiveproxy 完全重叠，保留它只是多一份 TCP 攻击面与维护成本。
 # 集成内核级流控调优 (xh tuning on) + acme.sh 证书申请。
 #
 # 用法：
@@ -20,9 +23,8 @@
 # 安全设计原则：
 #   1. TLS 一律 insecure=0，不允许自签证书绕过（Naive 强制 acme 证书）
 #   2. Hysteria2/Tuic 无 acme 证书时使用自签 + SHA256 固定指纹
-#   3. Reality 强制 uTLS chrome 指纹 + TLS 1.3
-#   4. 内核流控调优全部 best-effort，写入独立文件可整体回滚
-#   5. 只写自己的文件，不修改用户既有 /etc/sysctl.conf 与官方 unit
+#   3. 内核流控调优全部 best-effort，写入独立文件可整体回滚
+#   4. 只写自己的文件，不修改用户既有 /etc/sysctl.conf 与官方 unit
 # ======================================================
 
 # ---------- 全局路径与常量 ----------
@@ -37,7 +39,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v1.8.0"
+SBBOX_VERSION="v1.9.0"
 SB_URL="https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -54,10 +56,9 @@ error() { echo -e "${RED}[-]${NC} $*"; }
 
 # ---------- 环境变量默认值 ----------
 uuid="${uuid:-}"
-ym_vl_re="${ym_vl_re:-www.apple.com}"      # Reality 回落目标域名（须支持 TLS1.3+H2 且非自家 CDN）
 ym="${ym:-}"                                # acme 证书域名（启用 alns 时必需）
 alns="${alns:-}"                            # 申请 acme 证书：alns=1
-tup="${tup:-}" hyp="${hyp:-}" nvp="${nvp:-}" vlp="${vlp:-}"
+tup="${tup:-}" hyp="${hyp:-}" nvp="${nvp:-}"
 hyjpt="${hyjpt:-}"                          # Hysteria2 跳跃端口，如 "20000:30000"
 hyobfs="${hyobfs:-1}"                       # Hysteria2 salamander 混淆，默认开启；关闭用 hyobfs=0
 hyobfs_pw="${hyobfs_pw:-}"                  # 混淆密码（默认独立随机值）
@@ -116,8 +117,8 @@ v4v6() {
 # ---------- 帮助信息 ----------
 showmode() {
   echo "==========================================================="
-  echo "sbbox $SBBOX_VERSION — Sing-box-Only 五协议安全代理脚本"
-  echo "支持协议：Tuic / Hysteria2 / Naiveproxy(H2+H3) / Reality"
+  echo "sbbox $SBBOX_VERSION — Sing-box-Only 三协议安全代理脚本"
+  echo "支持协议：Tuic / Hysteria2 / Naiveproxy(H2+H3)"
   echo "-----------------------------------------------------------"
   echo "主脚本：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/main/sbbox.sh)"
   echo "显示节点信息：sbbox list 【或】 bash sbbox.sh list"
@@ -130,14 +131,13 @@ showmode() {
   echo "自检修复：sbbox doctor"
   echo "卸载：sbbox del"
   echo "-----------------------------------------------------------"
-  echo "环境变量（安装期）：tup=1 hyp=1 nvp=1 vlp=1"
+  echo "环境变量（安装期）：tup=1 hyp=1 nvp=1"
   echo "  alns=1   启用 acme 证书（需 ym=你的域名）"
   echo "  ym=域名  acme 证书域名（Hysteria2/Tuic/Naive 使用）"
-  echo "  ym_vl_re=域名  Reality 回落目标域名（默认 www.apple.com）"
   echo "  hyjpt=20000:30000  Hysteria2 跳跃端口"
   echo "  sub=1    启用 v2rayN 订阅服务（subport=端口 subid=令牌 可选）"
   echo "  sbrel=stable  内核只跟踪正式版（默认 pre，跟踪 beta/rc）"
-  echo "  uuid=自定义 UUID（VLESS/Tuic 用；各协议密码独立随机，不再复用）"
+  echo "  uuid=自定义 UUID（Tuic 用；各协议密码独立随机，不再复用）"
   echo "  hymask=URL  Hysteria2 伪装反代目标（默认 https://www.bing.com，none=静态 404）"
   echo "  sblevel=error|warn|info|off  服务端日志级别（默认 error）"
   echo "轮换全部密码：sbbox rotate（各协议独立新密钥，需重新导入客户端）"
@@ -306,27 +306,14 @@ load_secrets() {
   fi
 }
 
-# ---------- Reality 密钥生成 ----------
-gen_reality_keys() {
-  if [ -n "$vlp" ]; then
-    if [ -z "$ym_vl_re" ]; then ym_vl_re=www.apple.com; fi
-    echo "$ym_vl_re" > "$SB_HOME/ym_vl_re"
-    mkdir -p "$SB_HOME/rk"
-    if [ ! -e "$SB_HOME/rk/private_key" ]; then
-      local kp
-      kp=$("$SB_BIN" generate reality-keypair 2>/dev/null)
-      private_key_s=$(echo "$kp" | awk '/PrivateKey/ {print $2}' | tr -d '"')
-      public_key_s=$(echo "$kp" | awk '/PublicKey/ {print $2}' | tr -d '"')
-      short_id_s=$("$SB_BIN" generate rand --hex 4 2>/dev/null)
-      [ -z "$private_key_s" ] || echo "$private_key_s" > "$SB_HOME/rk/private_key"
-      [ -z "$public_key_s" ]  || echo "$public_key_s"  > "$SB_HOME/rk/public_key"
-      [ -z "$short_id_s" ]    || echo "$short_id_s"    > "$SB_HOME/rk/short_id"
-    fi
-    private_key_s=$(cat "$SB_HOME/rk/private_key" 2>/dev/null)
-    public_key_s=$(cat "$SB_HOME/rk/public_key" 2>/dev/null)
-    short_id_s=$(cat "$SB_HOME/rk/short_id" 2>/dev/null)
-    info "Reality 域名：$ym_vl_re"
-  fi
+# ---------- 旧版 Reality 残留清理 ----------
+# v1.9.0 移除了 Reality/VLESS。从 <=v1.8.x 升级上来的机器磁盘上还留着
+# Reality 私钥与端口标记，配置里已不再引用它们，留着只是把私钥继续摊在盘上。
+purge_reality_leftovers() {
+  [ -e "$SB_HOME/rk" ] || [ -e "$SB_HOME/proto_vlp" ] || return 0
+  rm -rf "$SB_HOME/rk" 2>/dev/null
+  rm -f "$SB_HOME/proto_vlp" "$SB_HOME/port_vl" "$SB_HOME/ym_vl_re" 2>/dev/null
+  warn "已移除旧版 Reality 节点残留（本版不再提供该协议，客户端请删除对应节点）"
 }
 
 # ---------- 证书状态 ----------
@@ -452,6 +439,15 @@ apply_nic_tuning() {
   fi
 
   if command -v ethtool >/dev/null 2>&1; then
+    # 收发环形队列拉到硬件上限：高速 QUIC 是突发型流量，默认 ring（常见 256/512）
+    # 在瞬时突发下会直接 rx_dropped，而这类丢包在 sing-box 日志里完全看不见。
+    local rx_max tx_max
+    rx_max=$(ethtool -g "$nic" 2>/dev/null | awk '/^RX:/{print $2; exit}')
+    tx_max=$(ethtool -g "$nic" 2>/dev/null | awk '/^TX:/{print $2; exit}')
+    if [ -n "$rx_max" ] && [ -n "$tx_max" ]; then
+      ethtool -G "$nic" rx "$rx_max" tx "$tx_max" >/dev/null 2>&1 && \
+        info "网卡 $nic 收发队列已拉满：rx=$rx_max tx=$tx_max"
+    fi
     local ok=""
     ethtool -K "$nic" gro on  >/dev/null 2>&1 && ok="gro"
     ethtool -K "$nic" gso on  >/dev/null 2>&1 && ok="$ok gso"
@@ -487,6 +483,15 @@ apply_tuning() {
   PAGE_SIZE=$(getconf PAGESIZE 2>/dev/null || echo 4096)
   MEM_PAGES=$(awk -v ps="$PAGE_SIZE" '/^MemTotal:/{printf "%d", $2*1024/ps}' /proc/meminfo 2>/dev/null || echo 262144)
 
+  # 网卡链路速率（Mb/s）。内存分档决定的是「能不能吃得下」，真正决定 BDP 的是
+  # 带宽 × RTT：24GB/4Gbps 与 24GB/200Mbps 需要的 socket 缓冲差一个数量级。
+  local NIC_SPEED=0 _nic_probe
+  _nic_probe=$(default_nic)
+  if [ -n "$_nic_probe" ] && [ -r "/sys/class/net/$_nic_probe/speed" ]; then
+    NIC_SPEED=$(cat "/sys/class/net/$_nic_probe/speed" 2>/dev/null)
+    case "$NIC_SPEED" in ''|*[!0-9]*) NIC_SPEED=0 ;; esac   # 虚拟网卡常返回 -1/空
+  fi
+
   if [ "$MEM_MB" -ge 16384 ]; then
     # 大内存档抬到 128MB：QUIC(Tuic/Hysteria2) 的 UDP socket 不像 TCP 那样自动
     # 扩缩，quic-go 直接按 rmem_max 上限申请缓冲，上限偏小会打印
@@ -497,7 +502,14 @@ apply_tuning() {
   else
     TUNE_TIER="small";  SOCK_MEM_MAX=16777216; TCP_MEM_MAX=8388608;  NETDEV_BACKLOG=16384; CONNTRACK_MAX=0; NETDEV_BUDGET=""
   fi
-  info "机型: ${CPU_CORES} 核 / ${MEM_MB} MB / ${ARCH} → 调优档位 ${TUNE_TIER}"
+  # 千兆以上链路把 socket 缓冲拉到 128MB：4Gbps × 200ms RTT 的 BDP 已接近 100MB，
+  # 缓冲小于 BDP 时单条 TCP/QUIC 连接根本跑不满出口，与内存是否富余无关。
+  # 需要 16GB 以上内存兜底，避免小内存机被一条连接的缓冲吃穿。
+  if [ "$NIC_SPEED" -ge 1000 ] && [ "$MEM_MB" -ge 16384 ]; then
+    SOCK_MEM_MAX=134217728; TCP_MEM_MAX=67108864; NETDEV_BACKLOG=131072; NETDEV_BUDGET=8000
+    TUNE_TIER="large+${NIC_SPEED}M"
+  fi
+  info "机型: ${CPU_CORES} 核 / ${MEM_MB} MB / ${ARCH} / 链路 ${NIC_SPEED:-未知}Mb → 调优档位 ${TUNE_TIER}"
 
   # ---------- 调优前快照 ----------
   BEFORE_QDISC=$(sysctl_get net.core.default_qdisc)
@@ -534,6 +546,9 @@ apply_tuning() {
   # 容易触发 receive buffer 溢出（quic-go 计入 "dropped packets"），抬到 16K。
   try_sysctl net.ipv4.udp_rmem_min 16384
   try_sysctl net.ipv4.udp_wmem_min 16384
+  # udp_mem 是**全局**的 UDP 内存上限（页数），默认值按内存推算得相当保守。
+  # 触顶时内核直接丢包，表现为 QUIC 吞吐忽高忽低而 rmem_max 看着完全够用。
+  try_sysctl net.ipv4.udp_mem "$(( MEM_PAGES * 4 / 100 )) $(( MEM_PAGES * 6 / 100 )) $(( MEM_PAGES * 10 / 100 ))"
 
   # ---------- 队列与并发 ----------
   try_sysctl net.core.netdev_max_backlog "$NETDEV_BACKLOG"
@@ -689,7 +704,7 @@ tune_show() {
 }
 
 # ======================================================
-# sing-box 服务端配置生成（五协议，Naiveproxy 服务端单入站同时支持 H2+H3）
+# sing-box 服务端配置生成（三协议，Naiveproxy 服务端单入站同时支持 H2+H3）
 # ======================================================
 installsb() {
   echo ""
@@ -697,7 +712,8 @@ installsb() {
   if [ ! -e "$SB_BIN" ]; then upsingbox; fi
   insuuid
   load_secrets
-  gen_reality_keys
+  # 旧版（<=v1.8.x）装过 Reality 的机器：本版已移除该协议，顺手清掉残留密钥
+  purge_reality_leftovers
 
   # ---------- 证书准备 ----------
   if [ -n "$nvp" ] && [ -z "$alns" ]; then
@@ -745,7 +761,6 @@ installsb() {
   [ -n "$tup" ] && { assign_port tu "$port_tu"; echo "Tuic 端口：$port_tu"; }
   [ -n "$hyp" ] && { assign_port hy2 "$port_hy2"; echo "Hysteria2 端口：$port_hy2"; }
   [ -n "$nvp" ] && { assign_port nv "$port_nv"; echo "Naiveproxy 端口：$port_nv"; }
-  [ -n "$vlp" ] && { assign_port vl "$port_vl"; echo "Reality 端口：$port_vl"; }
 
   # ---------- 生成 sb.json ----------
   # 日志隐私：sing-box 的 warn/info 级别会把失败连接的目标域名写进磁盘日志，
@@ -888,6 +903,7 @@ EOF
             "listen": "::",
             "listen_port": $port_nv,
             "tcp_fast_open": true,
+            "quic_congestion_control": "bbr",
             "users": [
                 { "username": "$nv_user", "password": "$nv_pw" }
             ],
@@ -896,36 +912,6 @@ EOF
                 "min_version": "1.3",
                 "certificate_path": "$CERT_DIR/fullchain.cer",
                 "key_path": "$CERT_DIR/private.key"
-            }
-        },
-EOF
-  fi
-
-  # Reality (vless)
-  if [ -n "$vlp" ]; then
-    cat >> "$SB_CONF" <<EOF
-        {
-            "type": "vless",
-            "tag": "vless-reality-in",
-            "listen": "::",
-            "listen_port": $port_vl,
-            "tcp_fast_open": true,
-            "users": [
-                { "uuid": "$uuid", "flow": "xtls-rprx-vision" }
-            ],
-            "tls": {
-                "enabled": true,
-                "min_version": "1.3",
-                "server_name": "$ym_vl_re",
-                "reality": {
-                    "enabled": true,
-                    "handshake": {
-                        "server": "$ym_vl_re",
-                        "server_port": 443
-                    },
-                    "private_key": "$private_key_s",
-                    "short_id": [ "$short_id_s" ]
-                }
             }
         },
 EOF
@@ -1074,13 +1060,6 @@ gen_client() {
     done
     echo "💣【 Naiveproxy 】节点信息如下（前两条 v2rayN/NekoBox，后两条 Shadowrocket）："
     echo "$nv1_link"; echo "$nv2_link"; echo "$nv3_link"; echo "$nv4_link"; echo
-  fi
-
-  if [ -n "$vlp" ]; then
-    vl_link="vless://$uuid@$add:$port_vl?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$ym_vl_re&fp=chrome&pbk=$public_key_s&sid=$short_id_s&type=tcp&headerType=none#${sxname}reality-$hostname_s"
-    echo "$vl_link" >> "$SB_LINK"
-    echo "💣【 Reality (VLESS) 】节点信息如下："
-    echo "$vl_link"; echo
   fi
 
   # ---------- sing-box 客户端聚合配置 ----------
@@ -1349,24 +1328,6 @@ gen_client_sbox() {
     tags+=("naive-h3")
   fi
 
-  if [ -n "$vlp" ]; then
-    ob+=('{
-        "type": "vless",
-        "tag": "reality",
-        "server": "'"$add"'",
-        "server_port": '"$port_vl"',
-        "uuid": "'"$uuid"'",
-        "flow": "xtls-rprx-vision",
-        "tls": {
-            "enabled": true,
-            "server_name": "'"$ym_vl_re"'",
-            "utls": { "enabled": true, "fingerprint": "chrome" },
-            "reality": { "enabled": true, "public_key": "'"$public_key_s"'", "short_id": "'"$short_id_s"'" }
-        }
-    }')
-    tags+=("reality")
-  fi
-
   if [ "${#tags[@]}" -eq 0 ]; then
     warn "未生成任何客户端协议配置（服务器端可能未启用对应协议）"
     return
@@ -1480,25 +1441,6 @@ gen_client_clash() {
     groups="$groups
       - naive-$hostname_s"
   fi
-  if [ -n "$vlp" ]; then
-    proxies="$proxies
-  - name: reality-$hostname_s
-    server: $add
-    port: $port_vl
-    type: vless
-    uuid: $uuid
-    flow: xtls-rprx-vision
-    network: tcp
-    udp: true
-    tls: true
-    servername: $ym_vl_re
-    client-fingerprint: chrome
-    reality-opts:
-      public-key: $public_key_s
-      short-id: $short_id_s"
-    groups="$groups
-      - reality-$hostname_s"
-  fi
   cat > "$SB_HOME/clmi.yaml" <<EOF
 port: 7890
 allow-lan: true
@@ -1551,7 +1493,13 @@ install_service() {
     cat > /etc/systemd/system/${SB_SERVICE}.service <<EOF
 [Unit]
 Description=sbbox sing-box service
-After=network.target
+# network-online 而非 network：network.target 只表示网络栈已初始化，此时
+# 地址常常还没配上，入站 listen "::" 会起得来但 ACME/出站 DNS 会瞬间失败。
+Wants=network-online.target
+After=network-online.target nss-lookup.target
+# 反复崩溃时不要被 systemd 的默认限流（5 次/10 秒）永久熔断——代理挂了
+# 无人值守，宁可一直重试也不能停在 failed 状态
+StartLimitIntervalSec=0
 [Service]
 Type=simple
 NoNewPrivileges=yes
@@ -1559,9 +1507,15 @@ TimeoutStartSec=0
 ExecStart=$SB_BIN run -c $SB_CONF
 # always 而非 on-failure：进程以 exit 0 退出时也要拉起，长期运行不留缺口
 Restart=always
-RestartSec=5s
+RestartSec=3s
 # 句柄上限直接写进主 unit，不再依赖 tune 的 drop-in（用户可能执行过 tune off）
 LimitNOFILE=1048576
+LimitNPROC=infinity
+TasksMax=infinity
+# 代理进程的延迟直接决定体感，给一点调度优先级；受限环境设不上会被忽略
+Nice=-5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=2
 # 优雅退出：先 SIGTERM 让 sing-box 收敛连接，超时再强杀
 KillSignal=SIGTERM
 TimeoutStopSec=10
@@ -1670,8 +1624,7 @@ apply_hy_hop() {
 }
 
 # 密钥轮换：各协议密码、obfs 密码、订阅令牌全部换成新的独立随机值。
-# UUID、端口、证书、Reality 密钥对保持不变（换 Reality 密钥会连带作废公钥，
-# 且它本身不是共享密码，没有轮换必要）。
+# UUID、端口、证书保持不变。
 cmd_rotate() {
   [ -x "$SB_BIN" ] || { error "未安装 sbbox，无需轮换"; exit 1; }
   if [ -t 0 ]; then
@@ -1752,14 +1705,14 @@ main() {
   esac
 
   # 安装流程
-  if [ -z "$tup" ] && [ -z "$hyp" ] && [ -z "$nvp" ] && [ -z "$vlp" ]; then
+  if [ -z "$tup" ] && [ -z "$hyp" ] && [ -z "$nvp" ]; then
     if [ -x "$SB_BIN" ]; then
       # 已安装但未指定协议 → 显示帮助
       showmode
       status_show
       exit
     else
-      error "未指定任何协议。请至少设置一个：tup=1 hyp=1 nvp=1 vlp=1"
+      error "未指定任何协议。请至少设置一个：tup=1 hyp=1 nvp=1"
       echo ""
       showmode
       exit 1
@@ -1833,11 +1786,10 @@ install_cmd() {
 save_state() {
   # 先清空再按本次实际启用写入：重装若减少协议，旧标记必须消失，
   # 否则 list 会生成服务端已不存在的节点链接
-  rm -f "$SB_HOME"/proto_tup "$SB_HOME"/proto_hyp "$SB_HOME"/proto_nvp "$SB_HOME"/proto_vlp 2>/dev/null
+  rm -f "$SB_HOME"/proto_tup "$SB_HOME"/proto_hyp "$SB_HOME"/proto_nvp 2>/dev/null
   [ -n "$tup" ] && touch "$SB_HOME/proto_tup"
   [ -n "$hyp" ] && touch "$SB_HOME/proto_hyp"
   [ -n "$nvp" ] && touch "$SB_HOME/proto_nvp"
-  [ -n "$vlp" ] && touch "$SB_HOME/proto_vlp"
   echo "$ym" > "$SB_HOME/ym"
   [ -n "$hyjpt" ] && echo "$hyjpt" > "$SB_HOME/hyjpt"
   # Brutal 带宽必须持久化：否则 rotate / 重新生成配置时静默退回 BBR，
@@ -2032,7 +1984,6 @@ doctor() {
   [ "$tup" = yes ] && check_one Tuic "$port_tu" udp
   [ "$hyp" = yes ] && check_one Hysteria2 "$port_hy2" udp
   [ "$nvp" = yes ] && check_one Naiveproxy "$port_nv" tcp
-  [ "$vlp" = yes ] && check_one Reality "$port_vl" tcp
 
   if [ "$issues" -eq 0 ] && [ "$svc_down" -eq 0 ]; then
     echo ""
@@ -2055,13 +2006,12 @@ doctor() {
     sbrestart
     sleep 2
     # 重启后复查每个有问题的端口，仍未恢复则重新生成配置
-    for spec in "Tuic:$port_tu:udp" "Hysteria2:$port_hy2:udp" "Naiveproxy:$port_nv:tcp" "Reality:$port_vl:tcp"; do
+    for spec in "Tuic:$port_tu:udp" "Hysteria2:$port_hy2:udp" "Naiveproxy:$port_nv:tcp"; do
       name=${spec%%:*}; rest=${spec#*:}; p=${rest%%:*}; proto=${rest##*:}
       case "$name" in
         Tuic)       [ "$tup" = yes ] || continue ;;
         Hysteria2)  [ "$hyp" = yes ] || continue ;;
         Naiveproxy) [ "$nvp" = yes ] || continue ;;
-        Reality)    [ "$vlp" = yes ] || continue ;;
       esac
       if ! port_listening "$p" "$proto"; then
         echo "  ${name} 重启后仍不通，重新生成配置……"
@@ -2088,19 +2038,13 @@ doctor() {
 load_state() {
   uuid=$(cat "$SB_HOME/uuid" 2>/dev/null || echo "")
   load_secrets
-  ym_vl_re=$(cat "$SB_HOME/ym_vl_re" 2>/dev/null || echo "www.apple.com")
   ym=$(cat "$SB_HOME/ym" 2>/dev/null || echo "")
   [ -f "$SB_HOME/proto_tup" ] && tup=yes
   [ -f "$SB_HOME/proto_hyp" ] && hyp=yes
   [ -f "$SB_HOME/proto_nvp" ] && nvp=yes
-  [ -f "$SB_HOME/proto_vlp" ] && vlp=yes
   [ -f "$SB_HOME/port_tu" ] && port_tu=$(cat "$SB_HOME/port_tu")
   [ -f "$SB_HOME/port_hy2" ] && port_hy2=$(cat "$SB_HOME/port_hy2")
   [ -f "$SB_HOME/port_nv" ] && port_nv=$(cat "$SB_HOME/port_nv")
-  [ -f "$SB_HOME/port_vl" ] && port_vl=$(cat "$SB_HOME/port_vl")
-  [ -f "$SB_HOME/rk/public_key" ] && public_key_s=$(cat "$SB_HOME/rk/public_key")
-  [ -f "$SB_HOME/rk/short_id" ] && short_id_s=$(cat "$SB_HOME/rk/short_id")
-  [ -f "$SB_HOME/rk/private_key" ] && private_key_s=$(cat "$SB_HOME/rk/private_key")
   [ -f "$SB_HOME/hyjpt" ] && hyjpt=$(cat "$SB_HOME/hyjpt")
   if [ -z "$hyup" ] && [ -z "$hydown" ] && [ -s "$SB_HOME/hybw" ]; then
     hyup=$(awk '{print $1}' "$SB_HOME/hybw"); hydown=$(awk '{print $2}' "$SB_HOME/hybw")

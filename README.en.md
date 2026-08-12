@@ -1,8 +1,8 @@
-# sing-box-naiveproxy — Sing-box Five-Protocol Secure Proxy Script
+# sing-box-naiveproxy — Sing-box Three-Protocol Secure Proxy Script
 
 [![validate](https://github.com/ShJChow/sing-box-naiveproxy/actions/workflows/validate.yml/badge.svg)](https://github.com/ShJChow/sing-box-naiveproxy/actions/workflows/validate.yml)
 
-A **sing-box single-core** deployment script derived from [`yonggekkk/argosbx`](https://github.com/yonggekkk/argosbx), stripped down to five protocols:
+A **sing-box single-core** deployment script derived from [`yonggekkk/argosbx`](https://github.com/yonggekkk/argosbx), stripped down to three protocols:
 
 | Protocol | Purpose | Transport |
 |----------|---------|-----------|
@@ -10,7 +10,12 @@ A **sing-box single-core** deployment script derived from [`yonggekkk/argosbx`](
 | **Hysteria2** | High throughput / loss resistance | QUIC (HTTP/3) |
 | **Naiveproxy H2** | High-disguise HTTP/2 proxy | HTTP/2 |
 | **Naiveproxy H3** | High-disguise HTTP/3 proxy | HTTP/3 (QUIC) |
-| **Reality (VLESS)** | Zero-certificate anti-detection | TCP + Vision flow |
+
+> **Reality (VLESS) was removed in v1.9.0.** This project is built around "real certificate +
+> Naiveproxy disguise", where Reality's anti-detection role fully overlaps with Naive, while being
+> the only protocol on plain TCP that cannot share the QUIC/HTTP3 tuning path — keeping it only added
+> TCP attack surface and a separate key set to maintain. Reinstalling on v1.9.0 wipes the leftover
+> Reality private key and port markers; delete the corresponding node in your clients.
 
 Bundled with:
 - **Kernel-level flow tuning** (ported from the `xh tuning on` of [`ShJChow/Xray-core-xhttp-cdn-tuned`](https://github.com/ShJChow/Xray-core-xhttp-cdn-tuned)): BBR, memory-tiered buffers, TCP Fast Open, file-handle limits — applied automatically at install, one-command rollback
@@ -27,13 +32,11 @@ Bundled with:
 | Hysteria2 masquerade | none | returns a 404 page to non-Hy2 probes |
 | Hysteria2 bandwidth claim | trusts client | `ignore_client_bandwidth: true` (server-authoritative) |
 | Hysteria2 SNI | hard-coded `www.bing.com` | user-defined (certificate domain) |
-| Reality TLS version | unspecified | forced `min_version: "1.3"` |
-| Reality client fingerprint | partial | forced uTLS `chrome` |
 | Tuic 0-RTT | not explicitly disabled | `zero_rtt_handshake: false` (replay-resistant) |
 | File handle limit | system default | 1048576 (systemd drop-in) |
 | Kernel tuning | none | applied at install; `sbbox tune off` to roll back |
 
-> **Transport-layer obfuscation note**: sing-box does not support the Xray-proprietary xpadding / VLESS Encryption / ECH extensions. This script uses native sing-box equivalents: the Reality protocol itself, Naiveproxy HTTP/2 padding, Hysteria2 QUIC + port hopping, and uTLS fingerprints.
+> **Transport-layer obfuscation note**: sing-box does not support the Xray-proprietary xpadding / VLESS Encryption / ECH extensions. This script uses native sing-box equivalents: Naiveproxy HTTP/2 padding, Hysteria2 salamander obfuscation + QUIC port hopping, and uTLS fingerprints.
 
 ---
 
@@ -48,13 +51,13 @@ Bundled with:
 ### One-command install
 
 ```bash
-# Tuic + Hysteria2 + Reality only (no domain; self-signed cert + SHA256 pinning)
+# Tuic + Hysteria2 only (no domain; self-signed cert + SHA256 pinning)
 bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/main/sbbox.sh) \
-  tup=1 hyp=1 vlp=1
+  tup=1 hyp=1
 
-# All five protocols (domain required; auto-issue a Let's Encrypt certificate)
+# All three protocols (domain required; auto-issue a Let's Encrypt certificate)
 bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/main/sbbox.sh) \
-  tup=1 hyp=1 nvp=1 vlp=1 alns=1 ym=your.domain.com
+  tup=1 hyp=1 nvp=1 alns=1 ym=your.domain.com
 ```
 
 > With `alns=1`, acme.sh uses standalone mode: **port 80 must be free** and the domain's A record must point to this VPS.
@@ -66,10 +69,9 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/ma
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `tup` / `hyp` / `nvp` / `vlp` | empty | protocol toggles; any non-empty value enables |
+| `tup` / `hyp` / `nvp` | empty | protocol toggles; any non-empty value enables |
 | `alns` | empty | enable ACME certificate issuance (`alns=1`) |
 | `ym` | empty | ACME certificate domain (required with `alns`) |
-| `ym_vl_re` | `apple.com` | Reality fallback/handshake domain |
 | `hyjpt` | empty | Hysteria2 port hopping, e.g. `hyjpt="20000 20001 20002"` |
 | `hyobfs` | **1 (on by default)** | Hysteria2 salamander obfuscation — resists protocol fingerprinting; disable with `hyobfs=0` |
 | `hyobfs_pw` | same as uuid | obfuscation password |
@@ -113,7 +115,7 @@ and serves it over HTTP from the VPS:
 
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/main/sbbox.sh) \
-  tup=1 hyp=1 vlp=1 sub=1
+  tup=1 hyp=1 sub=1
 ```
 
 The install prints a URL of the form `http://<IP>:<port>/<token>`.
