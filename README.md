@@ -1,8 +1,8 @@
-# sing-box-naiveproxy — Sing-box 五协议安全加固代理脚本
+# sing-box-naiveproxy — Sing-box 三协议安全加固代理脚本
 
 [![validate](https://github.com/ShJChow/sing-box-naiveproxy/actions/workflows/validate.yml/badge.svg)](https://github.com/ShJChow/sing-box-naiveproxy/actions/workflows/validate.yml)
 
-基于架构 **sing-box 单内核**部署脚本，只保留五个协议：
+基于架构 **sing-box 单内核**部署脚本，只保留三个协议：
 
 | 协议 | 用途 | 传输 |
 |------|------|------|
@@ -10,7 +10,11 @@
 | **Hysteria2** | 高吞吐 / 抗丢包 | QUIC (HTTP/3) |
 | **Naiveproxy H2** | 高隐匿性 HTTP/2 代理 | HTTP/2 |
 | **Naiveproxy H3** | 高隐匿性 HTTP/3 代理 | HTTP/3 (QUIC) |
-| **Reality (VLESS)** | 零证书抗检测 | TCP + Vision 流控 |
+
+> **v1.9.0 起移除 Reality (VLESS)**：本项目的定位是「真实证书 + Naiveproxy 伪装」，
+> Reality 与 Naive 在抗检测上的作用完全重叠，却是唯一走纯 TCP、无法复用 QUIC/HTTP3
+> 调优路径的协议，保留它只是多一份 TCP 攻击面和一套要单独维护的密钥。
+> 升级到 v1.9.0 后重装即会自动清除服务端的 Reality 私钥与端口标记，客户端请删除对应节点。
 
 建议选择**Naiveproxy H2** ，请手动打开QUIC bbr， UDP over tls
 集成了：
@@ -29,10 +33,9 @@
 | Hysteria2 伪装 | 无 | `masquerade` 反代真实站点（默认 www.bing.com），未认证探测拿到真实页面 |
 | Hysteria2 带宽声明 | 信任客户端 | `ignore_client_bandwidth: true`（服务端主导） |
 | Hysteria2 SNI | 固定 `www.bing.com` | 用户自定义（证书域名） |
-| Reality TLS 版本 | 未指定 | 强制 `min_version: "1.3"` |
-| Reality 客户端指纹 | 部分有 | 强制 uTLS `chrome` |
 | Tuic 0-RTT | 未显式关闭 | `zero_rtt_handshake: false`（防重放） |
-| 文件句柄 | 系统默认 | 1048576（systemd drop-in） |
+| 文件句柄 | 系统默认 | 1048576（写进主 unit，不依赖 drop-in） |
+| 协议面 | 四协议，含纯 TCP 的 Reality | **三协议全走 TLS1.3/QUIC**，v1.9.0 移除 Reality，收敛 TCP 攻击面 |
 | 内核调优 | 未配置 | 安装期自动应用，`sbbox tune off` 可回滚 |
 | 协议凭据 | 全部复用同一 uuid | **每协议独立随机密钥**（v1.8.0），任一泄露不牵连其他 |
 | Hysteria2 obfs 密码 | 同认证密码 | 独立随机值，混淆层与认证层不共用秘密 |
@@ -41,7 +44,7 @@
 | 垃圾邮件滥用 | 未限制 | 默认阻断出站 25/465/587 与 SMB 端口（`blkport=0` 关闭） |
 | 服务端日志 | `warn`，失败连接的目标域名落盘 | 默认 `error`；`sblevel=off` 完全不落盘 |
 
-> **传输层混淆说明**：sing-box 不支持 xray 的 xpadding / VLESS Encryption / ECH 专有扩展。本脚本使用 sing-box 原生等价方案：Reality 协议本身即抗检测混淆、Naiveproxy HTTP/2 padding、Hysteria2 QUIC + 跳跃端口、uTLS 指纹。
+> **传输层混淆说明**：sing-box 不支持 xray 的 xpadding / VLESS Encryption / ECH 专有扩展。本脚本使用 sing-box 原生等价方案：Naiveproxy HTTP/2 padding（流量与真实 Chrome 一致）、Hysteria2 salamander 混淆 + QUIC 跳跃端口、uTLS 指纹。
 
 ---
 
@@ -56,13 +59,13 @@
 ### 一键安装
 
 ```bash
-# 只装 Tuic + Hysteria2 + Reality（无域名，自签证书 + SHA256 固定指纹）
+# 只装 Tuic + Hysteria2（无域名，自签证书 + SHA256 固定指纹）
 bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/main/sbbox.sh) \
-  tup=1 hyp=1 vlp=1
+  tup=1 hyp=1
 
 # 装全部五个协议（需域名，自动申请 Let's Encrypt 证书）
 bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/main/sbbox.sh) \
-  tup=1 hyp=1 nvp=1 vlp=1 alns=1 ym=your.domain.com
+  tup=1 hyp=1 nvp=1 alns=1 ym=your.domain.com
 ```
 
 > `alns=1` 时 acme.sh 走 standalone 模式，需要 **80 端口空闲**、域名 A 记录已解析到本机。
@@ -74,10 +77,9 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/ma
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `tup` / `hyp` / `nvp` / `vlp` | 空 | 协议开关，非空即启用 |
+| `tup` / `hyp` / `nvp` | 空 | 协议开关，非空即启用 |
 | `alns` | 空 | 启用 acme 证书申请（`alns=1`） |
 | `ym` | 空 | acme 证书域名（启用 alns 时必需） |
-| `ym_vl_re` | `www.apple.com` | Reality 回落目标域名 |
 | `hyjpt` | 空 | Hysteria2 跳跃端口，如 `hyjpt="20000 20001 20002"` |
 | `hyobfs` | **1（默认开启）** | Hysteria2 salamander 混淆，抗协议识别；关闭用 `hyobfs=0` |
 | `hyobfs_pw` | 独立随机 | Hysteria2 混淆密码（与认证密码分离） |
@@ -89,7 +91,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/ma
 | `subport` | 随机 | 订阅服务端口 |
 | `subid` | 独立随机 | 订阅令牌（URL 路径，相当于密码） |
 | `sub_nonaive` | 空 | 剔除 Naiveproxy 节点（客户端不支持 naive+ 链接时用 `sub_nonaive=1`） |
-| `uuid` | 自动生成 | 自定义 UUID（VLESS/Tuic 用；各协议密码自 v1.8.0 起独立随机，不再复用 UUID） |
+| `uuid` | 自动生成 | 自定义 UUID（Tuic 用；各协议密码自 v1.8.0 起独立随机，不再复用 UUID） |
 | `port_tu` / `port_hy2` / `port_nv` / `port_vl` | 随机 | 指定固定端口 |
 | `name` | 空 | 节点名称前缀 |
 | `noautoup` | 空 | 关闭每周内核自动升级（`noautoup=1`） |
@@ -106,8 +108,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/ma
 |------|---------|------|
 | Tuic | `congestion_control: bbr`、`zero_rtt_handshake: false`、`auth_timeout: 3s`、`heartbeat: 10s` | 关 0-RTT 牺牲 1 个 RTT 换取抗重放；心跳保活 NAT 映射 |
 | Hysteria2 | **`obfs: salamander`（默认开启）**、`ignore_client_bandwidth: true`（客户端统一走 BBR）、`masquerade` 反代真实站点 | 混淆抗协议识别；BBR 稳定公平，无需预知带宽；反代伪装让主动探测拿到真实页面 |
-| Naiveproxy | `tcp_fast_open: true`、`min_version: "1.3"`、强制真实证书 | TFO 省 1 个 RTT；仅 TLS 1.3 可用，杜绝降级 |
-| Reality | `tcp_fast_open: true`、TLS 1.3、uTLS chrome 指纹 | Vision 流控自带 splice 高性能路径 |
+| Naiveproxy | `tcp_fast_open: true`、`quic_congestion_control: bbr`、`min_version: "1.3"`、强制真实证书 | TFO 省 1 个 RTT；同一入站同时服务 H2(TCP) 与 H3(QUIC)，H3 侧显式走 BBR；仅 TLS 1.3 可用，杜绝降级 |
 
 ### 客户端嗅探（默认开启）
 
@@ -137,6 +138,10 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/ma
 | `fq` 队列规则 | `tc qdisc replace dev <网卡> root fq` | QUIC 强依赖 pacing。`net.core.default_qdisc=fq` **只影响此后新建的 qdisc**，已存在的网卡不会自动切换，必须显式设置 |
 | UDP GRO/GSO | `ethtool -K <网卡> gro/gso/tso on` | 让内核合并/分片 UDP 段，高速 QUIC 下明显降低 CPU |
 | UDP 缓冲区 | 大内存档 `rmem_max/wmem_max` 提到 **128MB** | QUIC 的 UDP socket 不像 TCP 自动扩缩，quic-go 直接按 `rmem_max` 申请，上限偏小会打印 `failed to sufficiently increase receive buffer size` 并压低吞吐 |
+| 链路速率分档（v1.9.0） | 读 `/sys/class/net/<网卡>/speed`，≥1Gbps 且内存 ≥16GB 时再抬一档（`tcp_mem` 64MB、backlog 131072、budget 8000） | 决定缓冲需求的是 **BDP = 带宽 × RTT**，不是内存大小。4Gbps × 200ms 跨洲链路的 BDP 已接近 100MB，缓冲小于 BDP 时单条连接根本跑不满出口 |
+| `net.ipv4.udp_mem`（v1.9.0） | 按物理内存页数设为 4%/6%/10% | 这是**全局** UDP 内存上限，默认值相当保守；触顶后内核直接丢包，现象是 QUIC 吞吐忽高忽低而 `rmem_max` 看着完全够用 |
+| 网卡收发环形队列（v1.9.0） | `ethtool -G <网卡> rx/tx` 拉到硬件上限 | 高速 QUIC 是突发型流量，默认 ring（常见 256/512）在瞬时突发下直接 `rx_dropped`，而这类丢包在 sing-box 日志里完全看不见 |
+| systemd 服务（v1.9.0） | `After=network-online.target`、`RestartSec=3s`、`StartLimitIntervalSec=0`、`LimitNPROC/TasksMax=infinity`、`Nice=-5` | `network.target` 时地址常常还没配上；默认重启限流（5 次/10 秒）会让反复崩溃的服务永久停在 failed，代理无人值守时必须一直重试 |
 
 `sbbox tune show` 会显示当前网卡的队列规则与卸载状态，`sbbox tune off` 把队列规则交还系统默认。
 
@@ -214,8 +219,8 @@ hyup=600 hydown=600 sbbox list
 
 ```bash
 # 安装时指定通道（安装是无子命令形式，协议变量必须带上）
-tup=1 hyp=1 nvp=1 vlp=1 bash sbbox.sh                # 默认 pre 通道
-sbrel=stable tup=1 hyp=1 nvp=1 vlp=1 bash sbbox.sh   # 只跟正式版
+tup=1 hyp=1 nvp=1 bash sbbox.sh                # 默认 pre 通道
+sbrel=stable tup=1 hyp=1 nvp=1 bash sbbox.sh   # 只跟正式版
 
 # 安装后
 sbbox up                  # 按首装时记住的通道升级；已是最新则跳过
@@ -245,7 +250,7 @@ sbrel=pre sbbox up        # 临时切到 pre 通道升级一次
 
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/main/sbbox.sh) \
-  tup=1 hyp=1 vlp=1 sub=1
+  tup=1 hyp=1 sub=1
 ```
 
 安装结束会打印订阅地址，形如 `http://<IP>:<端口>/<令牌>`。

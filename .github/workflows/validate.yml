@@ -29,16 +29,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: 全部五协议
-            env: tup=1 hyp=1 nvp=1 vlp=1 alns=1
-          - name: 仅 Reality
-            env: vlp=1
+          - name: 全部三协议
+            env: tup=1 hyp=1 nvp=1 alns=1
           - name: 仅 Hysteria2
             env: hyp=1
           - name: 仅 Tuic
             env: tup=1
           - name: 自签证书组合
-            env: tup=1 hyp=1 vlp=1
+            env: tup=1 hyp=1
           - name: Hysteria2 跳跃端口
             env: hyp=1 hyjpt=20000
           - name: Hysteria2 混淆+Brutal
@@ -99,7 +97,6 @@ jobs:
               tup=1) jq -e '.inbounds[]|select(.type=="tuic")'      "$CONF" >/dev/null ;;
               hyp=1) jq -e '.inbounds[]|select(.type=="hysteria2")' "$CONF" >/dev/null ;;
               nvp=1) jq -e '.inbounds[]|select(.type=="naive")'     "$CONF" >/dev/null ;;
-              vlp=1) jq -e '.inbounds[]|select(.type=="vless")'     "$CONF" >/dev/null ;;
             esac
           done
           echo "OK: 所有启用的协议均已生成"
@@ -164,9 +161,12 @@ jobs:
           if echo '${{ matrix.env }}' | grep -q 'tuils=0'; then
             echo "$T" | jq -e '.tls.utls==null and (.tls.certificate_public_key_sha256==null)' >/dev/null               || { echo "tuils=0 应移除 utls 与公钥固定"; exit 1; }
           else
-            # 有真实证书时（alns=1 且 CI 预置了证书）应生成 chrome 指纹 + 非空公钥固定
-            echo "$T" | jq -e '.tls.utls.fingerprint=="chrome"' >/dev/null               || { echo "默认应启用 uTLS chrome 指纹"; exit 1; }
-            echo "$T" | jq -e '.tls.certificate_public_key_sha256 | length>0' >/dev/null               || { echo "有真实证书时默认应固定证书公钥 SHA-256"; exit 1; }
+            # Tuic 跑在 QUIC 上，uTLS 会让出站直接报 "unsupported usage for uTLS"，
+            # 因此加固只保留证书公钥固定，且公钥固定需要有真实证书（alns=1）
+            echo "$T" | jq -e '.tls.utls==null' >/dev/null               || { echo "Tuic 是 QUIC 传输，不能带 utls"; exit 1; }
+            if echo '${{ matrix.env }}' | grep -q 'alns=1'; then
+              echo "$T" | jq -e '.tls.certificate_public_key_sha256 | length>0' >/dev/null                 || { echo "有真实证书时默认应固定证书公钥 SHA-256"; exit 1; }
+            fi
           fi
           echo "OK: Tuic TLS 加固符合预期"
 
@@ -231,7 +231,7 @@ jobs:
             -subj "/CN=ci.example.com" 2>/dev/null
 
       - name: 生成配置
-        run: env SBBOX_CHECK_ONLY=1 tup=1 hyp=1 nvp=1 vlp=1 alns=1 bash sbbox.sh
+        run: env SBBOX_CHECK_ONLY=1 tup=1 hyp=1 nvp=1 alns=1 bash sbbox.sh
 
       - name: 生成节点与订阅
         run: env sub=1 subport=18080 bash sbbox.sh list
@@ -253,7 +253,6 @@ jobs:
           grep -q '^naive+quic://'  /tmp/decoded.txt || { echo "缺少 naive H3 节点(v2rayN)"; exit 1; }
           grep -q '^http2://'       /tmp/decoded.txt || { echo "缺少 naive H2 节点(Shadowrocket)"; exit 1; }
           grep -q '^http3://'       /tmp/decoded.txt || { echo "缺少 naive H3 节点(Shadowrocket)"; exit 1; }
-          grep -q '^vless://'      /tmp/decoded.txt || { echo "缺少 reality 节点"; exit 1; }
           grep -q '^hysteria2://'  /tmp/decoded.txt || { echo "缺少 hysteria2 节点"; exit 1; }
           grep -q '^tuic://'       /tmp/decoded.txt || { echo "缺少 tuic 节点"; exit 1; }
           echo "OK: 订阅含全部节点，naive 双 scheme 齐备"
