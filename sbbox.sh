@@ -1350,9 +1350,10 @@ gen_client_sbox() {
     "dns": {
         "servers": [
             { "tag": "remote", "type": "https", "server": "1.1.1.1", "detour": "auto" },
-            { "tag": "local", "type": "udp", "server": "223.5.5.5", "detour": "direct" }
+            { "tag": "local", "type": "udp", "server": "223.5.5.5" }
         ],
         "rules": [ { "rule_set": "geosite-cn", "server": "local" } ],
+        "strategy": "prefer_ipv4",
         "final": "remote"
     },
     "outbounds": [
