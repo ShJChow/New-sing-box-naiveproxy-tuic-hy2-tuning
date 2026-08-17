@@ -1,8 +1,8 @@
-# sing-box-naiveproxy — Sing-box Three-Protocol Secure Proxy Script
+# sing-box-naiveproxy — Sing-box Four-Protocol Secure Proxy Script
 
 [![validate](https://github.com/ShJChow/sing-box-naiveproxy/actions/workflows/validate.yml/badge.svg)](https://github.com/ShJChow/sing-box-naiveproxy/actions/workflows/validate.yml)
 
-A **sing-box single-core** deployment script derived from [`yonggekkk/argosbx`](https://github.com/yonggekkk/argosbx), stripped down to three protocols:
+A **sing-box single-core** deployment script derived from [`yonggekkk/argosbx`](https://github.com/yonggekkk/argosbx), covering four protocols:
 
 | Protocol | Purpose | Transport |
 |----------|---------|-----------|
@@ -10,12 +10,18 @@ A **sing-box single-core** deployment script derived from [`yonggekkk/argosbx`](
 | **Hysteria2** | High throughput / loss resistance | QUIC (HTTP/3) |
 | **Naiveproxy H2** | High-disguise HTTP/2 proxy | HTTP/2 |
 | **Naiveproxy H3** | High-disguise HTTP/3 proxy | HTTP/3 (QUIC) |
+| **VLESS-REALITY-Vision** | Fallback without a domain / low-latency TCP | TCP |
 
-> **Reality (VLESS) was removed in v1.9.0.** This project is built around "real certificate +
-> Naiveproxy disguise", where Reality's anti-detection role fully overlaps with Naive, while being
-> the only protocol on plain TCP that cannot share the QUIC/HTTP3 tuning path — keeping it only added
-> TCP attack surface and a separate key set to maintain. Reinstalling on v1.9.0 wipes the leftover
-> Reality private key and port markers; delete the corresponding node in your clients.
+> **On removing and then restoring Reality.** v1.9.0 dropped Reality (VLESS) arguing it overlapped
+> with Naive and only added TCP attack surface. **v1.10.0 brings it back, enabled by default.**
+> That call was only half right: what overlaps is the *disguise*; what does not overlap is the
+> *dependency on your own domain and certificate*. Reality completes its TLS handshake against a
+> third-party site, so when your domain is blocked or ACME issuance fails, it is the one protocol
+> still able to come up — and that is exactly the situation in which the other three fail together.
+>
+> The cost is real (extra plain-TCP attack surface, a separate key set), so it listens on its own
+> port and can be disabled with `rlp=0`. Machines upgrading from v1.8.x **reuse their existing
+> Reality keypair**, so old clients do not need to be re-imported.
 
 Bundled with:
 - **Kernel-level flow tuning** (ported from the `xh tuning on` of [`ShJChow/Xray-core-xhttp-cdn-tuned`](https://github.com/ShJChow/Xray-core-xhttp-cdn-tuned)): BBR, memory-tiered buffers, TCP Fast Open, file-handle limits — applied automatically at install, one-command rollback
@@ -55,7 +61,7 @@ Bundled with:
 bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/main/sbbox.sh) \
   tup=1 hyp=1
 
-# All three protocols (domain required; auto-issue a Let's Encrypt certificate)
+# All protocols (domain required; auto-issue a Let's Encrypt certificate)
 bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/main/sbbox.sh) \
   tup=1 hyp=1 nvp=1 alns=1 ym=your.domain.com
 ```
@@ -69,7 +75,9 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/ma
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `tup` / `hyp` / `nvp` | empty | protocol toggles; any non-empty value enables |
+| `tup` / `hyp` / `nvp` | empty | protocol toggles; any non-empty value enables (at least one must be given explicitly to enter the install flow) |
+| `rlp` | **1 (on by default)** | VLESS-REALITY-Vision node; disable with `rlp=0`. Needs no domain and no certificate |
+| `rlsni` | auto-selected | Reality handshake target. If unset, the installer measures apple / microsoft / cloudflare / amazon and picks the fastest one that negotiates TLS1.3 + h2; the choice is persisted and never changes afterwards |
 | `alns` | empty | enable ACME certificate issuance (`alns=1`) |
 | `ym` | empty | ACME certificate domain (required with `alns`) |
 | `hyjpt` | empty | Hysteria2 port hopping, e.g. `hyjpt="20000 20001 20002"` |
@@ -186,3 +194,20 @@ Run `sbbox sub` any time to reprint the URL, `sbbox sub off` to stop serving it.
 - [yonggekkk/argosbx](https://github.com/yonggekkk/argosbx) — original script architecture and protocol config reference
 - [ShJChow/Xray-core-xhttp-cdn-tuned](https://github.com/ShJChow/Xray-core-xhttp-cdn-tuned) — kernel-level flow tuning (`xh tuning`) implementation port
 - [sagernet/sing-box](https://github.com/SagerNet/sing-box) — proxy core
+
+---
+
+## Disclaimer
+
+This project is provided for **network technology research and educational purposes only**.
+
+- You are responsible for complying with the laws and regulations of your country/region.
+  All consequences arising from the use of this script are borne solely by the user; the author
+  accepts no liability for any direct or indirect damages.
+- Do not use this project for any unlawful purpose.
+- The project comes with **no warranty of any kind**, express or implied, including but not limited
+  to warranties of fitness, reliability, or availability. The code is provided "as is".
+- You are responsible for the server you deploy, including credential hygiene, abuse prevention,
+  and compliance with your provider's terms of service.
+
+If you do not accept these terms, do not use this project.
