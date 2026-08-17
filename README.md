@@ -1,4 +1,4 @@
-# sing-box-naiveproxy — Sing-box 三协议安全加固代理脚本
+# sing-box-naiveproxy — Sing-box 四协议安全加固代理脚本
 
 [![validate](https://github.com/ShJChow/sing-box-naiveproxy/actions/workflows/validate.yml/badge.svg)](https://github.com/ShJChow/sing-box-naiveproxy/actions/workflows/validate.yml)
 
