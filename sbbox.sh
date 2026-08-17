@@ -1,13 +1,23 @@
 #!/usr/bin/env bash
 # ======================================================
-# sing-box-naiveproxy (sbbox.sh) — Sing-box 三协议安全加固代理脚本
+# sing-box-naiveproxy (sbbox.sh) — Sing-box 四协议安全加固代理脚本
 #
 # 基于 yonggekkk/argosbx 架构，剥离为 sing-box 单内核，
-# 仅保留 Tuic / Hysteria2 / Naiveproxy(H2+H3) 三协议。
-# v1.9.0 起移除 Reality/VLESS：它是四者中唯一无法与 QUIC/HTTP3 共用一套
-# 证书与调优路径的协议，且在本项目的定位（真实证书 + Naive 伪装）下与
-# Naiveproxy 完全重叠，保留它只是多一份 TCP 攻击面与维护成本。
+# 保留 Tuic / Hysteria2 / Naiveproxy(H2+H3) / VLESS-REALITY-Vision 四协议。
+#
+# 关于 Reality 的反复：v1.9.0 曾以「与 Naive 定位重叠、多一份 TCP 攻击面」
+# 为由移除它。v1.10.0 重新加回，理由是实测下来那个判断只对了一半——
+# 重叠的是「伪装」，不重叠的是「不依赖自有域名与证书」：Reality 借用第三方
+# 站点完成握手，域名被墙或证书签发失败时它是唯一还能起来的协议，这恰恰是
+# 其余三个协议同时失效的场景。它确实多一份 TCP 攻击面，故端口独立、
+# 可用 rlp=0 关闭。
+#
 # 集成内核级流控调优 (xh tuning on) + acme.sh 证书申请。
+#
+# 免责声明：
+#   本脚本仅供网络技术研究与学习交流使用。使用者须自行遵守所在国家/地区的
+#   法律法规，因使用本脚本产生的一切后果由使用者自行承担，作者不对任何直接
+#   或间接损失负责。请勿用于任何非法用途。
 #
 # 用法：
 #   bash sbbox.sh                     # 安装（需前置协议变量，见 README）
@@ -39,7 +49,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v1.9.0"
+SBBOX_VERSION="v1.10.0"
 SB_URL="https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -59,6 +69,10 @@ uuid="${uuid:-}"
 ym="${ym:-}"                                # acme 证书域名（启用 alns 时必需）
 alns="${alns:-}"                            # 申请 acme 证书：alns=1
 tup="${tup:-}" hyp="${hyp:-}" nvp="${nvp:-}"
+# REALITY 默认开启：它不依赖证书与自有域名，是域名被墙 / acme 签发失败时
+# 唯一还能起来的协议，作为兜底默认装上。关闭用 rlp=0/no/off/false。
+rlp="${rlp:-1}"
+rlsni="${rlsni:-}"                          # REALITY 借用的握手目标域名（空则自动择优）
 hyjpt="${hyjpt:-}"                          # Hysteria2 跳跃端口，如 "20000:30000"
 hyobfs="${hyobfs:-1}"                       # Hysteria2 salamander 混淆，默认开启；关闭用 hyobfs=0
 hyobfs_pw="${hyobfs_pw:-}"                  # 混淆密码（默认独立随机值）
@@ -117,8 +131,8 @@ v4v6() {
 # ---------- 帮助信息 ----------
 showmode() {
   echo "==========================================================="
-  echo "sbbox $SBBOX_VERSION — Sing-box-Only 三协议安全代理脚本"
-  echo "支持协议：Tuic / Hysteria2 / Naiveproxy(H2+H3)"
+  echo "sbbox $SBBOX_VERSION — Sing-box-Only 四协议安全代理脚本"
+  echo "支持协议：Tuic / Hysteria2 / Naiveproxy(H2+H3) / VLESS-REALITY-Vision"
   echo "-----------------------------------------------------------"
   echo "主脚本：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/main/sbbox.sh)"
   echo "显示节点信息：sbbox list 【或】 bash sbbox.sh list"
@@ -131,7 +145,9 @@ showmode() {
   echo "自检修复：sbbox doctor"
   echo "卸载：sbbox del"
   echo "-----------------------------------------------------------"
-  echo "环境变量（安装期）：tup=1 hyp=1 nvp=1"
+  echo "环境变量（安装期）：tup=1 hyp=1 nvp=1（REALITY 默认开启，rlp=0 关闭）"
+  echo "  rlp=0    关闭 VLESS-REALITY-Vision 节点（默认开启，无需证书与域名）"
+  echo "  rlsni=域名  REALITY 借用的握手目标（默认自动择优，见 README）"
   echo "  alns=1   启用 acme 证书（需 ym=你的域名）"
   echo "  ym=域名  acme 证书域名（Hysteria2/Tuic/Naive 使用）"
   echo "  hyjpt=20000:30000  Hysteria2 跳跃端口"
@@ -141,6 +157,9 @@ showmode() {
   echo "  hymask=URL  Hysteria2 伪装反代目标（默认 https://www.bing.com，none=静态 404）"
   echo "  sblevel=error|warn|info|off  服务端日志级别（默认 error）"
   echo "轮换全部密码：sbbox rotate（各协议独立新密钥，需重新导入客户端）"
+  echo "-----------------------------------------------------------"
+  echo "免责声明：本脚本仅供网络技术研究与学习交流。使用者须遵守所在国家/地区"
+  echo "法律法规，一切后果自负，作者不承担任何责任。请勿用于非法用途。"
   echo "==========================================================="
 }
 
@@ -306,14 +325,55 @@ load_secrets() {
   fi
 }
 
-# ---------- 旧版 Reality 残留清理 ----------
-# v1.9.0 移除了 Reality/VLESS。从 <=v1.8.x 升级上来的机器磁盘上还留着
-# Reality 私钥与端口标记，配置里已不再引用它们，留着只是把私钥继续摊在盘上。
-purge_reality_leftovers() {
-  [ -e "$SB_HOME/rk" ] || [ -e "$SB_HOME/proto_vlp" ] || return 0
-  rm -rf "$SB_HOME/rk" 2>/dev/null
-  rm -f "$SB_HOME/proto_vlp" "$SB_HOME/port_vl" "$SB_HOME/ym_vl_re" 2>/dev/null
-  warn "已移除旧版 Reality 节点残留（本版不再提供该协议，客户端请删除对应节点）"
+# ---------- REALITY 密钥对 / shortId ----------
+# v1.10.0 重新引入 Reality。<=v1.8.x 的老机器磁盘上可能还留着 rk 目录，
+# 里面的密钥对格式与本版一致，直接沿用——重新生成会让老客户端全部掉线。
+load_reality_keys() {
+  local d="$SB_SEC_DIR/reality"
+  mkdir -p "$d" 2>/dev/null; chmod 700 "$d" 2>/dev/null
+  # 平滑继承 v1.8.x 的 rk 目录
+  if [ ! -s "$d/private" ] && [ -s "$SB_HOME/rk/private" ]; then
+    cp -f "$SB_HOME/rk/private" "$d/private" 2>/dev/null
+    cp -f "$SB_HOME/rk/public"  "$d/public"  2>/dev/null
+    warn "已沿用 v1.8.x 遗留的 REALITY 密钥对，老客户端无需重新导入"
+  fi
+  if [ ! -s "$d/private" ] || [ ! -s "$d/public" ]; then
+    local out
+    out=$("$SB_BIN" generate reality-keypair 2>/dev/null) || {
+      error "生成 REALITY 密钥对失败（sing-box generate reality-keypair）"; return 1; }
+    printf '%s\n' "$out" | awk '/PrivateKey/{print $2}' > "$d/private"
+    printf '%s\n' "$out" | awk '/PublicKey/{print $2}'  > "$d/public"
+  fi
+  # shortId 必须是偶数长度 hex；空串也合法但会丢失一层区分度，固定用 16 位
+  [ -s "$d/shortid" ] || gen_secret | cut -c1-16 > "$d/shortid"
+  # Reality 的 UUID 独立于 Tuic：复用意味着一条链接泄露即同时暴露两个协议
+  [ -s "$d/uuid" ] || { "$SB_BIN" generate uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid; } > "$d/uuid"
+  chmod 600 "$d"/* 2>/dev/null
+  rl_priv=$(cat "$d/private"); rl_pub=$(cat "$d/public")
+  rl_sid=$(cat "$d/shortid");  rl_uuid=$(cat "$d/uuid")
+}
+
+# REALITY 握手目标择优：Reality 会把每个客户端握手真实转发给该站点，
+# 它的 RTT 直接加在每次建连上，选一个从本机最快、且支持 TLS1.3+H2 的站。
+# 候选全部是大流量 CDN 站点，单机指向它们的流量不显异常。
+pick_reality_sni() {
+  if [ -n "$rlsni" ]; then rl_sni="$rlsni"; return 0; fi
+  # 已选过就不再重选：换 SNI 会让所有existing客户端连不上
+  if [ -s "$SB_HOME/rlsni" ]; then rl_sni=$(cat "$SB_HOME/rlsni"); return 0; fi
+  local best="" best_t="" c t
+  for c in www.apple.com www.microsoft.com www.cloudflare.com www.amazon.com; do
+    t=$(curl -so /dev/null -w '%{time_connect}' --max-time 4 "https://$c/" 2>/dev/null) || continue
+    [ -n "$t" ] || continue
+    # 必须真的协商出 TLS1.3 + h2，否则 Reality 借壳会露馅
+    openssl s_client -connect "$c:443" -servername "$c" -alpn h2 -tls1_3 </dev/null 2>/dev/null \
+      | grep -q 'ALPN protocol: h2' || continue
+    if [ -z "$best" ] || awk -v a="$t" -v b="$best_t" 'BEGIN{exit !(a<b)}'; then
+      best="$c"; best_t="$t"
+    fi
+  done
+  rl_sni="${best:-www.apple.com}"
+  echo "$rl_sni" > "$SB_HOME/rlsni"
+  info "REALITY 握手目标：$rl_sni（连接耗时最低者）"
 }
 
 # ---------- 证书状态 ----------
@@ -359,6 +419,59 @@ make_selfsigned() {
 # ======================================================
 # acme.sh 证书申请（集成自 xh-tuned/src/07-acme-cert.sh）
 # ======================================================
+# ---------- 证书链裁剪（握手提速） ----------
+# Let's Encrypt 的 fullchain 末尾带一张交叉签名的自签根（如 ISRG Root X2
+# by X1）。根证书本来就该由客户端信任库提供，服务端发过去纯属浪费：
+# 它在每一次 TLS 握手里都要重传一遍。对 QUIC 尤其贵——QUIC 有 3 倍放大
+# 限制，握手数据越大越容易多吃一个 RTT。
+#
+# 判据不能用「自签根」：Let's Encrypt 链尾那张是**交叉签名**的
+# （ISRG Root X2 由 X1 签发），subject != issuer，按自签去找会一张都裁不掉。
+# 改成直接测我们真正要的性质——从尾部逐张试删，每删一张就拿系统信任库
+# 验一次，验得过才落实这一步，验不过立即停手。裁掉的都是客户端本地已有
+# 的根，对信任该根的客户端不产生任何验证差异。
+#
+# 前提是本机信任库能代表客户端信任库。找不到 CA bundle 时直接放弃裁剪，
+# 不猜——宁可慢一点也不能签发出连不上的节点。
+trim_cert_chain() {
+  local f="$1" d n bundle
+  [ -s "$f" ] || return 0
+  command -v openssl >/dev/null 2>&1 || return 0
+  for bundle in /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/certs/ca-bundle.crt \
+                /etc/ssl/cert.pem /etc/ssl/certs/ca-bundle.crt; do
+    [ -s "$bundle" ] && break || bundle=""
+  done
+  [ -n "$bundle" ] || return 0
+  d=$(mktemp -d 2>/dev/null) || return 0
+  awk -v d="$d" 'BEGIN{n=0} /-----BEGIN CERTIFICATE-----/{n++} n>0{print > (d "/c" n ".pem")}' "$f"
+  n=$(find "$d" -name 'c*.pem' 2>/dev/null | wc -l)
+  [ "$n" -ge 2 ] || { rm -rf "$d"; return 0; }
+
+  # 用前 $keep 张组成的链能否验证通过
+  _chain_ok() {
+    local keep=$1 i=2 args=()
+    while [ "$i" -le "$keep" ]; do args+=(-untrusted "$d/c$i.pem"); i=$((i+1)); done
+    openssl verify -CAfile "$bundle" "${args[@]}" "$d/c1.pem" >/dev/null 2>&1
+  }
+  # 完整链本来就验不过（私有 CA / 中间证书缺失）就别动它
+  _chain_ok "$n" || { rm -rf "$d"; return 0; }
+
+  local keep=$n
+  while [ "$keep" -gt 1 ] && _chain_ok $((keep-1)); do keep=$((keep-1)); done
+  [ "$keep" -lt "$n" ] || { rm -rf "$d"; return 0; }
+
+  local tmp="$d/trimmed.pem" i=1
+  : > "$tmp"
+  while [ "$i" -le "$keep" ]; do cat "$d/c$i.pem" >> "$tmp"; i=$((i+1)); done
+  local before after
+  before=$(wc -c < "$f"); after=$(wc -c < "$tmp")
+  cp -f "$f" "$f.full" 2>/dev/null
+  cp -f "$tmp" "$f"
+  chmod 600 "$f" "$f.full" 2>/dev/null
+  info "证书链已裁剪：$n → $keep 张（${before} → ${after} 字节，每次握手少传 $((before-after)) 字节）"
+  rm -rf "$d"
+}
+
 install_cert() {
   info "安装 acme.sh 证书申请程序……"
   if [ ! -f "$HOME/.acme.sh/acme.sh" ]; then
@@ -389,6 +502,7 @@ install_cert() {
     mkdir -p "$CERT_DIR"
     cp "$acme_home/fullchain.cer" "$CERT_DIR/fullchain.cer"
     cp "$acme_home/${ym}.key" "$CERT_DIR/private.key"
+    trim_cert_chain "$CERT_DIR/fullchain.cer"
     info "证书已落地：$CERT_DIR/fullchain.cer"
     # Hysteria2 用 SHA256 固定指纹（配合真实证书双保险）
     sha=$(openssl x509 -in "$CERT_DIR/fullchain.cer" -outform DER | sha256sum | awk '{print $1}')
@@ -712,8 +826,14 @@ installsb() {
   if [ ! -e "$SB_BIN" ]; then upsingbox; fi
   insuuid
   load_secrets
-  # 旧版（<=v1.8.x）装过 Reality 的机器：本版已移除该协议，顺手清掉残留密钥
-  purge_reality_leftovers
+  # REALITY 开关归一化：空串/0/no/off/false 均视为关闭
+  case "$rlp" in
+    ""|0|no|off|false|NO|OFF|FALSE) rlp="" ;;
+    *) rlp=1 ;;
+  esac
+  if [ -n "$rlp" ]; then
+    load_reality_keys || { warn "REALITY 密钥不可用，跳过该协议"; rlp=""; }
+  fi
 
   # ---------- 证书准备 ----------
   if [ -n "$nvp" ] && [ -z "$alns" ]; then
@@ -761,6 +881,7 @@ installsb() {
   [ -n "$tup" ] && { assign_port tu "$port_tu"; echo "Tuic 端口：$port_tu"; }
   [ -n "$hyp" ] && { assign_port hy2 "$port_hy2"; echo "Hysteria2 端口：$port_hy2"; }
   [ -n "$nvp" ] && { assign_port nv "$port_nv"; echo "Naiveproxy 端口：$port_nv"; }
+  [ -n "$rlp" ] && { assign_port rl "$port_rl"; pick_reality_sni; echo "REALITY 端口：$port_rl"; }
 
   # ---------- 生成 sb.json ----------
   # 日志隐私：sing-box 的 warn/info 级别会把失败连接的目标域名写进磁盘日志，
@@ -830,7 +951,13 @@ EOF
             \"down_mbps\": $hydown,"
       info "Hysteria2 拥塞控制：Brutal（上行 ${hyup}Mbps / 下行 ${hydown}Mbps）"
     else
-      hy_bw="            \"ignore_client_bandwidth\": true,"
+      # 不设带宽 → 客户端统一走 BBR。bbr_profile 是 sing-box 1.14 新增项，
+      # 不写等价于 standard；显式写出来是为了这条策略不随上游默认值漂移。
+      #   conservative 更让路、aggressive 更抢占。默认 standard：目标是长期
+      #   稳定吞吐，而不是单次 Speedtest 峰值。
+      hy_bw="            \"ignore_client_bandwidth\": true,
+            \"bbr_profile\": \"standard\",
+            \"brutal_debug\": false,"
     fi
     # salamander 混淆：把 QUIC 握手特征打乱，主动探测与协议识别更难命中。
     # 客户端必须同样配置，故分享链接/订阅会带上 obfs 参数。
@@ -912,6 +1039,36 @@ EOF
                 "min_version": "1.3",
                 "certificate_path": "$CERT_DIR/fullchain.cer",
                 "key_path": "$CERT_DIR/private.key"
+            }
+        },
+EOF
+  fi
+
+  # VLESS + REALITY + Vision
+  # 不用证书：TLS 握手借 $rl_sni 那个真站点完成，因此域名被墙或 acme 失败时
+  # 这个节点仍然可用——这是它在本项目里的全部价值所在。
+  # flow=xtls-rprx-vision 把内层 TLS 直接零拷贝转发，避免 TLS-in-TLS 的双重
+  # 加密开销与特征；仅对 TCP 生效，故不设 network。
+  if [ -n "$rlp" ]; then
+    cat >> "$SB_CONF" <<EOF
+        {
+            "type": "vless",
+            "tag": "vless-reality-in",
+            "listen": "::",
+            "listen_port": $port_rl,
+            "tcp_fast_open": true,
+            "users": [
+                { "uuid": "$rl_uuid", "flow": "xtls-rprx-vision" }
+            ],
+            "tls": {
+                "enabled": true,
+                "server_name": "$rl_sni",
+                "reality": {
+                    "enabled": true,
+                    "handshake": { "server": "$rl_sni", "server_port": 443 },
+                    "private_key": "$rl_priv",
+                    "short_id": [ "$rl_sid" ]
+                }
             }
         },
 EOF
@@ -1060,6 +1217,15 @@ gen_client() {
     done
     echo "💣【 Naiveproxy 】节点信息如下（前两条 v2rayN/NekoBox，后两条 Shadowrocket）："
     echo "$nv1_link"; echo "$nv2_link"; echo "$nv3_link"; echo "$nv4_link"; echo
+  fi
+
+  if [ -n "$rlp" ]; then
+    # REALITY 始终用 IP 直连：它不依赖自有域名，走域名反而多一次 DNS 且
+    # 在域名被污染时失效——而「域名不可用时仍能连」正是留着它的理由。
+    rl_link="vless://$rl_uuid@$server_ip:$port_rl?encryption=none&security=reality&sni=$rl_sni&fp=chrome&pbk=$rl_pub&sid=$rl_sid&type=tcp&flow=xtls-rprx-vision#${sxname}vless-reality-$hostname_s"
+    echo "$rl_link" >> "$SB_LINK"
+    echo "💣【 VLESS-REALITY-Vision 】节点信息如下："
+    echo "$rl_link"; echo
   fi
 
   # ---------- sing-box 客户端聚合配置 ----------
@@ -1328,6 +1494,28 @@ gen_client_sbox() {
     tags+=("naive-h3")
   fi
 
+  # VLESS + REALITY + Vision
+  # utls 指纹必须开：Reality 的整个前提是 ClientHello 长得像浏览器，
+  # 用 Go 原生 TLS 指纹会当场露馅。packet_encoding=xudp 让 UDP 走多路复用。
+  if [ -n "$rlp" ]; then
+    ob+=('{
+        "type": "vless",
+        "tag": "vless-reality",
+        "server": "'"$server_ip"'",
+        "server_port": '"$port_rl"',
+        "uuid": "'"$rl_uuid"'",
+        "flow": "xtls-rprx-vision",
+        "packet_encoding": "xudp",
+        "tls": {
+            "enabled": true,
+            "server_name": "'"$rl_sni"'",
+            "utls": { "enabled": true, "fingerprint": "chrome" },
+            "reality": { "enabled": true, "public_key": "'"$rl_pub"'", "short_id": "'"$rl_sid"'" }
+        }
+    }')
+    tags+=("vless-reality")
+  fi
+
   if [ "${#tags[@]}" -eq 0 ]; then
     warn "未生成任何客户端协议配置（服务器端可能未启用对应协议）"
     return
@@ -1441,6 +1629,25 @@ gen_client_clash() {
     skip-cert-verify: false"
     groups="$groups
       - naive-$hostname_s"
+  fi
+  if [ -n "$rlp" ]; then
+    proxies="$proxies
+  - name: vless-reality-$hostname_s
+    server: $server_ip
+    port: $port_rl
+    type: vless
+    uuid: $rl_uuid
+    network: tcp
+    udp: true
+    tls: true
+    flow: xtls-rprx-vision
+    servername: $rl_sni
+    client-fingerprint: chrome
+    reality-opts:
+      public-key: $rl_pub
+      short-id: \"$rl_sid\""
+    groups="$groups
+      - vless-reality-$hostname_s"
   fi
   cat > "$SB_HOME/clmi.yaml" <<EOF
 port: 7890
@@ -1634,6 +1841,9 @@ cmd_rotate() {
     case "$_c" in y|Y|yes|YES) : ;; *) warn "已取消"; return 0 ;; esac
   fi
   export SBBOX_ROTATE=1
+  # reality 是子目录，rm -f 不会删它——不显式 rm -rf 的话「轮换全部密码」
+  # 会静默漏掉 REALITY 的 UUID 与密钥对
+  rm -rf "$SB_SEC_DIR"/reality 2>/dev/null
   rm -f "$SB_SEC_DIR"/* "$SB_HOME/hyobfs_pw" "$SB_HOME/subtoken" 2>/dev/null
   hyobfs_pw=""
   v4v6
@@ -1706,6 +1916,9 @@ main() {
   esac
 
   # 安装流程
+  # 注意这里刻意不把 rlp 算进来：它默认为 1，算进来的话「裸跑 sbbox 不带任何
+  # 协议变量」就会从「显示帮助」变成「静默装一个 REALITY」，对已安装用户是惊吓。
+  # 至少显式要一个协议，REALITY 才作为附赠项一起装上。
   if [ -z "$tup" ] && [ -z "$hyp" ] && [ -z "$nvp" ]; then
     if [ -x "$SB_BIN" ]; then
       # 已安装但未指定协议 → 显示帮助
@@ -1787,10 +2000,11 @@ install_cmd() {
 save_state() {
   # 先清空再按本次实际启用写入：重装若减少协议，旧标记必须消失，
   # 否则 list 会生成服务端已不存在的节点链接
-  rm -f "$SB_HOME"/proto_tup "$SB_HOME"/proto_hyp "$SB_HOME"/proto_nvp 2>/dev/null
+  rm -f "$SB_HOME"/proto_tup "$SB_HOME"/proto_hyp "$SB_HOME"/proto_nvp "$SB_HOME"/proto_rlp 2>/dev/null
   [ -n "$tup" ] && touch "$SB_HOME/proto_tup"
   [ -n "$hyp" ] && touch "$SB_HOME/proto_hyp"
   [ -n "$nvp" ] && touch "$SB_HOME/proto_nvp"
+  [ -n "$rlp" ] && touch "$SB_HOME/proto_rlp"
   echo "$ym" > "$SB_HOME/ym"
   [ -n "$hyjpt" ] && echo "$hyjpt" > "$SB_HOME/hyjpt"
   # Brutal 带宽必须持久化：否则 rotate / 重新生成配置时静默退回 BBR，
@@ -1985,6 +2199,7 @@ doctor() {
   [ "$tup" = yes ] && check_one Tuic "$port_tu" udp
   [ "$hyp" = yes ] && check_one Hysteria2 "$port_hy2" udp
   [ "$nvp" = yes ] && check_one Naiveproxy "$port_nv" tcp
+  [ "$rlp" = yes ] && check_one VLESS-REALITY "$port_rl" tcp
 
   if [ "$issues" -eq 0 ] && [ "$svc_down" -eq 0 ]; then
     echo ""
@@ -2043,9 +2258,15 @@ load_state() {
   [ -f "$SB_HOME/proto_tup" ] && tup=yes
   [ -f "$SB_HOME/proto_hyp" ] && hyp=yes
   [ -f "$SB_HOME/proto_nvp" ] && nvp=yes
+  # REALITY 以落盘标记为准，不套 rlp 的默认值：否则 `sbbox list` 会给一台
+  # 装的时候用 rlp=0 关掉了该协议的机器生成一条根本连不上的节点链接
+  if [ -f "$SB_HOME/proto_rlp" ]; then rlp=yes; else rlp=""; fi
   [ -f "$SB_HOME/port_tu" ] && port_tu=$(cat "$SB_HOME/port_tu")
   [ -f "$SB_HOME/port_hy2" ] && port_hy2=$(cat "$SB_HOME/port_hy2")
   [ -f "$SB_HOME/port_nv" ] && port_nv=$(cat "$SB_HOME/port_nv")
+  [ -f "$SB_HOME/port_rl" ] && port_rl=$(cat "$SB_HOME/port_rl")
+  [ -s "$SB_HOME/rlsni" ] && rl_sni=$(cat "$SB_HOME/rlsni")
+  if [ -n "$rlp" ] && [ -x "$SB_BIN" ]; then load_reality_keys 2>/dev/null || rlp=""; fi
   [ -f "$SB_HOME/hyjpt" ] && hyjpt=$(cat "$SB_HOME/hyjpt")
   if [ -z "$hyup" ] && [ -z "$hydown" ] && [ -s "$SB_HOME/hybw" ]; then
     hyup=$(awk '{print $1}' "$SB_HOME/hybw"); hydown=$(awk '{print $2}' "$SB_HOME/hybw")
