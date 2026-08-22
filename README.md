@@ -344,11 +344,6 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/ma
 
 ---
 
-## 致谢
-
-- [yonggekkk/argosbx](https://github.com/yonggekkk/argosbx) — 原脚本架构与协议配置参考
-- [ShJChow/Xray-core-xhttp-cdn-tuned](https://github.com/ShJChow/Xray-core-xhttp-cdn-tuned) — 内核级流控调优（`xh tuning`）实现移植
-- [sagernet/sing-box](https://github.com/SagerNet/sing-box) — 代理内核
 
 ---
 
