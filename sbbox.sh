@@ -648,18 +648,23 @@ apply_tuning() {
   # ---------- 收发缓冲区（过 CDN 高 BDP 链路关键项） ----------
   try_sysctl net.core.rmem_max "$SOCK_MEM_MAX"
   try_sysctl net.core.wmem_max "$SOCK_MEM_MAX"
-  try_sysctl net.core.rmem_default 1048576
-  try_sysctl net.core.wmem_default 1048576
+  if [ "$MEM_MB" -ge 4096 ]; then
+    try_sysctl net.core.rmem_default 4194304
+    try_sysctl net.core.wmem_default 4194304
+    try_sysctl net.ipv4.udp_rmem_min 131072
+    try_sysctl net.ipv4.udp_wmem_min 131072
+  else
+    try_sysctl net.core.rmem_default 1048576
+    try_sysctl net.core.wmem_default 1048576
+    try_sysctl net.ipv4.udp_rmem_min 16384
+    try_sysctl net.ipv4.udp_wmem_min 16384
+  fi
   try_sysctl net.ipv4.tcp_rmem "4096 262144 ${TCP_MEM_MAX}"
   try_sysctl net.ipv4.tcp_wmem "4096 262144 ${TCP_MEM_MAX}"
   try_sysctl net.ipv4.tcp_adv_win_scale -2
   try_sysctl net.ipv4.tcp_mem "$(( MEM_PAGES * 6 / 100 )) $(( MEM_PAGES * 8 / 100 )) $(( MEM_PAGES * 12 / 100 ))"
   # QUIC / HTTP3：Hysteria2 / Tuic 关键
   try_sysctl net.core.optmem_max 65536
-  # UDP 每 socket 的保底缓冲。QUIC 单连接吞吐大、突发强，8K 保底在丢包重排时
-  # 容易触发 receive buffer 溢出（quic-go 计入 "dropped packets"），抬到 16K。
-  try_sysctl net.ipv4.udp_rmem_min 16384
-  try_sysctl net.ipv4.udp_wmem_min 16384
   # udp_mem 是**全局**的 UDP 内存上限（页数），默认值按内存推算得相当保守。
   # 触顶时内核直接丢包，表现为 QUIC 吞吐忽高忽低而 rmem_max 看着完全够用。
   try_sysctl net.ipv4.udp_mem "$(( MEM_PAGES * 4 / 100 )) $(( MEM_PAGES * 6 / 100 )) $(( MEM_PAGES * 10 / 100 ))"
@@ -668,6 +673,7 @@ apply_tuning() {
   try_sysctl net.core.netdev_max_backlog "$NETDEV_BACKLOG"
   if [ -n "$NETDEV_BUDGET" ]; then
     try_sysctl net.core.netdev_budget "$NETDEV_BUDGET"
+    try_sysctl net.core.netdev_budget_usecs 8000
   fi
   try_sysctl net.core.somaxconn 65535
   try_sysctl net.ipv4.tcp_max_syn_backlog "$NETDEV_BACKLOG"
@@ -687,9 +693,11 @@ apply_tuning() {
   # 不缓存上条连接的 cwnd/ssthresh：跨境链路抖动大，缓存下来的坏指标会让
   # 后续新连接一开始就被压在低速率上
   try_sysctl net.ipv4.tcp_no_metrics_save 1
-  try_sysctl net.ipv4.tcp_notsent_lowat 16384
+  try_sysctl net.ipv4.tcp_notsent_lowat 262144
   try_sysctl net.ipv4.tcp_syncookies 1
   try_sysctl net.ipv4.tcp_tw_reuse 1
+  try_sysctl net.ipv4.tcp_ecn 2
+  try_sysctl net.ipv4.tcp_ecn_fallback 1
   try_sysctl net.ipv4.tcp_retries2 8
   try_sysctl net.ipv4.tcp_syn_retries 4
   try_sysctl net.ipv4.tcp_rfc1337 1
@@ -926,7 +934,7 @@ EOF
                 { "uuid": "$uuid", "password": "$pw_tu" }
             ],
             "congestion_control": "bbr",
-            "zero_rtt_handshake": false,
+            "zero_rtt_handshake": true,
             "auth_timeout": "3s",
             "heartbeat": "10s",
             "tls": {
@@ -1442,7 +1450,7 @@ gen_client_sbox() {
         "password": "'"$pw_tu"'",
         "congestion_control": "bbr",
         '"$tuic_udp"'
-        "zero_rtt_handshake": false,
+        "zero_rtt_handshake": true,
         "heartbeat": "10s",
         "tls": { "enabled": true, "server_name": "'"$sni"'", "insecure": '"$msins"', "alpn": ["h3"]'"$tuic_tls_extra"' }
     }')
