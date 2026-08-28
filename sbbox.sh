@@ -1094,6 +1094,8 @@ EOF
     *) route_rules="$route_rules,
             { \"action\": \"reject\", \"port\": [ 25, 135, 137, 138, 139, 445, 465, 587 ] }" ;;
   esac
+  route_rules="$route_rules,
+            { \"action\": \"reject\", \"protocol\": [ \"bittorrent\" ] }"
   sed -i '${s/,$//}' "$SB_CONF"
   cat >> "$SB_CONF" <<EOF
     ],
