@@ -1118,11 +1118,11 @@ gen_client() {
       _fp=$(openssl x509 -in "$CERT_DIR/fullchain.cer" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d ':')
       [ -n "$_fp" ] && nv_pcs="&pcs=$_fp"
     fi
-    # 默认优先使用 QUIC (HTTP/3) 极速通道，同时保留 HTTP/2 供客户端兼容与回退
-    nv1_link="naive+quic://$nv_user:$nv_pw@$add:$port_nv?congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-h3-$hostname_s"
-    nv2_link="naive+https://$nv_user:$nv_pw@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-h2-$hostname_s"
-    nv3_link="http3://$nv_user:$nv_pw@$add:$port_nv?congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-h3-rocket-$hostname_s"
-    nv4_link="http2://$nv_user:$nv_pw@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-h2-rocket-$hostname_s"
+    # Naiveproxy 节点默认全部开启 QUIC (HTTP/3) + BBR 极速传输
+    nv1_link="naive+quic://$nv_user:$nv_pw@$add:$port_nv?congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-quic1-$hostname_s"
+    nv2_link="naive+quic://$nv_user:$nv_pw@$add:$port_nv?congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-quic2-$hostname_s"
+    nv3_link="http3://$nv_user:$nv_pw@$add:$port_nv?congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-quic1-rocket-$hostname_s"
+    nv4_link="http3://$nv_user:$nv_pw@$add:$port_nv?congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-quic2-rocket-$hostname_s"
     for l in "$nv1_link" "$nv2_link" "$nv3_link" "$nv4_link"; do
       echo "$l" >> "$SB_LINK"
     done
@@ -1373,10 +1373,10 @@ gen_client_sbox() {
   # 本脚本安装时会一并保留）。缺库时该出站会以 "cronet: library not found" 启动失败，
   # 故客户端若用自行编译/精简版内核，需自行补上该库或删掉这条出站。
   if [ -n "$nvp" ] && [ "$CERT_OK" = 1 ]; then
-    # 默认 naive 出站开启 QUIC (H3)+bbr 与多路径 TCP (MPTCP)
+    # 两个 naive 出站均默认开启 QUIC (H3)+bbr 与多路径 TCP (MPTCP)
     ob+=('{
         "type": "naive",
-        "tag": "naive",
+        "tag": "naive-quic1",
         "server": "'"$add"'",
         "server_port": '"$port_nv"',
         "username": "'"$nv_user"'",
@@ -1388,11 +1388,10 @@ gen_client_sbox() {
         "quic_congestion_control": "bbr",
         "tls": { "enabled": true, "insecure": false, "server_name": "'"$sni"'" }
     }')
-    tags+=("naive")
-    # 独立 H2(TCP) 出站：供需要 TCP / HTTP2 的环境回退使用
+    tags+=("naive-quic1")
     ob+=('{
         "type": "naive",
-        "tag": "naive-h2",
+        "tag": "naive-quic2",
         "server": "'"$add"'",
         "server_port": '"$port_nv"',
         "username": "'"$nv_user"'",
@@ -1400,10 +1399,11 @@ gen_client_sbox() {
         "tcp_fast_open": true,
         "tcp_multi_path": true,
         "udp_over_tcp": true,
+        "quic": true,
         "quic_congestion_control": "bbr",
         "tls": { "enabled": true, "insecure": false, "server_name": "'"$sni"'" }
     }')
-    tags+=("naive-h2")
+    tags+=("naive-quic2")
   fi
 
   if [ "${#tags[@]}" -eq 0 ]; then
