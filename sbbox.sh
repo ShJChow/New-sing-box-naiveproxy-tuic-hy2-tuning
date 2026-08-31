@@ -842,7 +842,8 @@ $log_block
     "dns": {
         "servers": [
             { "type": "tls", "tag": "dns-secure", "server": "1.1.1.1" },
-            { "type": "tls", "tag": "dns-backup", "server": "9.9.9.9" }
+            { "type": "tls", "tag": "dns-backup", "server": "9.9.9.9" },
+            { "type": "https", "tag": "dns-doh", "server": "1.1.1.1" }
         ],
         "strategy": "prefer_ipv4",
         "disable_cache": false
@@ -1351,11 +1352,17 @@ gen_client_sbox() {
   fi
 
   if [ -n "$hyp" ]; then
+    local hy_ports_json=""
+    if [ -n "$hyjpt" ]; then
+      # 支持 sing-box 1.14 端口跳跃与随机化抖动 hop_interval_max
+      hy_ports_json="\"server_ports\": [\"$hyjpt\"], \"hop_interval\": \"30s\", \"hop_interval_max\": \"90s\","
+    fi
     ob+=('{
         "type": "hysteria2",
         "tag": "hysteria2",
         "server": "'"$add"'",
         "server_port": '"$port_hy2"',
+        '"$hy_ports_json"'
         "password": "'"$pw_hy"'",'"$hyobfs_json"'
         "tls": { "enabled": true, "server_name": "'"$sni"'", "insecure": '"$msins"', "alpn": ["h3"] }
     }')
@@ -1366,7 +1373,7 @@ gen_client_sbox() {
   # 本脚本安装时会一并保留）。缺库时该出站会以 "cronet: library not found" 启动失败，
   # 故客户端若用自行编译/精简版内核，需自行补上该库或删掉这条出站。
   if [ -n "$nvp" ] && [ "$CERT_OK" = 1 ]; then
-    # 默认 naive 出站开启 QUIC (H3)+bbr
+    # 默认 naive 出站开启 QUIC (H3)+bbr 与多路径 TCP (MPTCP)
     ob+=('{
         "type": "naive",
         "tag": "naive",
@@ -1375,6 +1382,7 @@ gen_client_sbox() {
         "username": "'"$nv_user"'",
         "password": "'"$nv_pw"'",
         "tcp_fast_open": true,
+        "tcp_multi_path": true,
         "udp_over_tcp": true,
         "quic": true,
         "quic_congestion_control": "bbr",
@@ -1390,6 +1398,7 @@ gen_client_sbox() {
         "username": "'"$nv_user"'",
         "password": "'"$nv_pw"'",
         "tcp_fast_open": true,
+        "tcp_multi_path": true,
         "udp_over_tcp": true,
         "quic_congestion_control": "bbr",
         "tls": { "enabled": true, "insecure": false, "server_name": "'"$sni"'" }
@@ -1485,13 +1494,16 @@ gen_client_clash() {
       - tuic-$hostname_s"
   fi
   if [ -n "$hyp" ]; then
+    local hy_ports_yaml=""
+    [ -n "$hyjpt" ] && hy_ports_yaml="
+    ports: $hyjpt"
     proxies="$proxies
   - name: hysteria2-$hostname_s
     server: $add
     port: $port_hy2
     type: hysteria2
     password: $pw_hy
-    alpn: [h3]$hyobfs_yaml
+    alpn: [h3]$hyobfs_yaml$hy_ports_yaml
     sni: $sni
     skip-cert-verify: $msins"
     groups="$groups
@@ -1516,12 +1528,20 @@ port: 7890
 allow-lan: true
 mode: rule
 log-level: info
+unified-delay: true
+tcp-concurrent: true
+global-client-fingerprint: chrome
+geodata-mode: false
+geo-auto-update: true
+geo-update-interval: 24
+find-process-mode: strict
 dns:
   enable: true
   enhanced-mode: fake-ip
   fake-ip-range: 198.18.0.1/16
   nameserver:
     - https://1.1.1.1/dns-query
+    - https://9.9.9.9/dns-query
 proxies:$proxies
 
 proxy-groups:
