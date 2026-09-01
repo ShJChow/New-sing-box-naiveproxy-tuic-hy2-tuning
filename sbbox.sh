@@ -167,6 +167,36 @@ install_deps() {
   fi
 }
 
+# ---------- 端口防火墙放行 (iptables / ip6tables / ufw / firewalld) ----------
+open_port() {
+  local port="$1" proto="${2:-tcp}"
+  [ -n "$port" ] || return 0
+  if [ "$IS_ROOT" = 1 ]; then
+    if command -v iptables >/dev/null 2>&1; then
+      iptables -C INPUT -p "$proto" --dport "$port" -j ACCEPT 2>/dev/null || \
+        iptables -I INPUT 1 -p "$proto" --dport "$port" -j ACCEPT 2>/dev/null
+    fi
+    if command -v ip6tables >/dev/null 2>&1; then
+      ip6tables -C INPUT -p "$proto" --dport "$port" -j ACCEPT 2>/dev/null || \
+        ip6tables -I INPUT 1 -p "$proto" --dport "$port" -j ACCEPT 2>/dev/null
+    fi
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+      ufw allow "${port}/${proto}" >/dev/null 2>&1
+    fi
+    if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state 2>/dev/null | grep -q "running"; then
+      firewall-cmd --add-port="${port}/${proto}" --permanent >/dev/null 2>&1
+      firewall-cmd --reload >/dev/null 2>&1
+    fi
+    if command -v netfilter-persistent >/dev/null 2>&1; then
+      netfilter-persistent save >/dev/null 2>&1
+    elif [ -x "$(command -v iptables-save 2>/dev/null)" ] && [ -d /etc/iptables ]; then
+      iptables-save > /etc/iptables/rules.v4 2>/dev/null
+      ip6tables-save > /etc/iptables/rules.v6 2>/dev/null
+    fi
+  fi
+}
+
+
 # ---------- sing-box 内核下载/更新 ----------
 # 查询 sing-box 最新版本号（去掉 tag 的 v 前缀）。
 # 默认通道是 pre：跟踪最新 pre-release（beta/rc），正式版本身也在该列表里，
@@ -912,9 +942,10 @@ installsb() {
     fi
     eval "port_$name=$(cat "$SB_HOME/port_$name")"
   }
-  [ -n "$tup" ] && { assign_port tu "$port_tu"; echo "Tuic 端口：$port_tu"; }
-  [ -n "$hyp" ] && { assign_port hy2 "$port_hy2"; echo "Hysteria2 端口：$port_hy2"; }
-  [ -n "$nvp" ] && { assign_port nv "$port_nv"; echo "Naiveproxy 端口：$port_nv"; }
+  [ -n "$tup" ] && { assign_port tu "$port_tu"; echo "Tuic 端口：$port_tu"; open_port "$port_tu" udp; }
+  [ -n "$hyp" ] && { assign_port hy2 "$port_hy2"; echo "Hysteria2 端口：$port_hy2"; open_port "$port_hy2" udp; }
+  [ -n "$nvp" ] && { assign_port nv "$port_nv"; echo "Naiveproxy 端口：$port_nv"; open_port "$port_nv" tcp; open_port "$port_nv" udp; }
+
 
   # ---------- 生成 sb.json ----------
   # 日志隐私：sing-box 的 warn/info 级别会把失败连接的目标域名写进磁盘日志，
@@ -1297,12 +1328,13 @@ gen_sub() {
   info "v2rayN / 通用订阅地址（复制到客户端「订阅设置」）："
   echo "http://$subhost:$subport/$token"
   echo "==========================================================="
+  echo -e "  ${CYAN}[提示]${NC} Clash/Mihomo 请直接导入配置文件: ${YELLOW}$SB_HOME/clmi.yaml${NC}"
+  echo -e "  ${CYAN}[提示]${NC} sing-box 客户端请导入配置文件: ${YELLOW}$SB_HOME/sbox_client.json${NC}"
+  echo "==========================================================="
   warn "订阅经明文 HTTP 提供，令牌即密码，请勿外泄；不用时执行 sbbox sub off"
 }
 
 start_sub_server() {
-  # 先确定命令与进程标记（标记 = 完整命令串，避免 exec -a 的 dash 兼容问题），
-  # 再检查是否已在运行——SUB_MARK 不能是空串，否则 pgrep -f "" 匹配一切。
   local runner=""
   if command -v python3 >/dev/null 2>&1; then
     # 绑定 0.0.0.0（IPv4）而非 ::，纯 IPv4 VPS 上没有 IPv6 地址，绑定 :: 会启动失败
@@ -1315,38 +1347,51 @@ start_sub_server() {
     warn "未找到 python3 或 busybox，无法启动订阅服务；请手动分发 $SUB_DIR/$(cat "$SB_HOME/subtoken" 2>/dev/null)"
     return 1
   fi
-  pgrep -f "$SUB_MARK" >/dev/null 2>&1 && return 0
-  nohup $runner >/dev/null 2>&1 &
-  echo $! > "$SB_HOME/sub.pid"
-  sleep 1
-  if [ "$SERVICE_TYPE" = "cron" ] || [ "$IS_ROOT" != 1 ]; then
-    crontab -l > /tmp/sbbox_sub_cron.tmp 2>/dev/null || true
-    sed -i '/sbbox-sub\|http.server\|httpd -f/d' /tmp/sbbox_sub_cron.tmp 2>/dev/null || true
-    echo "@reboot sleep 12 && nohup $runner >/dev/null 2>&1 &" >> /tmp/sbbox_sub_cron.tmp
-    crontab /tmp/sbbox_sub_cron.tmp >/dev/null 2>&1
-    rm -f /tmp/sbbox_sub_cron.tmp
-  elif [ "$SERVICE_TYPE" = "systemd" ]; then
+
+  # 放行订阅端口防火墙
+  open_port "$subport" tcp
+
+  # 清理旧进程避免端口占用冲突
+  pkill -f "python3 -m http.server $subport" >/dev/null 2>&1
+  pkill -f "busybox httpd -f -p $subport" >/dev/null 2>&1
+  [ -f "$SB_HOME/sub.pid" ] && kill "$(cat "$SB_HOME/sub.pid")" 2>/dev/null && rm -f "$SB_HOME/sub.pid"
+
+  if [ "$SERVICE_TYPE" = "systemd" ] && [ "$IS_ROOT" = 1 ]; then
     cat > /etc/systemd/system/sbbox-sub.service <<EOF
 [Unit]
 Description=sbbox subscription server
 After=network.target
+
 [Service]
 Type=simple
 ExecStart=$runner
 Restart=on-failure
 RestartSec=5s
+
 [Install]
 WantedBy=multi-user.target
 EOF
     systemctl daemon-reload >/dev/null 2>&1
     systemctl enable sbbox-sub >/dev/null 2>&1
     systemctl restart sbbox-sub >/dev/null 2>&1
+  else
+    nohup $runner >/dev/null 2>&1 &
+    echo $! > "$SB_HOME/sub.pid"
+    if [ "$SERVICE_TYPE" = "cron" ]; then
+      crontab -l > /tmp/sbbox_sub_cron.tmp 2>/dev/null || true
+      sed -i '/sbbox-sub\|http.server\|httpd -f/d' /tmp/sbbox_sub_cron.tmp 2>/dev/null || true
+      echo "@reboot sleep 12 && nohup $runner >/dev/null 2>&1 &" >> /tmp/sbbox_sub_cron.tmp
+      crontab /tmp/sbbox_sub_cron.tmp >/dev/null 2>&1
+      rm -f /tmp/sbbox_sub_cron.tmp
+    fi
   fi
-  # 确认真的起来了，没起来则给出端口冲突等线索
-  if pgrep -f "$SUB_MARK" >/dev/null 2>&1 || [ -f "$SB_HOME/sub.pid" ]; then
+
+  sleep 1
+  # 确认服务运行状态
+  if ([ "$SERVICE_TYPE" = "systemd" ] && systemctl is-active --quiet sbbox-sub 2>/dev/null) || pgrep -f "$SUB_MARK" >/dev/null 2>&1; then
     info "订阅服务已启动（端口 $subport）"
   else
-    warn "订阅服务启动可能失败（端口 $subport 可能被占用），执行 sbbox log 排查"
+    warn "订阅服务启动可能失败（端口 $subport 可能被占用），执行 sbbox doctor 排查"
   fi
 }
 
@@ -1363,7 +1408,7 @@ stop_sub_server() {
   crontab -l > /tmp/sbbox_sub_cron.tmp 2>/dev/null || true
   sed -i '/sbbox-sub\|http.server\|httpd -f/d' /tmp/sbbox_sub_cron.tmp 2>/dev/null || true
   crontab /tmp/sbbox_sub_cron.tmp >/dev/null 2>&1
-  rm -f /tmp/sbbox_sub_cron.tmp /tmp/sbbox_sub_cron.tmp
+  rm -f /tmp/sbbox_sub_cron.tmp
   rm -f "$SB_HOME/sub.pid"
   info "订阅服务已停止"
 }
@@ -1380,18 +1425,28 @@ cmd_sub() {
         warn "未启用订阅。安装时加 sub=1，或执行：sub=1 sbbox list"
         return 0
       fi
+      open_port "$port" tcp
       case "$subhost" in *:*) subhost="[$subhost]" ;; esac
-      if pgrep -f "http.server $port" >/dev/null 2>&1 || pgrep -f "httpd -f -p $port" >/dev/null 2>&1; then
+      if ([ "$SERVICE_TYPE" = "systemd" ] && systemctl is-active --quiet sbbox-sub 2>/dev/null) || pgrep -f "http.server $port" >/dev/null 2>&1 || pgrep -f "httpd -f -p $port" >/dev/null 2>&1; then
         info "订阅服务：运行中"
       else
-        warn "订阅服务：未运行（执行 sub=1 sbbox list 重新拉起）"
+        warn "订阅服务：未运行，正在重新拉起……"
+        sub=1 subport="$port" subid="$token" start_sub_server
       fi
+      echo ""
+      echo "==========================================================="
+      info "v2rayN / 通用订阅地址（复制到客户端「订阅设置」）："
       echo "http://$subhost:$port/$token"
+      echo "==========================================================="
+      echo -e "  ${CYAN}[提示]${NC} Clash/Mihomo 请直接导入配置文件: ${YELLOW}$SB_HOME/clmi.yaml${NC}"
+      echo -e "  ${CYAN}[提示]${NC} sing-box 客户端请导入配置文件: ${YELLOW}$SB_HOME/sbox_client.json${NC}"
+      echo "==========================================================="
       ;;
     off) stop_sub_server ;;
     *) echo "用法: sbbox sub [show|off]" ;;
   esac
 }
+
 
 gen_client_sbox() {
   local ob=() tags=() json_file="$SB_HOME/sbox_client.json"
@@ -2191,10 +2246,13 @@ doctor() {
   [ "$tup" = yes ] && check_one Tuic "$port_tu" udp
   [ "$hyp" = yes ] && check_one Hysteria2 "$port_hy2" udp
   [ "$nvp" = yes ] && check_one Naiveproxy "$port_nv" tcp
+  if [ "$sub" = 1 ] && [ -n "$subport" ]; then
+    check_one "订阅服务" "$subport" tcp
+  fi
 
   if [ "$issues" -eq 0 ] && [ "$svc_down" -eq 0 ]; then
     echo ""
-    echo -e "${GREEN}全部节点正常${NC}"
+    echo -e "${GREEN}全部节点与服务正常${NC}"
     return 0
   fi
 
@@ -2210,6 +2268,21 @@ doctor() {
       fixed=$((fixed+1))
     fi
   fi
+
+  # 修复订阅服务（若未运行）
+  if [ "$sub" = 1 ] && [ -n "$subport" ]; then
+    if ! port_listening "$subport" tcp; then
+      echo "  订阅服务 未运行，正在重新拉起并放行防火墙……"
+      start_sub_server >/dev/null 2>&1
+      sleep 1
+      if port_listening "$subport" tcp; then
+        echo -e "  订阅服务：${GREEN}已修复${NC}"; fixed=$((fixed+1))
+      else
+        echo -e "  订阅服务：${RED}修复失败，请查看日志${NC}"
+      fi
+    fi
+  fi
+
 
   # 先重启服务，覆盖「进程挂了 / 端口没起来」的情况
   if [ "$svc_down" -eq 1 ] || [ "$issues" -gt 0 ]; then
