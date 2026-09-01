@@ -664,17 +664,23 @@ apply_tuning() {
     try_sysctl net.core.rmem_default 1048576
     try_sysctl net.core.wmem_default 1048576
     try_sysctl net.ipv4.udp_rmem_min 16384
-    try_sysctl net.ipv4.udp_wmem_min 16384
+  try_sysctl net.ipv4.udp_wmem_min 16384
   fi
   try_sysctl net.ipv4.tcp_rmem "4096 262144 ${TCP_MEM_MAX}"
   try_sysctl net.ipv4.tcp_wmem "4096 262144 ${TCP_MEM_MAX}"
   try_sysctl net.ipv4.tcp_adv_win_scale 1
+  try_sysctl net.ipv4.tcp_autocorking 1
+  try_sysctl net.ipv4.tcp_comp_sack_nr 44
+  try_sysctl net.ipv4.tcp_comp_sack_delay_ns 1000000
   try_sysctl net.ipv4.tcp_mem "$(( MEM_PAGES * 6 / 100 )) $(( MEM_PAGES * 8 / 100 )) $(( MEM_PAGES * 12 / 100 ))"
   # QUIC / HTTP3：Hysteria2 / Tuic 关键
   try_sysctl net.core.optmem_max 65536
-  # udp_mem 是**全局**的 UDP 内存上限（页数），默认值按内存推算得相当保守。
-  # 触顶时内核直接丢包，表现为 QUIC 吞吐忽高忽低而 rmem_max 看着完全够用。
-  try_sysctl net.ipv4.udp_mem "$(( MEM_PAGES * 4 / 100 )) $(( MEM_PAGES * 6 / 100 )) $(( MEM_PAGES * 10 / 100 ))"
+  # udp_mem 是**全局**的 UDP 内存上限（页数）
+  if [ "$MEM_MB" -ge 16384 ]; then
+    try_sysctl net.ipv4.udp_mem "$(( MEM_PAGES * 4 / 100 )) $(( MEM_PAGES * 8 / 100 )) $(( MEM_PAGES * 16 / 100 ))"
+  elif [ "$MEM_MB" -ge 1024 ]; then
+    try_sysctl net.ipv4.udp_mem "$(( MEM_PAGES * 2 / 100 )) $(( MEM_PAGES * 4 / 100 )) $(( MEM_PAGES * 8 / 100 ))"
+  fi
 
   # ---------- 队列与并发 ----------
   try_sysctl net.core.netdev_max_backlog "$NETDEV_BACKLOG"
@@ -751,15 +757,24 @@ LIMITSEOF
 
   # ---------- sing-box systemd drop-in ----------
   if [ "$SERVICE_TYPE" = "systemd" ]; then
-    install -d -m 755 "/etc/systemd/system/${SB_SERVICE}.service.d" 2>/dev/null || true
-    cat > "/etc/systemd/system/${SB_SERVICE}.service.d/override.conf" <<'DROPINEOF' 2>/dev/null || warn "写入 ${SB_SERVICE} drop-in 失败"
+    local dropin="10-sbbox.conf"
+    local dir="/etc/systemd/system/${SB_SERVICE}.service.d"
+    install -d -m 755 "$dir" 2>/dev/null || true
+    cat > "${dir}/${dropin}" <<'DROPINEOF' 2>/dev/null || warn "写入 ${SB_SERVICE} drop-in 失败"
 [Service]
 LimitNOFILE=1048576
 LimitNPROC=infinity
 Environment="GOGC=200"
 DROPINEOF
+    local legacy="${dir}/override.conf"
+    if [ -f "$legacy" ]; then
+      if [ "$(grep -vE '^\s*(#|$)' "$legacy" | tr -d '[:space:]')" = "[Service]LimitNOFILE=1048576LimitNPROC=infinity" ] || \
+         [ "$(grep -vE '^\s*(#|$)' "$legacy" | tr -d '[:space:]')" = "[Service]LimitNOFILE=1048576LimitNPROC=infinityEnvironment=\"GOGC=200\"" ]; then
+        rm -f "$legacy"
+      fi
+    fi
     systemctl daemon-reload >/dev/null 2>&1 || true
-    info "已为 sing-box 写入 systemd drop-in（LimitNOFILE=1048576）"
+    info "已为 sing-box 写入 systemd drop-in（LimitNOFILE=1048576 → ${dropin}）"
   elif [ -d /etc/conf.d ]; then
     grep -q '^rc_ulimit=' /etc/conf.d/sing-box 2>/dev/null || \
       echo 'rc_ulimit="-n 1048576"' >> /etc/conf.d/sing-box 2>/dev/null || true
@@ -774,14 +789,15 @@ DROPINEOF
 
   # ---------- Before / After ----------
   echo ""
-  echo -e "${YELLOW}[+] 流控调优 Before / After${NC}"
-  printf '  %-28s %-18s -> %s\n' "net.core.default_qdisc"          "${BEFORE_QDISC:-n/a}" "$(sysctl_get net.core.default_qdisc)"
-  printf '  %-28s %-18s -> %s\n' "net.ipv4.tcp_congestion_control" "${BEFORE_CC:-n/a}"    "$(sysctl_get net.ipv4.tcp_congestion_control)"
-  printf '  %-28s %-18s -> %s\n' "net.core.rmem_max"               "${BEFORE_RMEM:-n/a}"  "$(sysctl_get net.core.rmem_max)"
-  printf '  %-28s %-18s -> %s\n' "net.ipv4.tcp_fastopen"           "-"                    "$(sysctl_get net.ipv4.tcp_fastopen)"
-  printf '  %-28s %-18s -> %s\n' "ulimit -n (当前 shell)"          "${BEFORE_NOFILE}"     "重新登录后生效: 1048576"
+  echo -e "${CYAN}[+] 流控调优 Before / After${NC}"
+  printf '  %-28s %-18s -> %s\n' "net.core.default_qdisc"          "${BEFORE_QDISC:--}" "$(sysctl_get net.core.default_qdisc)"
+  printf '  %-28s %-18s -> %s\n' "net.ipv4.tcp_congestion_control" "${BEFORE_CC:--}"    "$(sysctl_get net.ipv4.tcp_congestion_control)"
+  printf '  %-28s %-18s -> %s\n' "net.core.rmem_max"               "${BEFORE_RMEM:--}"  "$(sysctl_get net.core.rmem_max)"
+  printf '  %-28s %-18s -> %s\n' "net.ipv4.tcp_fastopen"           "-"                  "$(sysctl_get net.ipv4.tcp_fastopen)"
+  printf '  %-28s %-18s -> 重新登录后生效: %s\n' \
+    "ulimit -n (当前 shell)" "${BEFORE_NOFILE}" "$(grep -E '^\*\s+soft\s+nofile' "$LIMITS_CONF" 2>/dev/null | awk '{print $4}' || echo 1048576)"
   echo ""
-  info "BBR: ${TUNING_BBR_OK}；回滚请执行 sbbox tune off"
+  info "BBR: $TUNING_BBR_OK；回滚请执行 sbbox tune off"
 }
 
 tune_off() {
@@ -796,9 +812,17 @@ tune_off() {
   rm -f "$SB_HOME/nic" "$SB_HOME/nic_tuned" 2>/dev/null
   rm -f "$SYSCTL_CONF" 2>/dev/null
   rm -f "$LIMITS_CONF" 2>/dev/null
-  rm -rf "/etc/systemd/system/${SB_SERVICE}.service.d" 2>/dev/null
+  local dir="/etc/systemd/system/${SB_SERVICE}.service.d"
+  rm -f "${dir}/10-sbbox.conf"
+  local legacy="${dir}/override.conf"
+  if [ -f "$legacy" ]; then
+    if [ "$(grep -vE '^\s*(#|$)' "$legacy" | tr -d '[:space:]')" = "[Service]LimitNOFILE=1048576LimitNPROC=infinity" ] || \
+       [ "$(grep -vE '^\s*(#|$)' "$legacy" | tr -d '[:space:]')" = "[Service]LimitNOFILE=1048576LimitNPROC=infinityEnvironment=\"GOGC=200\"" ]; then
+      rm -f "$legacy"
+    fi
+  fi
+  rmdir "$dir" 2>/dev/null || true
   sysctl --system >/dev/null 2>&1 || true
-  [ "$SERVICE_TYPE" = "systemd" ] && systemctl daemon-reload >/dev/null 2>&1 || true
   info "已移除全部 sbbox 调优配置（BBR 等运行时参数将由系统默认接管）"
 }
 
