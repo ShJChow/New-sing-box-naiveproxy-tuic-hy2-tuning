@@ -316,15 +316,33 @@ load_secrets() {
 # ---------- 证书状态 ----------
 cert_ready() { [ -s "$CERT_DIR/fullchain.cer" ] && [ -s "$CERT_DIR/private.key" ]; }
 
+cert_matches_ym() {
+  local target="${1:-$ym}"
+  [ -z "$target" ] && return 1
+  cert_ready || return 1
+  local names
+  names=$(openssl x509 -in "$CERT_DIR/fullchain.cer" -noout -subject -ext subjectAltName 2>/dev/null)
+  if echo "$names" | grep -Fwq "$target" || echo "$names" | grep -Fiq "DNS:$target"; then
+    openssl x509 -checkend 86400 -in "$CERT_DIR/fullchain.cer" -noout 2>/dev/null && return 0
+  fi
+  return 1
+}
+
 get_cert_paths() {
   if cert_ready; then
     cert_path="$CERT_DIR/fullchain.cer"
     key_path="$CERT_DIR/private.key"
     CERT_OK=1
+    sha=$(openssl x509 -in "$CERT_DIR/fullchain.cer" -outform DER 2>/dev/null | sha256sum | awk '{print $1}')
+    [ -n "$sha" ] && echo "$sha" > "$SB_HOME/SHA256.txt"
   else
     cert_path="$SB_HOME/selfsigned.crt"
     key_path="$SB_HOME/selfsigned.key"
     CERT_OK=0
+    if [ -s "$SB_HOME/selfsigned.crt" ]; then
+      sha=$(openssl x509 -in "$SB_HOME/selfsigned.crt" -outform DER 2>/dev/null | sha256sum | awk '{print $1}')
+      [ -n "$sha" ] && echo "$sha" > "$SB_HOME/SHA256.txt"
+    fi
   fi
 }
 
@@ -410,6 +428,40 @@ trim_cert_chain() {
 }
 
 install_cert() {
+  [ -z "$ym" ] && return 1
+
+  # 1. 优先复用本机已存在的任何针对 $ym 的有效证书
+  local found_cert="" found_key=""
+  local cand_ecc="$HOME/.acme.sh/${ym}_ecc"
+  local cand_rsa="$HOME/.acme.sh/${ym}"
+  local cand_yg="$HOME/ygkkkca"
+  local cand_le="/etc/letsencrypt/live/${ym}"
+  local cand_xhttp="/etc/xhttp-cdn"
+
+  if [ -f "$cand_ecc/fullchain.cer" ] && [ -f "$cand_ecc/${ym}.key" ]; then
+    found_cert="$cand_ecc/fullchain.cer"; found_key="$cand_ecc/${ym}.key"
+  elif [ -f "$cand_rsa/fullchain.cer" ] && [ -f "$cand_rsa/${ym}.key" ]; then
+    found_cert="$cand_rsa/fullchain.cer"; found_key="$cand_rsa/${ym}.key"
+  elif [ -f "$cand_yg/cert.crt" ] && [ -f "$cand_yg/private.key" ] && openssl x509 -in "$cand_yg/cert.crt" -noout -subject -ext subjectAltName 2>/dev/null | grep -Fq "$ym"; then
+    found_cert="$cand_yg/cert.crt"; found_key="$cand_yg/private.key"
+  elif [ -f "$cand_le/fullchain.pem" ] && [ -f "$cand_le/privkey.pem" ]; then
+    found_cert="$cand_le/fullchain.pem"; found_key="$cand_le/privkey.pem"
+  elif [ -f "$cand_xhttp/cert.crt" ] && [ -f "$cand_xhttp/private.key" ] && openssl x509 -in "$cand_xhttp/cert.crt" -noout -subject -ext subjectAltName 2>/dev/null | grep -Fq "$ym"; then
+    found_cert="$cand_xhttp/cert.crt"; found_key="$cand_xhttp/private.key"
+  fi
+
+  if [ -n "$found_cert" ] && [ -n "$found_key" ]; then
+    info "检测到本机已存在域名 $ym 的有效证书 ($found_cert)，直接复用"
+    mkdir -p "$CERT_DIR"
+    cp -f "$found_cert" "$CERT_DIR/fullchain.cer"
+    cp -f "$found_key" "$CERT_DIR/private.key"
+    chmod 600 "$CERT_DIR/fullchain.cer" "$CERT_DIR/private.key" 2>/dev/null
+    trim_cert_chain "$CERT_DIR/fullchain.cer"
+    info "证书已落地：$CERT_DIR/fullchain.cer"
+    get_cert_paths
+    return 0
+  fi
+
   info "安装 acme.sh 证书申请程序……"
   if [ ! -f "$HOME/.acme.sh/acme.sh" ]; then
     (command -v curl >/dev/null 2>&1 && curl -fsSL https://get.acme.sh | sh -s email=${ACME_EMAIL:-admin@example.com}) || \
@@ -423,27 +475,45 @@ install_cert() {
     echo 'precedence ::ffff:0:0/96  100' >> /etc/gai.conf 2>/dev/null
   fi
 
-  local acme_home="$HOME/.acme.sh/${ym}_ecc"
-  if [ -f "$acme_home/fullchain.cer" ] && [ -f "$acme_home/${ym}.key" ]; then
-    info "检测到已存在证书，直接复用"
-  else
-    info "开始申请证书：$ym (需 80 端口空闲)……"
-    if [ -n "$v6" ] && [ -z "$v4" ]; then
-      "$HOME/.acme.sh/acme.sh" --issue -d "$ym" --standalone --listen-v6 --keylength ec-256
-    else
-      "$HOME/.acme.sh/acme.sh" --issue -d "$ym" --standalone --listen-v4 --keylength ec-256
+  # 检查 80 端口占用并临时让路
+  local stopped_nginx=0 stopped_caddy=0 stopped_apache=0
+  if port_listening 80 tcp; then
+    if systemctl is-active --quiet nginx 2>/dev/null; then
+      systemctl stop nginx 2>/dev/null && stopped_nginx=1
     fi
+    if systemctl is-active --quiet caddy 2>/dev/null; then
+      systemctl stop caddy 2>/dev/null && stopped_caddy=1
+    fi
+    if systemctl is-active --quiet apache2 2>/dev/null; then
+      systemctl stop apache2 2>/dev/null && stopped_apache=1
+    fi
+  fi
+
+  info "开始申请证书：$ym (需 80 端口空闲)……"
+  if [ -n "$v6" ] && [ -z "$v4" ]; then
+    "$HOME/.acme.sh/acme.sh" --issue -d "$ym" --standalone --listen-v6 --keylength ec-256
+  else
+    "$HOME/.acme.sh/acme.sh" --issue -d "$ym" --standalone --listen-v4 --keylength ec-256
+  fi
+
+  # 恢复被暂停的服务
+  [ "$stopped_nginx" = 1 ] && systemctl start nginx 2>/dev/null || true
+  [ "$stopped_caddy" = 1 ] && systemctl start caddy 2>/dev/null || true
+  [ "$stopped_apache" = 1 ] && systemctl start apache2 2>/dev/null || true
+
+  local acme_home="$HOME/.acme.sh/${ym}_ecc"
+  if [ ! -f "$acme_home/fullchain.cer" ]; then
+    acme_home="$HOME/.acme.sh/${ym}"
   fi
 
   if [ -f "$acme_home/fullchain.cer" ] && [ -f "$acme_home/${ym}.key" ]; then
     mkdir -p "$CERT_DIR"
-    cp "$acme_home/fullchain.cer" "$CERT_DIR/fullchain.cer"
-    cp "$acme_home/${ym}.key" "$CERT_DIR/private.key"
+    cp -f "$acme_home/fullchain.cer" "$CERT_DIR/fullchain.cer"
+    cp -f "$acme_home/${ym}.key" "$CERT_DIR/private.key"
+    chmod 600 "$CERT_DIR/fullchain.cer" "$CERT_DIR/private.key" 2>/dev/null
     trim_cert_chain "$CERT_DIR/fullchain.cer"
     info "证书已落地：$CERT_DIR/fullchain.cer"
-    # Hysteria2 用 SHA256 固定指纹（配合真实证书双保险）
-    sha=$(openssl x509 -in "$CERT_DIR/fullchain.cer" -outform DER | sha256sum | awk '{print $1}')
-    echo "$sha" > "$SB_HOME/SHA256.txt"
+    get_cert_paths
     return 0
   else
     error "证书申请失败。请确认："
@@ -773,14 +843,14 @@ installsb() {
   load_secrets
 
   # ---------- 证书准备 ----------
-  if [ -n "$nvp" ] && [ -z "$alns" ]; then
+  if [ -n "$nvp" ] && [ -z "$alns" ] && [ -z "$ym" ]; then
     error "Naiveproxy 需要有效 TLS 证书。请设置 alns=1 与 ym=你的域名后再安装"
     exit 1
   fi
-  if [ -n "$alns" ]; then
-    if cert_ready; then
+  if [ -n "$alns" ] || [ -n "$ym" ]; then
+    if [ -n "$ym" ] && cert_matches_ym "$ym"; then
       # 重装 / 加装协议时不重复签发，避免撞上 Let's Encrypt 的签发频率限制
-      info "检测到已有证书，跳过申请（如需续期请执行 sbbox cert renew）"
+      info "检测到已有证书且域名匹配 ($ym)，跳过申请（如需续期请执行 sbbox cert renew）"
     else
       if [ -z "$ym" ]; then
         # 交互式输入域名，避免出现在命令行历史记录中
@@ -790,7 +860,7 @@ installsb() {
         fi
       fi
       if [ -z "$ym" ]; then
-        error "启用 alns=1 需要提供证书域名。请在安装时输入，或用 ym=你的域名 指定"
+        error "启用证书功能需要提供证书域名。请在安装时输入，或用 ym=你的域名 指定"
         exit 1
       fi
       install_cert
@@ -798,6 +868,8 @@ installsb() {
     get_cert_paths
     if [ "$CERT_OK" != 1 ]; then
       warn "证书未就绪，Hysteria2/Tuic 将回退自签证书；Naive 不会启用"
+      make_selfsigned
+      get_cert_paths
     fi
   else
     make_selfsigned
@@ -1118,11 +1190,11 @@ gen_client() {
       _fp=$(openssl x509 -in "$CERT_DIR/fullchain.cer" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d ':')
       [ -n "$_fp" ] && nv_pcs="&pcs=$_fp"
     fi
-    # Naiveproxy 节点默认全部开启 QUIC (HTTP/3) + BBR 极速传输
-    nv1_link="naive+quic://$nv_user:$nv_pw@$add:$port_nv?congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-quic1-$hostname_s"
-    nv2_link="naive+quic://$nv_user:$nv_pw@$add:$port_nv?congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-quic2-$hostname_s"
-    nv3_link="http3://$nv_user:$nv_pw@$add:$port_nv?congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-quic1-rocket-$hostname_s"
-    nv4_link="http3://$nv_user:$nv_pw@$add:$port_nv?congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-quic2-rocket-$hostname_s"
+    # 默认优先使用 QUIC (HTTP/3) 极速通道，同时保留 HTTP/2 供客户端兼容与回退
+    nv1_link="naive+quic://$nv_user:$nv_pw@$add:$port_nv?congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-h3-$hostname_s"
+    nv2_link="naive+https://$nv_user:$nv_pw@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-h2-$hostname_s"
+    nv3_link="http3://$nv_user:$nv_pw@$add:$port_nv?congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-h3-rocket-$hostname_s"
+    nv4_link="http2://$nv_user:$nv_pw@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-h2-rocket-$hostname_s"
     for l in "$nv1_link" "$nv2_link" "$nv3_link" "$nv4_link"; do
       echo "$l" >> "$SB_LINK"
     done
@@ -1354,8 +1426,16 @@ gen_client_sbox() {
   if [ -n "$hyp" ]; then
     local hy_ports_json=""
     if [ -n "$hyjpt" ]; then
-      # 支持 sing-box 1.14 端口跳跃与随机化抖动 hop_interval_max
-      hy_ports_json="\"server_ports\": [\"$hyjpt\"], \"hop_interval\": \"30s\", \"hop_interval_max\": \"90s\","
+      # 支持 sing-box 1.14 端口跳跃与随机化抖动 hop_interval_max（单端口自动补齐为 start:end 格式）
+      local formatted_jpt="" item
+      for item in $(echo "$hyjpt" | tr ',' ' '); do
+        case "$item" in
+          *:*) formatted_jpt="$formatted_jpt \"$item\"," ;;
+          *)   formatted_jpt="$formatted_jpt \"${item}:${item}\"," ;;
+        esac
+      done
+      formatted_jpt="${formatted_jpt%,}"
+      hy_ports_json="\"server_ports\": [$formatted_jpt], \"hop_interval\": \"30s\", \"hop_interval_max\": \"90s\","
     fi
     ob+=('{
         "type": "hysteria2",
@@ -1373,10 +1453,10 @@ gen_client_sbox() {
   # 本脚本安装时会一并保留）。缺库时该出站会以 "cronet: library not found" 启动失败，
   # 故客户端若用自行编译/精简版内核，需自行补上该库或删掉这条出站。
   if [ -n "$nvp" ] && [ "$CERT_OK" = 1 ]; then
-    # 两个 naive 出站均默认开启 QUIC (H3)+bbr 与多路径 TCP (MPTCP)
+    # 默认 naive 出站开启 QUIC (H3)+bbr 与多路径 TCP (MPTCP)
     ob+=('{
         "type": "naive",
-        "tag": "naive-quic1",
+        "tag": "naive-h3",
         "server": "'"$add"'",
         "server_port": '"$port_nv"',
         "username": "'"$nv_user"'",
@@ -1388,10 +1468,11 @@ gen_client_sbox() {
         "quic_congestion_control": "bbr",
         "tls": { "enabled": true, "insecure": false, "server_name": "'"$sni"'" }
     }')
-    tags+=("naive-quic1")
+    tags+=("naive-h3")
+    # 独立 H2(TCP) 出站：供需要 TCP / HTTP2 的环境回退使用
     ob+=('{
         "type": "naive",
-        "tag": "naive-quic2",
+        "tag": "naive",
         "server": "'"$add"'",
         "server_port": '"$port_nv"',
         "username": "'"$nv_user"'",
@@ -1399,11 +1480,9 @@ gen_client_sbox() {
         "tcp_fast_open": true,
         "tcp_multi_path": true,
         "udp_over_tcp": true,
-        "quic": true,
-        "quic_congestion_control": "bbr",
         "tls": { "enabled": true, "insecure": false, "server_name": "'"$sni"'" }
     }')
-    tags+=("naive-quic2")
+    tags+=("naive")
   fi
 
   if [ "${#tags[@]}" -eq 0 ]; then
@@ -1992,9 +2071,16 @@ cert_mgmt() {
     renew)
       if [ -n "$ym" ]; then
         v4v6
+        if [ -f "$HOME/.acme.sh/acme.sh" ]; then
+          "$HOME/.acme.sh/acme.sh" --renew -d "$ym" --force 2>/dev/null || true
+        fi
         install_cert
         get_cert_paths
-        [ "$CERT_OK" = 1 ] && { info "证书续期完成"; sbrestart; }
+        if [ "$CERT_OK" = 1 ]; then
+          info "证书续期完成"
+          sbrestart
+          gen_client
+        fi
       else
         warn "未找到证书域名（安装时未设置 ym）。请手动执行 acme.sh 续期"
       fi
@@ -2048,10 +2134,15 @@ doctor() {
     echo -e "sing-box 服务：${GREEN}运行中${NC}"
   fi
 
-  # 需要证书的协议（naive）若证书缺失视为不通
-  if [ "$nvp" = yes ] && [ "$CERT_OK" != 1 ]; then
-    echo -e "Naiveproxy：${RED}证书缺失${NC}（naive 需要真实证书，不会启动）"
-    issues=$((issues+1))
+  # 需要证书的协议（naive）若证书缺失或域名不匹配视为不通
+  if [ "$nvp" = yes ]; then
+    if [ "$CERT_OK" != 1 ]; then
+      echo -e "Naiveproxy：${RED}证书缺失${NC}（naive 需要真实证书，不会启动）"
+      issues=$((issues+1))
+    elif [ -n "$ym" ] && ! cert_matches_ym "$ym"; then
+      echo -e "Naiveproxy：${RED}证书与域名 $ym 不匹配${NC}"
+      issues=$((issues+1))
+    fi
   fi
 
   check_one() { # $1=名称 $2=端口 $3=tcp|udp
@@ -2085,10 +2176,13 @@ doctor() {
   echo ""
   echo "检测到 $issues 处问题，开始修复……"
 
-  # 证书缺失 → 尝试申请（有 ym 时）
-  if [ "$nvp" = yes ] && [ "$CERT_OK" != 1 ] && [ -n "$ym" ]; then
+  # 证书缺失或域名不匹配 → 尝试重新获取
+  if [ -n "$ym" ] && ([ "$CERT_OK" != 1 ] || ! cert_matches_ym "$ym"); then
     install_cert && get_cert_paths
-    [ "$CERT_OK" = 1 ] && echo -e "证书：${GREEN}已重新获取${NC}" && fixed=$((fixed+1))
+    if [ "$CERT_OK" = 1 ] && cert_matches_ym "$ym"; then
+      echo -e "证书：${GREEN}已重新获取并匹配域名 $ym${NC}"
+      fixed=$((fixed+1))
+    fi
   fi
 
   # 先重启服务，覆盖「进程挂了 / 端口没起来」的情况
@@ -2147,7 +2241,8 @@ load_state() {
     subid=$(cat "$SB_HOME/subtoken")
     subport=$(cat "$SB_HOME/subport" 2>/dev/null)
   fi
-  if cert_ready; then CERT_OK=1; ym=$(cat "$SB_HOME/ym" 2>/dev/null || echo ""); else CERT_OK=0; fi
+  get_cert_paths
+  if cert_ready; then CERT_OK=1; else CERT_OK=0; fi
   hostname_s=$(hostname 2>/dev/null || echo vps)
 }
 
