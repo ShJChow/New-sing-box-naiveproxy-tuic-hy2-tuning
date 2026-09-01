@@ -668,7 +668,7 @@ apply_tuning() {
   fi
   try_sysctl net.ipv4.tcp_rmem "4096 262144 ${TCP_MEM_MAX}"
   try_sysctl net.ipv4.tcp_wmem "4096 262144 ${TCP_MEM_MAX}"
-  try_sysctl net.ipv4.tcp_adv_win_scale -2
+  try_sysctl net.ipv4.tcp_adv_win_scale 1
   try_sysctl net.ipv4.tcp_mem "$(( MEM_PAGES * 6 / 100 )) $(( MEM_PAGES * 8 / 100 )) $(( MEM_PAGES * 12 / 100 ))"
   # QUIC / HTTP3：Hysteria2 / Tuic 关键
   try_sysctl net.core.optmem_max 65536
@@ -756,6 +756,7 @@ LIMITSEOF
 [Service]
 LimitNOFILE=1048576
 LimitNPROC=infinity
+Environment="GOGC=200"
 DROPINEOF
     systemctl daemon-reload >/dev/null 2>&1 || true
     info "已为 sing-box 写入 systemd drop-in（LimitNOFILE=1048576）"
@@ -1072,7 +1073,7 @@ EOF
   cat >> "$SB_CONF" <<EOF
     ],
     "outbounds": [
-        { "type": "direct", "tag": "direct" }
+        { "type": "direct", "tag": "direct", "tcp_fast_open": true, "tcp_multi_path": true, "udp_fragment": true }
     ],
     "route": {
         "rules": [
@@ -1681,6 +1682,7 @@ RestartSec=3s
 LimitNOFILE=1048576
 LimitNPROC=infinity
 TasksMax=infinity
+Environment="GOGC=200"
 # 代理进程的延迟直接决定体感，给一点调度优先级；受限环境设不上会被忽略
 Nice=-5
 IOSchedulingClass=best-effort
