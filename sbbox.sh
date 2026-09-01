@@ -79,8 +79,9 @@ noautoup="${noautoup:-}"                    # 关闭每周内核自动升级：n
 # 已持久化的通道选择会被默认值静默覆盖。
 sbrel_explicit="${sbrel:+1}"
 sbrel="${sbrel:-stable}"
-tuicuos="${tuicuos:-1}"                     # Tuic UDP over QUIC 流，默认开；退回原生 UDP 用 tuicuos=0
+tuicuos="${tuicuos:-0}"                     # Tuic UDP 中继模式：默认原生 UDP(native，防队头阻塞断流)；QUIC流用 tuicuos=1
 tuils="${tuils:-1}"                         # Tuic TLS 加固（证书公钥 SHA-256 固定），关闭用 tuils=0
+
 tuech="${tuech:-}"                          # Tuic ECH：tuech=1 且 tuech_config=<base64> 时启用（需服务端支持）
 tuech_config="${tuech_config:-}"            # ECH config list（base64）
 sub="${sub:-}"                              # 启用订阅服务：sub=1
@@ -992,8 +993,9 @@ EOF
             ],
             "congestion_control": "bbr",
             "zero_rtt_handshake": true,
-            "auth_timeout": "3s",
+            "auth_timeout": "8s",
             "heartbeat": "10s",
+
             "tls": {
                 "enabled": true,
                 "alpn": [ "h3" ],
@@ -1365,12 +1367,14 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=$runner
-Restart=on-failure
-RestartSec=5s
+Restart=always
+RestartSec=3s
+LimitNOFILE=65535
 
 [Install]
 WantedBy=multi-user.target
 EOF
+
     systemctl daemon-reload >/dev/null 2>&1
     systemctl enable sbbox-sub >/dev/null 2>&1
     systemctl restart sbbox-sub >/dev/null 2>&1
@@ -1646,9 +1650,13 @@ gen_client_clash() {
     password: $pw_tu
     alpn: [h3]
     reduce-rtt: true
+    heartbeat-interval: 10000
+    request-timeout: 8000
+    udp-relay-mode: native
     congestion-controller: bbr
     sni: $sni
     skip-cert-verify: $msins"
+
     groups="$groups
       - tuic-$hostname_s"
   fi
