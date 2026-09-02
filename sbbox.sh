@@ -1240,10 +1240,44 @@ EOF
 # ======================================================
 # 客户端节点链接生成 + 聚合订阅
 # ======================================================
-# 证书 SHA-256 指纹（hex，无冒号）——v2rayN 固定证书/naive 用
+# 使用 openssl 动态提取活动证书的 SHA-256 指纹与哈希值
+# 1. 证书 SHA-256 指纹（HEX 大写无冒号）——v2rayN/NekoBox pcs= 固定证书参数
 _cert_fp() {
-  [ "$CERT_OK" = 1 ] && [ -s "$CERT_DIR/fullchain.cer" ] || return 0
-  openssl x509 -in "$CERT_DIR/fullchain.cer" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d ':'
+  local f=""
+  if [ -s "$CERT_DIR/fullchain.cer" ]; then
+    f="$CERT_DIR/fullchain.cer"
+  elif [ -s "$SB_HOME/selfsigned.crt" ]; then
+    f="$SB_HOME/selfsigned.crt"
+  fi
+  [ -n "$f" ] || return 0
+  openssl x509 -in "$f" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d ':'
+}
+
+# 2. 证书 DER SHA-256 哈希（HEX 小写）——Hysteria2/Tuic pinSHA256 参数
+_cert_sha256() {
+  local f=""
+  if [ -s "$CERT_DIR/fullchain.cer" ]; then
+    f="$CERT_DIR/fullchain.cer"
+  elif [ -s "$SB_HOME/selfsigned.crt" ]; then
+    f="$SB_HOME/selfsigned.crt"
+  fi
+  [ -n "$f" ] || return 0
+  openssl x509 -in "$f" -outform DER 2>/dev/null | sha256sum | awk '{print $1}'
+}
+
+# 3. 证书公钥 SPKI SHA-256（Base64）——sing-box 客户端 certificate_public_key_sha256
+_cert_spki_base64() {
+  local f=""
+  if [ -s "$CERT_DIR/fullchain.cer" ]; then
+    f="$CERT_DIR/fullchain.cer"
+  elif [ -s "$SB_HOME/selfsigned.crt" ]; then
+    f="$SB_HOME/selfsigned.crt"
+  fi
+  [ -n "$f" ] || return 0
+  openssl x509 -in "$f" -pubkey -noout 2>/dev/null \
+    | openssl pkey -pubin -outform DER 2>/dev/null \
+    | openssl dgst -sha256 -binary 2>/dev/null \
+    | openssl base64 2>/dev/null
 }
 
 gen_client() {
@@ -1268,18 +1302,21 @@ gen_client() {
   fi
   : > "$SB_LINK"
 
+  # 获取活动证书的 openssl 指纹与 SHA256 哈希
+  local _fp _sha
+  _fp=$(_cert_fp)
+  _sha=$(_cert_sha256)
+
   if [ -n "$tup" ]; then
-    # v2rayN 通用 URL 参数：fp=Fingerprint、pcs=固定证书(SHA-256 指纹)、ech=ECH config list。
-    # 指纹从真实证书算出，导入后「固定证书」字段显示已设置。
-    # ECH 默认不加：Encrypted ClientHello 需要服务端(CDN)配置 ECH keys，直连 VPS 没有，
-    # 填了反而会导致握手失败。确有必要时用 tuech=1 tuech_config=<base64> 自定义。
-    local tuic_fp="" tuic_ech=""
-    [ "$CERT_OK" = 1 ] && tuic_fp="&fp=chrome&pcs=$(_cert_fp)"
+    # v2rayN 通用 URL 参数：fp=Fingerprint、pcs=固定证书(HEX SHA-256 指纹)、pinSHA256=证书SHA256、ech=ECH config list。
+    # 指纹与 SHA-256 使用 openssl 动态从当前证书中提取
+    local tuic_fp="" tuic_pin="" tuic_ech=""
+    [ -n "$_fp" ] && tuic_fp="&fp=chrome&pcs=$_fp"
+    [ -n "$_sha" ] && tuic_pin="&pinSHA256=$_sha"
     case "$tuech" in
-      1|on|yes|true) [ -n "$tuech_config" ] && tuic_ech="&ech=$(printf %s "$tuech_config" | base64 | tr -d '
-')" ;;
+      1|on|yes|true) [ -n "$tuech_config" ] && tuic_ech="&ech=$(printf %s "$tuech_config" | base64 | tr -d '\n')" ;;
     esac
-    tuic_link="tuic://$uuid:$pw_tu@$add:$port_tu?congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=$sni&insecure=$jhins&allowInsecure=$jhins&allow_insecure=$jhins$tuic_fp$tuic_ech#${sxname}tuic-$hostname_s"
+    tuic_link="tuic://$uuid:$pw_tu@$add:$port_tu?congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=$sni&insecure=$jhins&allowInsecure=$jhins&allow_insecure=$jhins$tuic_fp$tuic_pin$tuic_ech#${sxname}tuic-$hostname_s"
     echo "$tuic_link" >> "$SB_LINK"
     echo "💣【 Tuic 】节点信息如下："
     echo "$tuic_link"; echo
@@ -1294,17 +1331,15 @@ gen_client() {
         hyps="&mport=$hy2_ports"
       fi
     fi
-    local sha pinsha=""
-    if [ "$CERT_OK" != 1 ]; then
-      sha=$(cat "$SB_HOME/SHA256.txt" 2>/dev/null)
-      [ -n "$sha" ] && pinsha="&pinSHA256=$sha"
-    fi
+    local hy2_pin="" hy2_pcs=""
+    [ -n "$_sha" ] && hy2_pin="&pinSHA256=$_sha"
+    [ -n "$_fp" ] && hy2_pcs="&pcs=$_fp"
     # 服务端启用 salamander 时，客户端必须带相同 obfs 参数，否则握手不上
     local hyobfs_q=""
     if [ -s "$SB_HOME/hyobfs_pw" ]; then
       hyobfs_q="&obfs=salamander&obfs-password=$(cat "$SB_HOME/hyobfs_pw")"
     fi
-    hy2_link="hysteria2://$pw_hy@$add:$port_hy2?security=tls&alpn=h3&insecure=$jhins&allowInsecure=$jhins$hyps&sni=$sni$pinsha$hyobfs_q#${sxname}hy2-$hostname_s"
+    hy2_link="hysteria2://$pw_hy@$add:$port_hy2?security=tls&alpn=h3&insecure=$jhins&allowInsecure=$jhins$hyps&sni=$sni$hy2_pin$hy2_pcs$hyobfs_q#${sxname}hy2-$hostname_s"
     echo "$hy2_link" >> "$SB_LINK"
     echo "💣【 Hysteria2 】节点信息如下："
     echo "$hy2_link"; echo
@@ -1321,18 +1356,14 @@ gen_client() {
     # H3(naive+quic/http3) 拥塞控制用 congestion_control=bbr（H3 默认本就是 bbr）。
     #
     # 固定证书：v2rayN 解析 pcs= 参数填充节点「固定证书」字段（CertSha，证书 SHA-256 指纹）。
-    # 不加的话导入后显示「证书未设置」。有真实证书时算指纹带上。
-    local nv_pcs=""
-    if [ "$CERT_OK" = 1 ] && [ -s "$CERT_DIR/fullchain.cer" ]; then
-      local _fp
-      _fp=$(openssl x509 -in "$CERT_DIR/fullchain.cer" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d ':')
-      [ -n "$_fp" ] && nv_pcs="&pcs=$_fp"
-    fi
+    local nv_pcs="" nv_pin=""
+    [ -n "$_fp" ] && nv_pcs="&pcs=$_fp"
+    [ -n "$_sha" ] && nv_pin="&pinSHA256=$_sha"
     # 默认优先使用 QUIC (HTTP/3) 极速通道，同时保留 HTTP/2 供客户端兼容与回退（均默认开启 QUIC 与 BBR 拥塞控制）
-    nv1_link="naive+quic://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-h3-$hostname_s"
-    nv2_link="naive+https://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-h2-$hostname_s"
-    nv3_link="http3://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-h3-rocket-$hostname_s"
-    nv4_link="http2://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-h2-rocket-$hostname_s"
+    nv1_link="naive+quic://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs$nv_pin#${sxname}naive-h3-$hostname_s"
+    nv2_link="naive+https://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs$nv_pin#${sxname}naive-h2-$hostname_s"
+    nv3_link="http3://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs$nv_pin#${sxname}naive-h3-rocket-$hostname_s"
+    nv4_link="http2://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs$nv_pin#${sxname}naive-h2-rocket-$hostname_s"
 
     for l in "$nv1_link" "$nv2_link" "$nv3_link" "$nv4_link"; do
       echo "$l" >> "$SB_LINK"
@@ -1548,28 +1579,16 @@ gen_client_sbox() {
     *)                 tuic_udp='"udp_over_stream": true,' ;;
   esac
 
-  # Tuic TLS 加固：uTLS 指纹 + 证书公钥 SHA-256 固定（防中间人）
-  #   utls.fingerprint 只对 TCP 的 ClientHello 生效；QUIC 的 TLS 握手由
-  #   quic-go 内部完成，uTLS 通常不接管——对 Tuic 更多是防御纵深。
-  #   certificate_public_key_sha256 是证书验证层，QUIC 同样适用，价值更大。
-  #   tuils=0 可整体关闭；公钥固定仅在持有真实证书（CERT_OK=1）时生成，
-  #   且需要 sing-box >= 1.13.0。
-  local tuic_tls_extra sb64
-  tuic_tls_extra=""
-  case "$tuils" in
-    ""|0|no|off|false) : ;;
-    *)
-      # uTLS 只作用于 TCP 上的 TLS 握手，Tuic 跑在 QUIC 上：
-      # 加了它 sing-box 客户端会在建连时直接报 "unsupported usage for uTLS"，
-      # 该出站完全不可用（sing-box check 不会报错，只在实际连接时炸）。
-      # 因此 Tuic 的 TLS 加固只保留证书公钥固定。
-      tuic_tls_extra=''
-      if [ "$CERT_OK" = 1 ] && [ -s "$CERT_DIR/fullchain.cer" ]; then
-        sb64=$(openssl x509 -in "$CERT_DIR/fullchain.cer" -pubkey -noout 2>/dev/null               | openssl pkey -pubin -outform DER 2>/dev/null               | openssl dgst -sha256 -binary 2>/dev/null               | openssl base64 2>/dev/null)
-        [ -n "$sb64" ] && tuic_tls_extra="$tuic_tls_extra, \"certificate_public_key_sha256\": [\"$sb64\"]"
-      fi
-      ;;
-  esac
+  # TLS 证书公钥 SHA-256 固定（通过 openssl 提取 SPKI SHA-256，防中间人）
+  local tuic_tls_extra="" hy2_tls_extra="" sb64
+  sb64=$(_cert_spki_base64)
+  if [ -n "$sb64" ]; then
+    case "$tuils" in
+      ""|0|no|off|false) : ;;
+      *) tuic_tls_extra=", \"certificate_public_key_sha256\": [\"$sb64\"]" ;;
+    esac
+    hy2_tls_extra=", \"certificate_public_key_sha256\": [\"$sb64\"]"
+  fi
 
   if [ -n "$tup" ]; then
     ob+=('{
@@ -1609,7 +1628,7 @@ gen_client_sbox() {
         "server_port": '"$port_hy2"',
         '"$hy_ports_json"'
         "password": "'"$pw_hy"'",'"$hyobfs_json"'
-        "tls": { "enabled": true, "server_name": "'"$sni"'", "insecure": '"$msins"', "alpn": ["h3"] }
+        "tls": { "enabled": true, "server_name": "'"$sni"'", "insecure": '"$msins"', "alpn": ["h3"]'"$hy2_tls_extra"' }
     }')
     tags+=("hysteria2")
   fi
