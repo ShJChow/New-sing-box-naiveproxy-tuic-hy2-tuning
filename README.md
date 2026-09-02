@@ -31,11 +31,44 @@
 | Hysteria2 混淆 | `obfs: salamander`（默认开启），混淆密码独立随机 |
 | Tuic 极速握手 | `zero_rtt_handshake: true` + `congestion_control: bbr` |
 | 文件句柄 | 1048576（写进主 unit，不依赖 drop-in） |
+| systemd 默认句柄 | 调优时把 `DefaultLimitNOFILE` 对齐到 `fs.nr_open`，避免其他调优脚本留下的越界值让系统服务报 `205/LIMITS` |
 | 协议凭据 | **每协议独立随机密钥**，任一泄露不牵连其他 |
 | 出站 DNS | **DoT 加密**（1.1.1.1 / 9.9.9.9） |
 | 内网访问 | `ip_is_private` 一律拒绝，防止内网与云元数据接口被穿透 |
 | 垃圾邮件滥用 | 默认阻断出站 25/465/587 与 SMB 端口（`blkport=0` 关闭） |
 | 服务端日志 | 默认 `error`；`sblevel=off` 完全不落盘 |
+
+---
+
+## `DefaultLimitNOFILE` 与 `fs.nr_open` 的对齐
+
+`fs.nr_open` 是单进程句柄数的内核硬上限，systemd 的 `DefaultLimitNOFILE` 无论写多大都越不过它。两者一旦倒挂（`DefaultLimitNOFILE > fs.nr_open`），systemd 拉起任何**没有自己声明 `LimitNOFILE`** 的服务时，都会在设限那一步直接失败：
+
+```
+Failed to adjust resource limit RLIMIT_NOFILE: Operation not permitted
+Failed at step LIMITS spawning ...: Operation not permitted
+Main process exited, code=exited, status=205/LIMITS
+```
+
+这个坑不是本脚本自己制造的，而是本脚本把 `fs.nr_open` 钉到 `1048576` 之后，**会让别的调优脚本早先写下的更大的 `DefaultLimitNOFILE` 变成非法值**。实测踩过：某第三方 TCP 调优脚本写了 `DefaultLimitNOFILE=2097152`，本脚本随后设 `fs.nr_open=1048576`，结果 `logrotate`、`apt-daily`、`systemd-timedated`、`netfilter-persistent` 等十个单元全部起不来；`sing-box` 反而幸免——因为它的主 unit 与 drop-in 自带 `LimitNOFILE=1048576`，压根没走默认值。**这类故障最难查的地方就在这里：代理本身一切正常，坏掉的是系统里其他所有服务。**
+
+因此 `sbbox tune on`（安装期自动执行）设完 `fs.nr_open` 会检查一次实际生效的 `DefaultLimitNOFILE`，越界（含 `infinity`）就写：
+
+```ini
+# /etc/systemd/system.conf.d/10-sbbox-nofile.conf
+[Manager]
+DefaultLimitNOFILE=1048576
+```
+
+写 `system.conf.d/` 下的 drop-in 而不是改 `/etc/systemd/system.conf` 本体：drop-in 优先级更高，别的脚本以后再改主文件也覆盖不掉；`sbbox tune off` 删掉这一个文件即可干净回滚。
+
+自查：
+
+```bash
+systemctl show -p DefaultLimitNOFILE --value   # 不得大于下一行
+sysctl -n fs.nr_open
+systemctl --failed                             # 有 205/LIMITS 就是踩了这个坑
+```
 
 ---
 

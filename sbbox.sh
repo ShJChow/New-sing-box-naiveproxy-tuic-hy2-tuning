@@ -561,6 +561,55 @@ install_cert() {
 # ======================================================
 sysctl_get() { sysctl -n "$1" 2>/dev/null || true; }
 
+# fs.nr_open 是单进程可打开句柄数的内核硬上限，systemd 的 DefaultLimitNOFILE 无论
+# 写多大都不能越过它。两者一旦倒挂（DefaultLimitNOFILE > fs.nr_open），systemd 在
+# 拉起任何"没有自己声明 LimitNOFILE"的服务时都会在设限那一步失败：
+#
+#   Failed to adjust resource limit RLIMIT_NOFILE: Operation not permitted
+#   Failed at step LIMITS spawning ...: Operation not permitted
+#   Main process exited, code=exited, status=205/LIMITS
+#
+# 这不是本脚本独有的坑，而是我们把 fs.nr_open 钉到 1048576 之后，会让别的调优脚本
+# 早先写下的更大的 DefaultLimitNOFILE 变成非法值。实测踩过：某第三方 TCP 调优脚本
+# 写了 DefaultLimitNOFILE=2097152，本脚本随后设 fs.nr_open=1048576，结果 logrotate /
+# apt-daily / systemd-timedated / netfilter-persistent 等十个单元全部起不来；sing-box
+# 反而幸免——因为它的 drop-in 与主 unit 自带 LimitNOFILE=1048576，没走默认值。
+# 最难查的地方就在这里：代理本身一切正常，坏掉的是系统里其他所有服务。
+#
+# 所以设完 fs.nr_open 必须把 DefaultLimitNOFILE 拉回来对齐。写 system.conf.d/ 下的
+# drop-in 而不是改 /etc/systemd/system.conf 本体：drop-in 优先级更高，别的脚本以后
+# 再改主文件也覆盖不掉我们，且 sbbox tune off 删一个文件即可干净回滚。
+align_default_nofile() {
+  [ "$SERVICE_TYPE" = "systemd" ] || return 0
+
+  local nr_open cur
+  nr_open=$(sysctl_get fs.nr_open)
+  case "$nr_open" in ''|*[!0-9]*) return 0 ;; esac
+
+  cur=$(systemctl show -p DefaultLimitNOFILE --value 2>/dev/null)
+  # infinity 同样越界（systemd 会解析成远大于 nr_open 的值）
+  case "$cur" in
+    ''|*[!0-9]*) ;;
+    *) [ "$cur" -le "$nr_open" ] && return 0 ;;
+  esac
+
+  install -d -m 755 /etc/systemd/system.conf.d 2>/dev/null || {
+    warn "无法创建 /etc/systemd/system.conf.d，跳过 DefaultLimitNOFILE 对齐"; return 0; }
+  if ! cat > /etc/systemd/system.conf.d/10-sbbox-nofile.conf <<EOF
+# 由 sbbox tune on 生成 / sbbox tune off 移除。
+# 与 fs.nr_open 对齐——高于它会让 systemd 无法启动未自带 LimitNOFILE 的服务
+# （报 205/LIMITS）。详见 sbbox.sh 中 align_default_nofile 的注释。
+[Manager]
+DefaultLimitNOFILE=${nr_open}
+EOF
+  then
+    warn "写入 DefaultLimitNOFILE drop-in 失败"
+    return 0
+  fi
+  systemctl daemon-reexec >/dev/null 2>&1 || warn "systemctl daemon-reexec 失败"
+  info "已将 DefaultLimitNOFILE 由 ${cur:-未设置} 对齐到 fs.nr_open=${nr_open}（原值越界会导致服务报 205/LIMITS）"
+}
+
 # 默认路由所在网卡（QUIC 调优要作用在真正出流量的接口上）
 default_nic() {
   ip route show default 2>/dev/null | awk '/default/{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}'
@@ -757,6 +806,7 @@ apply_tuning() {
   # ---------- 文件句柄 ----------
   try_sysctl fs.file-max 1048576
   try_sysctl fs.nr_open 1048576
+  align_default_nofile
 
   # ---------- 落盘（只写成功项，避免重启后 sysctl --system 报错） ----------
   if [ "${#SYSCTL_APPLIED[@]}" -gt 0 ]; then
@@ -853,6 +903,13 @@ tune_off() {
     fi
   fi
   rmdir "$dir" 2>/dev/null || true
+  # 与 fs.nr_open 对齐用的 DefaultLimitNOFILE drop-in 也一并移除（见
+  # align_default_nofile）。删掉后 systemd 回到 /etc/systemd/system.conf 的值。
+  if [ -f /etc/systemd/system.conf.d/10-sbbox-nofile.conf ]; then
+    rm -f /etc/systemd/system.conf.d/10-sbbox-nofile.conf
+    rmdir /etc/systemd/system.conf.d 2>/dev/null || true
+    systemctl daemon-reexec >/dev/null 2>&1 || true
+  fi
   sysctl --system >/dev/null 2>&1 || true
   info "已移除全部 sbbox 调优配置（BBR 等运行时参数将由系统默认接管）"
 }
