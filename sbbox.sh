@@ -1295,8 +1295,10 @@ gen_client() {
       fi
     fi
     local sha pinsha=""
-    sha=$(cat "$SB_HOME/SHA256.txt" 2>/dev/null)
-    [ -n "$sha" ] && pinsha="&pinSHA256=$sha"
+    if [ "$CERT_OK" != 1 ]; then
+      sha=$(cat "$SB_HOME/SHA256.txt" 2>/dev/null)
+      [ -n "$sha" ] && pinsha="&pinSHA256=$sha"
+    fi
     # 服务端启用 salamander 时，客户端必须带相同 obfs 参数，否则握手不上
     local hyobfs_q=""
     if [ -s "$SB_HOME/hyobfs_pw" ]; then
