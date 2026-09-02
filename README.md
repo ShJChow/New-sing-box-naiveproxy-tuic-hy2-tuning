@@ -18,6 +18,7 @@
 集成了：
 - **内核级流控调优**（移植自 [`ShJChow/Xray-core-xhttp-cdn-tuned`](https://github.com/ShJChow/Xray-core-xhttp-cdn-tuned) 的 `xh tuning on`）：BBR、内存分档缓冲区、TFO、文件句柄等，安装期自动开启，可一键回滚
 - **acme.sh 证书申请**：Naiveproxy / Hysteria2 / Tuic 使用真实 TLS 证书
+- **OpenSSL 动态指纹与 SHA-256 锁定**：安装时自动通过 OpenSSL 提取证书的 HEX 指纹（`pcs`）、DER SHA256（`pinSHA256`）与 SPKI 公钥 Base64，默认注入 Tuic / Hysteria2 / Naive 节点及客户端配置，防中间人劫持
 
 ---
 
@@ -121,6 +122,7 @@ chmod 600 /etc/ssl/private/*.key /etc/ssl/private/*.cer 2>/dev/null || true
 | 加固项 | 说明 |
 |--------|------|
 | TLS 证书校验 | `insecure=0`（强制校验） |
+| SHA-256 证书指纹锁定 | **默认安装即开启**：自动调用 OpenSSL 提取活动证书 HEX 指纹（`pcs`）、DER SHA256（`pinSHA256`）及 SPKI 公钥 Base64，全量注入 Tuic / Hysteria2 / Naiveproxy 节点与客户端配置，防中间人劫持 |
 | Naiveproxy 证书 | **强制 acme 真实证书** |
 | 最低协议兼容 | **TLS 1.2**（`min_version: "1.2"`）+ ALPN `["h3", "h2", "http/1.1"]`，兼顾旧客户端与极速新协议 |
 | Hysteria2 伪装 | `masquerade` 反代真实站点（默认 www.bing.com），未认证探测拿到真实页面 |
@@ -263,6 +265,13 @@ sbrel=pre sbbox up        # 升级/切换到 pre 通道
 
 安装时加 `sub=1`，脚本会生成 base64 订阅并在本机启动 HTTP 静态托管服务。
 
+### 1. 证书指纹与 SHA-256 自动注入（默认开启）
+脚本在安装与生成配置时，会自动调用 OpenSSL 从活动证书提取以下信息并注入：
+- **Tuic 节点**：注入 `fp=chrome`、`pcs=HEX指纹` 与 `pinSHA256=DER哈希`；Sing-box 客户端注入 `certificate_public_key_sha256`。
+- **Hysteria2 节点**：注入 `pinSHA256=DER哈希` 与 `pcs=HEX指纹`；Sing-box 客户端注入 `certificate_public_key_sha256`。
+- **Naiveproxy 节点**：注入 `pcs=HEX指纹` 与 `pinSHA256=DER哈希`，默认开启 QUIC (H3) 与 HTTP/2 双轨极速通道。
+
+### 2. 节点排列与客户端配置文件
 Naiveproxy 节点按 QUIC (H3) 优先排列：
 - `naive+quic://` / `http3://`：QUIC (H3) 极速节点（默认推荐）
 - `naive+https://` / `http2://`：HTTP/2 兼容节点（TCP 回退备用）

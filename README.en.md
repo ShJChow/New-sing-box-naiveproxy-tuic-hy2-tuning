@@ -18,6 +18,7 @@ A **sing-box single-core** deployment script, covering three main protocols:
 Bundled with:
 - **Kernel-level flow tuning** (ported from the `xh tuning on` of [`ShJChow/Xray-core-xhttp-cdn-tuned`](https://github.com/ShJChow/Xray-core-xhttp-cdn-tuned)): BBR, memory-tiered buffers, TCP Fast Open, file-handle limits — applied automatically at install, one-command rollback
 - **acme.sh certificate issuance**: real TLS certificates for Naiveproxy / Hysteria2 / Tuic
+- **OpenSSL Dynamic Fingerprinting & SHA-256 Pinning**: automatically extracts the active certificate's HEX fingerprint (`pcs`), DER SHA-256 (`pinSHA256`), and SPKI public key Base64 via OpenSSL during install, injecting them into Tuic / Hysteria2 / Naiveproxy configs to prevent MITM attacks
 
 ---
 
@@ -121,6 +122,7 @@ chmod 600 /etc/ssl/private/*.key /etc/ssl/private/*.cer 2>/dev/null || true
 | Item | Description |
 |------|-------------|
 | TLS cert validation | `insecure=0` (mandatory validation) |
+| SHA-256 Cert Pinning | **Enabled by default on install**: OpenSSL extracts HEX fingerprint (`pcs`), DER SHA-256 (`pinSHA256`), and SPKI public key Base64 for Tuic / Hysteria2 / Naiveproxy configs against MITM |
 | Naiveproxy certificate | **Mandatory ACME real certificate** |
 | Minimum protocol compatibility | **TLS 1.2** (`min_version: "1.2"`) + ALPN `["h3", "h2", "http/1.1"]` |
 | Hysteria2 masquerade | `masquerade` reverse-proxies real sites (default www.bing.com) against probes |
@@ -234,6 +236,13 @@ sbrel=pre sbbox up        # switch to pre-release channel
 
 Run `sub=1` to enable the built-in subscription server.
 
+### 8.1 Certificate Fingerprint & SHA-256 Injection (Enabled by Default)
+During installation and configuration generation, the script automatically uses OpenSSL to extract and inject:
+- **Tuic**: Injects `fp=chrome`, `pcs=HEX_Fingerprint`, and `pinSHA256=DER_Hash`; injects `certificate_public_key_sha256` into sing-box client configs.
+- **Hysteria2**: Injects `pinSHA256=DER_Hash` and `pcs=HEX_Fingerprint`; injects `certificate_public_key_sha256` into sing-box client configs.
+- **Naiveproxy**: Injects `pcs=HEX_Fingerprint` and `pinSHA256=DER_Hash`, supporting both QUIC (H3) and HTTP/2 paths.
+
+### 8.2 Node Ordering & Client Config Files
 Naiveproxy links are ordered with QUIC (H3) first:
 - `naive+quic://` / `http3://`: QUIC (H3) fast node (recommended default)
 - `naive+https://` / `http2://`: HTTP/2 compatibility node (fallback)
