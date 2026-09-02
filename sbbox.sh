@@ -44,7 +44,7 @@ LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
 SBBOX_VERSION="v2.0.0"
-SB_URL="https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/main/sbbox.sh"
+SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
   SB_BINDIR="/usr/local/bin"
@@ -125,7 +125,7 @@ showmode() {
   echo "sbbox $SBBOX_VERSION — Sing-box-Only 三协议安全代理脚本"
   echo "支持协议：Tuic / Hysteria2 / Naiveproxy(H2+H3)"
   echo "-----------------------------------------------------------"
-  echo "主脚本：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/main/sbbox.sh)"
+  echo "主脚本：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh)"
   echo "显示节点信息：sbbox list 【或】 bash sbbox.sh list"
   echo "服务与流控状态：sbbox status"
   echo "重启 sing-box：sbbox res"
@@ -468,13 +468,26 @@ install_cert() {
   local cand_yg="$HOME/ygkkkca"
   local cand_le="/etc/letsencrypt/live/${ym}"
   local cand_xhttp="/etc/xhttp-cdn"
+  local cand_ssl="/etc/ssl/private"
 
   if [ -f "$cand_ecc/fullchain.cer" ] && [ -f "$cand_ecc/${ym}.key" ]; then
     found_cert="$cand_ecc/fullchain.cer"; found_key="$cand_ecc/${ym}.key"
   elif [ -f "$cand_rsa/fullchain.cer" ] && [ -f "$cand_rsa/${ym}.key" ]; then
     found_cert="$cand_rsa/fullchain.cer"; found_key="$cand_rsa/${ym}.key"
+  elif [ -f "$cand_ssl/fullchain.cer" ] && [ -f "$cand_ssl/private.key" ] && openssl x509 -in "$cand_ssl/fullchain.cer" -noout -subject -ext subjectAltName 2>/dev/null | grep -Fq "$ym"; then
+    found_cert="$cand_ssl/fullchain.cer"; found_key="$cand_ssl/private.key"
+  elif [ -f "$cand_ssl/cert.crt" ] && [ -f "$cand_ssl/private.key" ] && openssl x509 -in "$cand_ssl/cert.crt" -noout -subject -ext subjectAltName 2>/dev/null | grep -Fq "$ym"; then
+    found_cert="$cand_ssl/cert.crt"; found_key="$cand_ssl/private.key"
+  elif [ -f "$cand_ssl/${ym}/fullchain.cer" ] && [ -f "$cand_ssl/${ym}/private.key" ]; then
+    found_cert="$cand_ssl/${ym}/fullchain.cer"; found_key="$cand_ssl/${ym}/private.key"
+  elif [ -f "$cand_yg/${ym}/fullchain.cer" ] && [ -f "$cand_yg/${ym}/private.key" ]; then
+    found_cert="$cand_yg/${ym}/fullchain.cer"; found_key="$cand_yg/${ym}/private.key"
+  elif [ -f "$cand_yg/${ym}/cert.crt" ] && [ -f "$cand_yg/${ym}/private.key" ]; then
+    found_cert="$cand_yg/${ym}/cert.crt"; found_key="$cand_yg/${ym}/private.key"
   elif [ -f "$cand_yg/cert.crt" ] && [ -f "$cand_yg/private.key" ] && openssl x509 -in "$cand_yg/cert.crt" -noout -subject -ext subjectAltName 2>/dev/null | grep -Fq "$ym"; then
     found_cert="$cand_yg/cert.crt"; found_key="$cand_yg/private.key"
+  elif [ -f "$cand_yg/fullchain.cer" ] && [ -f "$cand_yg/private.key" ] && openssl x509 -in "$cand_yg/fullchain.cer" -noout -subject -ext subjectAltName 2>/dev/null | grep -Fq "$ym"; then
+    found_cert="$cand_yg/fullchain.cer"; found_key="$cand_yg/private.key"
   elif [ -f "$cand_le/fullchain.pem" ] && [ -f "$cand_le/privkey.pem" ]; then
     found_cert="$cand_le/fullchain.pem"; found_key="$cand_le/privkey.pem"
   elif [ -f "$cand_xhttp/cert.crt" ] && [ -f "$cand_xhttp/private.key" ] && openssl x509 -in "$cand_xhttp/cert.crt" -noout -subject -ext subjectAltName 2>/dev/null | grep -Fq "$ym"; then
@@ -507,7 +520,7 @@ install_cert() {
   fi
 
   # 检查 80 端口占用并临时让路
-  local stopped_nginx=0 stopped_caddy=0 stopped_apache=0
+  local stopped_nginx=0 stopped_caddy=0 stopped_apache=0 stopped_xray=0 stopped_sb=0
   if port_listening 80 tcp; then
     if systemctl is-active --quiet nginx 2>/dev/null; then
       systemctl stop nginx 2>/dev/null && stopped_nginx=1
@@ -517,6 +530,12 @@ install_cert() {
     fi
     if systemctl is-active --quiet apache2 2>/dev/null; then
       systemctl stop apache2 2>/dev/null && stopped_apache=1
+    fi
+    if systemctl is-active --quiet xray 2>/dev/null; then
+      systemctl stop xray 2>/dev/null && stopped_xray=1
+    fi
+    if systemctl is-active --quiet sing-box 2>/dev/null; then
+      systemctl stop sing-box 2>/dev/null && stopped_sb=1
     fi
   fi
 
@@ -531,6 +550,8 @@ install_cert() {
   [ "$stopped_nginx" = 1 ] && systemctl start nginx 2>/dev/null || true
   [ "$stopped_caddy" = 1 ] && systemctl start caddy 2>/dev/null || true
   [ "$stopped_apache" = 1 ] && systemctl start apache2 2>/dev/null || true
+  [ "$stopped_xray" = 1 ] && systemctl start xray 2>/dev/null || true
+  [ "$stopped_sb" = 1 ] && systemctl start sing-box 2>/dev/null || true
 
   local acme_home="$HOME/.acme.sh/${ym}_ecc"
   if [ ! -f "$acme_home/fullchain.cer" ]; then

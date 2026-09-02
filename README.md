@@ -1,6 +1,8 @@
-# sing-box-naiveproxy — Sing-box 三协议安全加固代理脚本
+# New-sing-box-naiveproxy-tuic-hy2-tuning — Sing-box 三协议安全加固代理脚本
 
-[![validate](https://github.com/ShJChow/sing-box-naiveproxy/actions/workflows/validate.yml/badge.svg)](https://github.com/ShJChow/sing-box-naiveproxy/actions/workflows/validate.yml)
+[![validate](https://github.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/actions/workflows/validate.yml/badge.svg)](https://github.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/actions/workflows/validate.yml)
+
+**语言：** **简体中文** · [English](./README.en.md)
 
 基于 **sing-box 单内核** 部署脚本，保留三个主流协议：
 
@@ -19,7 +21,102 @@
 
 ---
 
-## 安全与性能设计
+## 目录
+
+- [一、前置准备材料（域名、Cloudflare 与证书）](#一前置准备材料)
+  - [1. 域名解析配置](#1-域名解析配置)
+  - [2. Cloudflare 控制台设置](#2-cloudflare-控制台设置)
+  - [3. SSL 证书申请详细步骤（acme-yg / acme.sh）](#3-ssl-证书申请详细步骤)
+- [二、安全与性能设计](#二安全与性能设计)
+- [三、`DefaultLimitNOFILE` 与 `fs.nr_open` 的对齐](#三defaultlimitnofile-与-fsnr_open-的对齐)
+- [四、快速开始与一键安装](#四快速开始与一键安装)
+  - [1. 前置条件](#1-前置条件)
+  - [2. 一键安装](#2-一键安装)
+- [五、环境变量参考](#五环境变量参考)
+- [六、管理命令 `sbbox`](#六管理命令-sbbox)
+- [七、内核版本管理](#七内核版本管理)
+- [八、v2rayN 订阅与客户端配置](#八v2rayn-订阅与客户端配置)
+- [九、四条节点实测吞吐](#九四条节点实测吞吐)
+- [十、免责声明](#十免责声明)
+
+---
+
+## 一、前置准备材料
+
+在运行部署脚本前，请准备好 **2 个解析到本机 VPS IP 的子域名**（推荐托管在 Cloudflare）：
+- **域名 1（主域名 / 直连 / Reality 域名）**：例如 `reality.example.com`（或 `naive.example.com`）
+- **域名 2（次域名 / CDN 域名）**：例如 `cdn.example.com`
+
+>  **免费域名获取参考**：[DNSHE](https://my.dnshe.com) 或 [DigitalPlat](https://dash.domain.digitalplat.org)
+
+---
+
+### 1. 域名解析配置
+
+在 Cloudflare DNS 控制台中添加两条 `A` 记录指向你的 VPS 公网 IP：
+
+| 记录类型 | 域名名称 | 目标 IP | Cloudflare 代理状态（云朵颜色） | 用途 |
+| :--- | :--- | :--- | :--- | :--- |
+| **A 记录** | `reality.example.com` | `你的 VPS IP` |  **仅 DNS（灰色云朵）** | 用于证书申请与 Naiveproxy / Reality / Hy2 / Tuic 直连 |
+| **A 记录** | `cdn.example.com` | `你的 VPS IP` |  **已代理（橙色小黄云）/ 仅 DNS** | 用于双域名 SAN 证书申请、CDN 节点隐藏真实 IP 或备用分流 |
+
+>  **重要提示**：Naiveproxy (H3/H2)、Hysteria2 与 Tuic 均基于 UDP/QUIC 或专用端口直连，用于直连代理服务的主域名在 Cloudflare DNS 中**必须保持灰色云朵（仅 DNS）**，不要开启 CDN 代理，以保证极速低延迟与全协议兼容。
+
+---
+
+### 2. Cloudflare 控制台设置
+
+在 Cloudflare 仪表盘中开启以下开关（若使用 Cloudflare 托管解析）：
+
+1. **SSL/TLS** ➡️ **概述**：加密模式选择 **完全（严格）/ Full (strict)**；
+2. **SSL/TLS** ➡️ **边缘证书**：最低 TLS 版本选择 **TLS 1.2**；
+3. **网络（Network）**：
+   -  开启 **gRPC**
+   -  开启 **WebSockets**
+   -  开启 **HTTP/3 (with QUIC)**
+   -  开启 **0-RTT 连接恢复**
+4. **规则（Rules） ➡️ Cache Rules（可选优化）**：
+   - 对你的 XHTTP / 代理路径设置 **Bypass Cache**（绕过缓存，避免流式响应被分块缓冲）。
+
+---
+
+### 3. SSL 证书申请详细步骤
+
+本方案在安装时会自动使用 acme.sh 申请证书（例如参数 `alns=1 ym=你的域名`）。如果你之前证书申请失败，或希望提前使用著名的 **`acme-yg` 一键脚本** 申请好证书，请按以下步骤操作：
+
+#### 步骤 1：释放 80 端口（如果已有服务在运行）
+```bash
+systemctl stop nginx xray sing-box sbbox caddy apache2 2>/dev/null || true
+```
+
+#### 步骤 2：执行 acme-yg 证书申请脚本
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/yonggekkk/acme-yg/main/acme.sh)
+```
+
+#### 步骤 3：交互式菜单详细选型与操作
+1. **进入菜单**：输入 `1` 选择 **【ACME 申请证书】**；
+2. **选择申请模式**：
+   - **推荐方式 A（80 端口模式）**：输入 `1`（Standalone 模式，需确保 80 端口未被占用且域名 1 已灰云直连解析到本机 IP）；
+   - **推荐方式 B（Cloudflare API 模式）**：输入 `2`（无需停用 80 端口，输入 CF Global API Key 或 Token 即可全自动签发）；
+3. **输入主域名与次域名（双域名 SAN 证书）**：
+   - **主域名**：输入你的直连域名（如 `reality.example.com` 或 `naive.example.com`）
+   - **泛域名 / 附加域名**：输入你的 CDN 域名（如 `cdn.example.com`）
+4. **安装并输出证书路径**： 申请成功后，证书会自动保存在 `/root/ygkkkca/` 目录下。
+
+#### 步骤 4：将证书部署到标准路径（一键复制）
+```bash
+mkdir -p /etc/ssl/private
+cp -f /root/ygkkkca/reality.example.com/fullchain.cer /etc/ssl/private/fullchain.cer 2>/dev/null || cp -f /root/ygkkkca/cert.crt /etc/ssl/private/fullchain.cer 2>/dev/null || true
+cp -f /root/ygkkkca/reality.example.com/private.key /etc/ssl/private/private.key 2>/dev/null || cp -f /root/ygkkkca/private.key /etc/ssl/private/private.key 2>/dev/null || true
+chmod 600 /etc/ssl/private/*.key /etc/ssl/private/*.cer 2>/dev/null || true
+```
+
+>  **提示**：部署脚本在安装时会自动优先复用 `/etc/ssl/private/`、`/root/ygkkkca/` 或 `~/.acme.sh/` 目录下已存在的匹配有效证书，无需重复申请。
+
+---
+
+## 二、安全与性能设计
 
 | 加固项 | 说明 |
 |--------|------|
@@ -40,7 +137,7 @@
 
 ---
 
-## `DefaultLimitNOFILE` 与 `fs.nr_open` 的对齐
+## 三、`DefaultLimitNOFILE` 与 `fs.nr_open` 的对齐
 
 `fs.nr_open` 是单进程句柄数的内核硬上限，systemd 的 `DefaultLimitNOFILE` 无论写多大都越不过它。两者一旦倒挂（`DefaultLimitNOFILE > fs.nr_open`），systemd 拉起任何**没有自己声明 `LimitNOFILE`** 的服务时，都会在设限那一步直接失败：
 
@@ -72,23 +169,23 @@ systemctl --failed                             # 有 205/LIMITS 就是踩了这�
 
 ---
 
-## 快速开始
+## 四、快速开始与一键安装
 
-### 前置条件
+### 1. 前置条件
 
 - VPS：Ubuntu / Debian / CentOS / Alpine（amd64 或 arm64）
 - **推荐 root 权限**（非 root 也可用，走 crontab 自启）
-- 如需 Naiveproxy：需要域名并解析到 VPS，`alns=1` 自动申请证书
+- 如需 Naiveproxy：需要域名并解析到 VPS，`alns=1` 自动申请证书（或提前放置好证书）
 
-### 一键安装
+### 2. 一键安装
 
 ```bash
 # Tuic + Hysteria2（无域名，自签证书 + SHA256 固定指纹）
-bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/main/sbbox.sh) \
+bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) \
   tup=1 hyp=1
 
 # 装全部三协议（需域名，自动申请 Let's Encrypt 证书，默认正式版 + 默认开启 QUIC）
-bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/main/sbbox.sh) \
+bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) \
   tup=1 hyp=1 nvp=1 alns=1 ym=your.domain.com
 ```
 
@@ -97,7 +194,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/ma
 
 ---
 
-## 环境变量参考
+## 五、环境变量参考
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
@@ -120,11 +217,12 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/ma
 | `name` | 空 | 节点名称前缀 |
 | `noautoup` | 空 | 关闭每周内核自动升级（`noautoup=1`） |
 | `sbrel` | **`stable`（默认）** | 内核版本通道：默认只取官方最新正式版（`stable`）；跟踪 beta/rc 用 `sbrel=pre` |
-| `tuicuos` | **1（默认开启）** | Tuic UDP over QUIC 流；退回原生 UDP 用 `tuicuos=0` |
+| `tuicuos` | **0（默认原生 UDP）** | Tuic UDP 中继模式：默认原生 UDP 防断流；QUIC 流用 `tuicuos=1` |
+| `tuils` | **1（默认开启）** | Tuic TLS 加固（证书公钥 SHA-256 固定）；关闭用 `tuils=0` |
 
 ---
 
-## 管理命令
+## 六、管理命令 `sbbox`
 
 安装完成后，直接在终端执行 `sbbox`：
 
@@ -147,7 +245,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/sing-box-naiveproxy/ma
 
 ---
 
-## 内核版本管理
+## 七、内核版本管理
 
 安装与 `sbbox up` 默认从 **SagerNet 官方最新正式版（releases/latest）拉取内核**。
 
@@ -161,7 +259,7 @@ sbrel=pre sbbox up        # 升级/切换到 pre 通道
 
 ---
 
-## v2rayN 订阅与客户端配置
+## 八、v2rayN 订阅与客户端配置
 
 安装时加 `sub=1`，脚本会生成 base64 订阅并在本机启动 HTTP 静态托管服务。
 
@@ -173,7 +271,9 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 - sing-box 客户端：`~/sbbox/sbox_client.json`
 - Clash / Mihomo：`~/sbbox/clmi.yaml`
 
-## 四条节点实测吞吐
+---
+
+## 九、四条节点实测吞吐
 
 在服务端本机为每条节点单独起一个 SOCKS 入口，**9 轮交替轮询**采样：每轮先测一次不走代理的直连基线，再依次测各节点，因此同一轮内所有条目共享同样的上游状态。下载取 `cachefly.cachefly.net/50mb.test`，握手取 `www.gstatic.com/generate_204`。表中为 **9 次采样的中位数（最小–最大）**。
 
@@ -199,6 +299,6 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 
 ---
 
-## 免责声明
+## 十、免责声明
 
 本项目仅供网络技术研究与学习交流使用。使用者须自行遵守所在国家/地区的法律法规，因使用本脚本产生的一切后果由使用者自行承担。
