@@ -1328,10 +1328,10 @@ gen_client() {
       _fp=$(openssl x509 -in "$CERT_DIR/fullchain.cer" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d ':')
       [ -n "$_fp" ] && nv_pcs="&pcs=$_fp"
     fi
-    # 默认优先使用 QUIC (HTTP/3) 极速通道，同时保留 HTTP/2 供客户端兼容与回退
-    nv1_link="naive+quic://$nv_user:$nv_pw@$add:$port_nv?congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-h3-$hostname_s"
+    # 默认优先使用 QUIC (HTTP/3) 极速通道，同时保留 HTTP/2 供客户端兼容与回退（均默认开启 QUIC 与 BBR 拥塞控制）
+    nv1_link="naive+quic://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-h3-$hostname_s"
     nv2_link="naive+https://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-h2-$hostname_s"
-    nv3_link="http3://$nv_user:$nv_pw@$add:$port_nv?congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-h3-rocket-$hostname_s"
+    nv3_link="http3://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-h3-rocket-$hostname_s"
     nv4_link="http2://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs#${sxname}naive-h2-rocket-$hostname_s"
 
     for l in "$nv1_link" "$nv2_link" "$nv3_link" "$nv4_link"; do
@@ -1634,10 +1634,10 @@ gen_client_sbox() {
         "tls": { "enabled": true, "insecure": false, "server_name": "'"$sni"'" }
     }')
     tags+=("naive-h3")
-    # 独立 H2(TCP) 出站：供需要 TCP / HTTP2 的环境回退使用（默认开启 quic 与 bbr）
+    # 独立 H2 出站：供需要 TCP / HTTP2 的环境回退使用（默认开启 quic 与 bbr）
     ob+=('{
         "type": "naive",
-        "tag": "naive",
+        "tag": "naive-h2",
         "server": "'"$add"'",
         "server_port": '"$port_nv"',
         "username": "'"$nv_user"'",
@@ -1649,7 +1649,7 @@ gen_client_sbox() {
         "quic_congestion_control": "bbr",
         "tls": { "enabled": true, "insecure": false, "server_name": "'"$sni"'" }
     }')
-    tags+=("naive")
+    tags+=("naive-h2")
 
   fi
 
@@ -1762,7 +1762,16 @@ gen_client_clash() {
   fi
   if [ -n "$nvp" ] && [ "$CERT_OK" = 1 ]; then
     proxies="$proxies
-  - name: naive-$hostname_s
+  - name: naive-h3-$hostname_s
+    server: $add
+    port: $port_nv
+    type: http
+    username: $nv_user
+    password: $nv_pw
+    tls: true
+    sni: $sni
+    skip-cert-verify: false
+  - name: naive-h2-$hostname_s
     server: $add
     port: $port_nv
     type: http
@@ -1772,7 +1781,8 @@ gen_client_clash() {
     sni: $sni
     skip-cert-verify: false"
     groups="$groups
-      - naive-$hostname_s"
+      - naive-h3-$hostname_s
+      - naive-h2-$hostname_s"
   fi
   cat > "$SB_HOME/clmi.yaml" <<EOF
 port: 7890
