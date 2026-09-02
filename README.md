@@ -237,7 +237,10 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 | `sbbox tune off` | 回滚全部内核调优 |
 | `sbbox sub` | 显示订阅地址 |
 | `sbbox sub off` | 关闭订阅服务 |
+| `sbbox hop [范围\|off]` | 开启/设置/关闭 Hysteria2 端口跳跃（防运营商 UDP QoS 限速） |
+| `sbbox speed [上行] [下行]` | 极速调优：配置客户端上/下行并激活 Brutal 拥塞控制（如 `100 1000`） |
 | `sbbox cert status` | 查看证书有效期 |
+
 | `sbbox cert renew` | 续期证书并重启 |
 | `sbbox up` | 升级 sing-box 内核（默认 stable 官方正式版；失败自动回滚） |
 | `sbbox log [N]` | 查看最近 N 行日志（默认 20） |
