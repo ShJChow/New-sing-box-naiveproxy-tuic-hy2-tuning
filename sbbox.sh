@@ -133,13 +133,17 @@ showmode() {
   echo "流控调优：sbbox tune show | sbbox tune off"
   echo "证书管理：sbbox cert status | sbbox cert renew"
   echo "订阅地址：sbbox sub 【关闭】 sbbox sub off"
+  echo "端口跳跃：sbbox hop 25000:38000 【关闭】 sbbox hop off"
+  echo "极速优化：sbbox speed 100 1000（设置客户端上/下行并激活 Brutal 极速拥塞控制）"
   echo "自检修复：sbbox doctor"
   echo "卸载：sbbox del"
   echo "-----------------------------------------------------------"
   echo "环境变量（安装期）：tup=1 hyp=1 nvp=1"
   echo "  alns=1   启用 acme 证书（需 ym=你的域名）"
   echo "  ym=域名  acme 证书域名（Hysteria2/Tuic/Naive 使用）"
-  echo "  hyjpt=20000:30000  Hysteria2 跳跃端口"
+  echo "  hyjpt=25000:38000  Hysteria2 跳跃端口（防运营商 UDP QoS 限速）"
+  echo "  hyup=100 hydown=1000  Hysteria2 Brutal 拥塞控制客户端带宽"
+
   echo "  sub=1    启用 v2rayN 订阅服务（subport=端口 subid=令牌 可选）"
   echo "  sbrel=stable  内核只跟踪正式版（默认 stable；跟踪 beta/rc 用 sbrel=pre）"
   echo "  uuid=自定义 UUID（Tuic 用；各协议密码独立随机，不再复用）"
@@ -1327,10 +1331,14 @@ gen_client() {
     if [ -n "$hyjpt" ]; then
       hy2_ports=$(iptables -t nat -nL --line 2>/dev/null | grep -w "$port_hy2" | awk '{print $8}' | sed 's/dpts://; s/dpt://' | tr '\n' ',' | sed 's/,$//')
       if [ -n "$hy2_ports" ]; then
-        echo "Hysteria2 跳跃端口已开启：$hy2_ports"
-        hyps="&mport=$hy2_ports"
+        local mport_val=$(echo "$hy2_ports" | sed 's/:/-/g')
+        echo "Hysteria2 跳跃端口已开启：$mport_val"
+        hyps="&mport=$mport_val"
       fi
     fi
+    local hy_bw_q=""
+    [ -n "$hyup" ] && hy_bw_q="&upmbps=$hyup"
+    [ -n "$hydown" ] && hy_bw_q="$hy_bw_q&downmbps=$hydown"
     local hy2_pin="" hy2_pcs=""
     [ -n "$_sha" ] && hy2_pin="&pinSHA256=$_sha"
     [ -n "$_fp" ] && hy2_pcs="&pcs=$_fp"
@@ -1339,11 +1347,12 @@ gen_client() {
     if [ -s "$SB_HOME/hyobfs_pw" ]; then
       hyobfs_q="&obfs=salamander&obfs-password=$(cat "$SB_HOME/hyobfs_pw")"
     fi
-    hy2_link="hysteria2://$pw_hy@$add:$port_hy2?security=tls&alpn=h3&insecure=$jhins&allowInsecure=$jhins$hyps&sni=$sni$hy2_pin$hy2_pcs$hyobfs_q#${sxname}hy2-$hostname_s"
+    hy2_link="hysteria2://$pw_hy@$add:$port_hy2?security=tls&alpn=h3&insecure=$jhins&allowInsecure=$jhins$hyps$hy_bw_q&sni=$sni$hy2_pin$hy2_pcs$hyobfs_q#${sxname}hy2-$hostname_s"
     echo "$hy2_link" >> "$SB_LINK"
     echo "💣【 Hysteria2 】节点信息如下："
     echo "$hy2_link"; echo
   fi
+
 
   if [ -n "$nvp" ] && [ "$CERT_OK" = 1 ]; then
     # Naiveproxy 同一入站同时服务 H2 与 H3，但不同客户端认的 URL scheme 不同：
@@ -1608,11 +1617,14 @@ gen_client_sbox() {
   fi
 
   if [ -n "$hyp" ]; then
-    local hy_ports_json=""
+    local hy_ports_json="" hy_client_bw=""
     if [ -n "$hyjpt" ]; then
       # 支持 sing-box 1.14 端口跳跃与随机化抖动 hop_interval_max（单端口自动补齐为 start:end 格式）
       local formatted_jpt="" item
       for item in $(echo "$hyjpt" | tr ',' ' '); do
+        case "$item" in
+          *-*) item=$(echo "$item" | tr '-' ':') ;;
+        esac
         case "$item" in
           *:*) formatted_jpt="$formatted_jpt \"$item\"," ;;
           *)   formatted_jpt="$formatted_jpt \"${item}:${item}\"," ;;
@@ -1621,17 +1633,22 @@ gen_client_sbox() {
       formatted_jpt="${formatted_jpt%,}"
       hy_ports_json="\"server_ports\": [$formatted_jpt], \"hop_interval\": \"30s\", \"hop_interval_max\": \"90s\","
     fi
+    if [ -n "$hyup" ] && [ -n "$hydown" ]; then
+      hy_client_bw="\"up_mbps\": $hyup, \"down_mbps\": $hydown,"
+    fi
     ob+=('{
         "type": "hysteria2",
         "tag": "hysteria2",
         "server": "'"$add"'",
         "server_port": '"$port_hy2"',
         '"$hy_ports_json"'
+        '"$hy_client_bw"'
         "password": "'"$pw_hy"'",'"$hyobfs_json"'
         "tls": { "enabled": true, "server_name": "'"$sni"'", "insecure": '"$msins"', "alpn": ["h3"]'"$hy2_tls_extra"' }
     }')
     tags+=("hysteria2")
   fi
+
 
   # naive 出站需要 libcronet.so 与 sing-box 二进制同目录（官方 tarball 已附带，
   # 本脚本安装时会一并保留）。缺库时该出站会以 "cronet: library not found" 启动失败，
@@ -1764,14 +1781,22 @@ gen_client_clash() {
       - tuic-$hostname_s"
   fi
   if [ -n "$hyp" ]; then
-    local hy_ports_yaml=""
-    [ -n "$hyjpt" ] && hy_ports_yaml="
-    ports: $hyjpt"
+    local hy_ports_yaml="" hy_clash_bw=""
+    if [ -n "$hyjpt" ]; then
+      local cl_ports=$(echo "$hyjpt" | tr ':' '-')
+      hy_ports_yaml="
+    ports: $cl_ports"
+    fi
+    if [ -n "$hyup" ] && [ -n "$hydown" ]; then
+      hy_clash_bw="
+    up: \"$hyup Mbps\"
+    down: \"$hydown Mbps\""
+    fi
     proxies="$proxies
   - name: hysteria2-$hostname_s
     server: $add
     port: $port_hy2
-    type: hysteria2
+    type: hysteria2$hy_clash_bw
     password: $pw_hy
     alpn: [h3]$hyobfs_yaml$hy_ports_yaml
     sni: $sni
@@ -1779,6 +1804,7 @@ gen_client_clash() {
     groups="$groups
       - hysteria2-$hostname_s"
   fi
+
   if [ -n "$nvp" ] && [ "$CERT_OK" = 1 ]; then
     proxies="$proxies
   - name: naive-h3-$hostname_s
@@ -1977,22 +2003,96 @@ cleandel() {
   info "sbbox 已完全卸载"
 }
 
-# Hysteria2 跳跃端口（iptables DNAT）
+# Hysteria2 跳跃端口（iptables DNAT + 防火墙放行）
 apply_hy_hop() {
   if [ -n "$hyjpt" ] && [ -n "$hyp" ]; then
     echo ""
-    echo "设置 Hysteria2 跳跃端口：$hyjpt"
-    iptables -t nat -F PREROUTING >/dev/null 2>&1
-    ip6tables -t nat -F PREROUTING >/dev/null 2>&1
-    for port in $hyjpt; do
-      iptables -t nat -A PREROUTING -p udp --dport "$port" -j DNAT --to-destination :$port_hy2 2>/dev/null
-      ip6tables -t nat -A PREROUTING -p udp --dport "$port" -j DNAT --to-destination :$port_hy2 2>/dev/null
+    info "配置 Hysteria2 跳跃端口：$hyjpt"
+    # 清理包含 port_hy2 的旧 DNAT 规则，避免规则残留或全表刷新
+    iptables -t nat -S PREROUTING 2>/dev/null | grep -w "$port_hy2" | sed 's/^-A/iptables -t nat -D/' | bash 2>/dev/null || true
+    ip6tables -t nat -S PREROUTING 2>/dev/null | grep -w "$port_hy2" | sed 's/^-A/ip6tables -t nat -D/' | bash 2>/dev/null || true
+    for item in $(echo "$hyjpt" | tr ',' ' '); do
+      local ipt_port=$(echo "$item" | tr '-' ':')
+      iptables -t nat -A PREROUTING -p udp --dport "$ipt_port" -j DNAT --to-destination :$port_hy2 2>/dev/null
+      ip6tables -t nat -A PREROUTING -p udp --dport "$ipt_port" -j DNAT --to-destination :$port_hy2 2>/dev/null
+      iptables -C INPUT -p udp --dport "$ipt_port" -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p udp --dport "$ipt_port" -j ACCEPT 2>/dev/null
+      ip6tables -C INPUT -p udp --dport "$ipt_port" -j ACCEPT 2>/dev/null || ip6tables -I INPUT 1 -p udp --dport "$ipt_port" -j ACCEPT 2>/dev/null
     done
     netfilter-persistent save >/dev/null 2>&1
     [ -x "$(command -v iptables-save 2>/dev/null)" ] && iptables-save > /etc/iptables/rules.v4 2>/dev/null
-    info "Hysteria2 跳跃端口配置完成"
+    info "Hysteria2 跳跃端口配置完成并已在防火墙放行"
   fi
 }
+
+# sbbox hop [25000:38000|off]
+cmd_hop() {
+  load_state
+  if [ "$hyp" != yes ]; then
+    warn "未启用 Hysteria2 协议"
+    return 0
+  fi
+  local action="${1:-}"
+  case "$action" in
+    off|stop|disable)
+      info "正在关闭 Hysteria2 端口跳跃……"
+      if [ -n "$port_hy2" ]; then
+        iptables -t nat -S PREROUTING 2>/dev/null | grep -w "$port_hy2" | sed 's/^-A/iptables -t nat -D/' | bash 2>/dev/null || true
+        ip6tables -t nat -S PREROUTING 2>/dev/null | grep -w "$port_hy2" | sed 's/^-A/ip6tables -t nat -D/' | bash 2>/dev/null || true
+      fi
+      rm -f "$SB_HOME/hyjpt"
+      hyjpt=""
+      netfilter-persistent save >/dev/null 2>&1
+      [ -x "$(command -v iptables-save 2>/dev/null)" ] && iptables-save > /etc/iptables/rules.v4 2>/dev/null
+      gen_client
+      info "Hysteria2 端口跳跃已关闭"
+      ;;
+    "")
+      if [ -s "$SB_HOME/hyjpt" ]; then
+        info "当前 Hysteria2 跳跃端口：$(cat "$SB_HOME/hyjpt")"
+      else
+        info "当前未开启端口跳跃。推荐执行：sbbox hop 25000:38000"
+      fi
+      echo "用法: sbbox hop <端口范围|off> (例如: sbbox hop 25000:38000 或 sbbox hop off)"
+      ;;
+    *)
+      local ports="$action"
+      [ "$ports" = "on" ] && ports="25000:38000"
+      hyjpt="$ports"
+      echo "$hyjpt" > "$SB_HOME/hyjpt"
+      apply_hy_hop
+      gen_client
+      info "Hysteria2 端口跳跃已开启：$hyjpt"
+      ;;
+  esac
+}
+
+# sbbox speed [up] [down]
+cmd_speed() {
+  load_state
+  if [ "$hyp" != yes ]; then
+    warn "未启用 Hysteria2 协议"
+    return 0
+  fi
+  local up="${1:-}" down="${2:-}"
+  if [ -z "$up" ] && [ -z "$down" ]; then
+    echo "当前 Hysteria2 带宽配置："
+    if [ -s "$SB_HOME/hybw" ]; then
+      awk '{print "  客户端上行: "$1" Mbps / 客户端下行: "$2" Mbps"}' "$SB_HOME/hybw"
+    else
+      echo "  未配置 Brutal CC 限额（默认使用 BBR 拥塞控制）"
+    fi
+    echo "用法: sbbox speed <上行Mbps> <下行Mbps> (例如: sbbox speed 100 1000)"
+    return 0
+  fi
+  hyup="$up"
+  hydown="$down"
+  echo "$hyup $hydown" > "$SB_HOME/hybw"
+  installsb
+  sbrestart
+  gen_client
+  info "Hysteria2 带宽已优化配置：客户端上行 ${hyup}Mbps / 客户端下行 ${hydown}Mbps"
+}
+
 
 # 密钥轮换：各协议密码、obfs 密码、订阅令牌全部换成新的独立随机值。
 # UUID、端口、证书保持不变。
@@ -2031,6 +2131,13 @@ status_show() {
   fi
   echo ""
   tune_show
+  if [ -s "$SB_HOME/hyjpt" ]; then
+    echo ""
+    echo -e "${CYAN}[+] Hysteria2 端口跳跃${NC}: $(cat "$SB_HOME/hyjpt")"
+  fi
+  if [ -s "$SB_HOME/hybw" ]; then
+    echo -e "${CYAN}[+] Hysteria2 优化带宽${NC}: $(awk '{print "客户端上行 "$1" Mbps / 客户端下行 "$2" Mbps"}' "$SB_HOME/hybw")"
+  fi
   echo ""
   if [ -x "$SB_BIN" ]; then
     echo -e "${CYAN}[+] 版本${NC}"
@@ -2069,11 +2176,14 @@ main() {
     tune)   shift; cmd_tune "$@"; exit ;;   # 安装期已自动 on，off 用于回滚
     cert)   shift; cert_mgmt "$@"; exit ;;
     sub)    shift; cmd_sub "$@"; exit ;;
+    hop)    shift; cmd_hop "$@"; exit ;;
+    speed|bw) shift; cmd_speed "$@"; exit ;;
     doctor) doctor; exit ;;
     rotate) cmd_rotate; exit ;;
     del)    cleandel; exit ;;
     help|-h|--help) showmode; exit ;;
   esac
+
 
   # 安装流程
   if [ -z "$tup" ] && [ -z "$hyp" ] && [ -z "$nvp" ]; then
