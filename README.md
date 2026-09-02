@@ -140,6 +140,28 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 - sing-box 客户端：`~/sbbox/sbox_client.json`
 - Clash / Mihomo：`~/sbbox/clmi.yaml`
 
+## 四条节点实测吞吐
+
+在服务端本机为每条节点单独起一个 SOCKS 入口，逐条跑 `https://www.gstatic.com/generate_204` 与 3 MB 下载（`speed.cloudflare.com`），一次采样结果：
+
+| 节点 | 端口 | 传输 | 握手 | 3 MB 下载 |
+| :--- | :--- | :--- | ---: | ---: |
+| **Tuic** | 20011/UDP | QUIC (H3) | 204 / 57 ms | 27.5 MB/s |
+| **Hysteria2** | 39259/UDP | QUIC (H3) + salamander | 204 / **31 ms** | 19.5 MB/s |
+| **Naiveproxy H3** | 47631/UDP | HTTP/3 (QUIC) | 204 / 31 ms | 16.6 MB/s |
+| **Naiveproxy H2** | 47631/TCP | HTTP/2 | 204 / 33 ms | **44.7 MB/s** |
+
+> 订阅里的 `naive+quic://` 与 `http3://` 是同一个 H3 入站的两种客户端写法，`naive+https://` 与 `http2://` 同理对应 H2，因此四条测试已覆盖全部六条订阅节点。
+
+怎么读这张表：
+
+- **测的是服务端侧的协议栈开销，不是你的实际网速。** 客户端跑在 VPS 本机、经公网 IP 回环，不含最后一公里，所以数字只能横向比较节点之间的相对开销，不能当作客户端能跑到的带宽。
+- H2 在这种零丢包回环里吞吐最高很正常——TCP 在理想链路上本就占优。真实跨境链路一旦出现丢包，优劣会反过来，这正是默认把 H3 排在订阅首位的原因。
+- Hysteria2 吞吐低于 Tuic，是 `ignore_client_bandwidth: true` + `bbr_profile: standard` 由服务端主导限速的结果，属预期行为而非故障。
+- 三个协议的握手都在 60 ms 以内，说明 `zero_rtt_handshake` 与 BBR 均已生效。
+
+逐条自检用 `sbbox doctor`；若某条节点在客户端不通而本机自测正常，问题在该设备到 VPS 的网络路径，而非服务端配置。
+
 ---
 
 ## 免责声明
