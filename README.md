@@ -204,7 +204,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 | `alns` | 空 | 启用 acme 证书申请（`alns=1`） |
 | `ym` | 空 | acme 证书域名（启用 alns 时必需） |
 | `hyjpt` | 空 | Hysteria2 跳跃端口，如 `hyjpt="20000 20001 20002"` |
-| `hyobfs` | **1（默认开启）** | Hysteria2 salamander 混淆，抗协议识别；关闭用 `hyobfs=0` |
+| `hyobfs` | **1（默认开启）** | Hysteria2 混淆协议：可选 `salamander` 或 1.14 新增 `gecko`；关闭用 `hyobfs=0` |
 | `hyobfs_pw` | 独立随机 | Hysteria2 混淆密码（与认证密码分离） |
 | `hymask` | `https://www.bing.com` | Hysteria2 伪装：反代真实站点抗主动探测；静态 404 用 `hymask=none` |
 | `sblevel` | `error` | 服务端日志级别，`off` 完全不落盘（日志会记录访问过的域名） |
@@ -221,6 +221,8 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 | `sbrel` | **`stable`（默认）** | 内核版本通道：默认只取官方最新正式版（`stable`）；跟踪 beta/rc 用 `sbrel=pre` |
 | `tuicuos` | **0（默认原生 UDP）** | Tuic UDP 中继模式：默认原生 UDP 防断流；QUIC 流用 `tuicuos=1` |
 | `tuils` | **1（默认开启）** | Tuic TLS 加固（证书公钥 SHA-256 固定）；关闭用 `tuils=0` |
+| `dns_optimistic` | **1（默认开启）** | sing-box 1.14 乐观 DNS 缓存并持久化到本地数据库，消除解析长尾延迟；关闭用 `dns_optimistic=0` |
+| `api` | **1（默认开启）** | sing-box 1.14 原生 API 服务（监听 127.0.0.1 独立五位数随机端口），供 `sbbox status` 实时查看运行指标；关闭用 `api=0` |
 
 ---
 
@@ -239,6 +241,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 | `sbbox sub off` | 关闭订阅服务 |
 | `sbbox hop [范围\|off]` | 开启/设置/关闭 Hysteria2 端口跳跃（防运营商 UDP QoS 限速） |
 | `sbbox speed [上行] [下行]` | 极速调优：配置客户端上/下行并激活 Brutal 拥塞控制（如 `100 1000`） |
+| `sbbox port [tu] [hy2] [nv]` | 更换节点端口（无参数自动分配 10000-65535 随机端口并同步配置与订阅） |
 | `sbbox cert status` | 查看证书有效期 |
 
 | `sbbox cert renew` | 续期证书并重启 |

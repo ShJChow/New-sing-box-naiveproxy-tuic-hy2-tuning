@@ -89,6 +89,11 @@ subport="${subport:-}"                      # 订阅端口（默认随机）
 subid="${subid:-}"                          # 订阅令牌（默认用 uuid）
 sub_nonaive="${sub_nonaive:-}"              # 剔除 Naiveproxy 节点（客户端不支持时用）
 
+# sing-box 1.14+ 新特性选项
+dns_optimistic="${dns_optimistic:-1}"       # 乐观 DNS 缓存 (sing-box 1.14 新特性)：默认开启；关闭用 dns_optimistic=0
+api="${api:-1}"                             # sing-box 原生 API 服务 (sing-box 1.14 新特性)：默认 127.0.0.1 开启；关闭用 api=0
+api_port="${api_port:-}"                    # sing-box 原生 API 端口（默认 10000-65535 随机端口）
+
 # ---------- 架构 / 系统探测 ----------
 detect_env() {
   case $(uname -m) in
@@ -135,6 +140,7 @@ showmode() {
   echo "订阅地址：sbbox sub 【关闭】 sbbox sub off"
   echo "端口跳跃：sbbox hop 25000:38000 【关闭】 sbbox hop off"
   echo "极速优化：sbbox speed 100 1000（设置客户端上/下行并激活 Brutal 极速拥塞控制）"
+  echo "更换端口：sbbox port [tu] [hy2] [nv]（无参数分配 10000-65535 随机端口并同步）"
   echo "自检修复：sbbox doctor"
   echo "卸载：sbbox del"
   echo "-----------------------------------------------------------"
@@ -148,6 +154,9 @@ showmode() {
   echo "  sbrel=stable  内核只跟踪正式版（默认 stable；跟踪 beta/rc 用 sbrel=pre）"
   echo "  uuid=自定义 UUID（Tuic 用；各协议密码独立随机，不再复用）"
   echo "  hymask=URL  Hysteria2 伪装反代目标（默认 https://www.bing.com，none=静态 404）"
+  echo "  hyobfs=salamander|gecko  Hysteria2 混淆协议（默认 salamander，1.14 新增 gecko，0 关闭）"
+  echo "  dns_optimistic=1  启用 1.14 乐观 DNS 缓存并持久化（默认 1）"
+  echo "  api=1        启用 1.14 原生 API 服务与实时指标（默认 1）"
   echo "  sblevel=error|warn|info|off  服务端日志级别（默认 error）"
   echo "轮换全部密码：sbbox rotate（各协议独立新密钥，需重新导入客户端）"
   echo "-----------------------------------------------------------"
@@ -1047,10 +1056,48 @@ installsb() {
     },"
       ;;
   esac
-  cat > "$SB_CONF" <<EOF
-{
-$log_block
-    "dns": {
+
+  # ---------- 1.14 原生 API 服务 ----------
+  local api_block=""
+  case "$api" in
+    ""|0|no|off|false|NO|OFF|FALSE) : ;;
+    *)
+      if [ -z "$api_port" ]; then
+        api_port=$(cat "$SB_HOME/api_port" 2>/dev/null)
+        if [ -z "$api_port" ] || [ "$api_port" -lt 10000 ] 2>/dev/null; then
+          api_port=$(shuf -i 10000-65535 -n 1)
+        fi
+      fi
+      echo "$api_port" > "$SB_HOME/api_port"
+      api_block="    \"services\": [
+        {
+            \"type\": \"api\",
+            \"tag\": \"api-service\",
+            \"listen\": \"127.0.0.1\",
+            \"listen_port\": $api_port
+        }
+    ],"
+      info "sing-box 1.14 原生 API 服务已配置（127.0.0.1:$api_port）"
+      ;;
+  esac
+
+  # ---------- 1.14 乐观 DNS 与缓存 ----------
+  local dns_block
+  if [ "$dns_optimistic" != "0" ]; then
+    dns_block='    "dns": {
+        "servers": [
+            { "type": "tls", "tag": "dns-secure", "server": "1.1.1.1" },
+            { "type": "tls", "tag": "dns-backup", "server": "9.9.9.9" },
+            { "type": "https", "tag": "dns-doh", "server": "1.1.1.1" }
+        ],
+        "strategy": "prefer_ipv4",
+        "disable_cache": false,
+        "optimistic": true,
+        "timeout": "5s",
+        "cache_capacity": 4096
+    },'
+  else
+    dns_block='    "dns": {
         "servers": [
             { "type": "tls", "tag": "dns-secure", "server": "1.1.1.1" },
             { "type": "tls", "tag": "dns-backup", "server": "9.9.9.9" },
@@ -1058,7 +1105,15 @@ $log_block
         ],
         "strategy": "prefer_ipv4",
         "disable_cache": false
-    },
+    },'
+  fi
+
+  cat > "$SB_CONF" <<EOF
+{
+    "\$schema": "https://sing-box.sagernet.org/schema.json",
+$log_block
+$dns_block
+$api_block
     "inbounds": [
 EOF
 
@@ -1082,7 +1137,8 @@ EOF
                 "enabled": true,
                 "alpn": [ "h3" ],
                 "certificate_path": "$cert_path",
-                "key_path": "$key_path"
+                "key_path": "$key_path",
+                "handshake_timeout": "15s"
             }
         },
 EOF
@@ -1108,12 +1164,11 @@ EOF
             \"bbr_profile\": \"standard\",
             \"brutal_debug\": false,"
     fi
-    # salamander 混淆：把 QUIC 握手特征打乱，主动探测与协议识别更难命中。
-    # 客户端必须同样配置，故分享链接/订阅会带上 obfs 参数。
-    # 默认开启；显式关闭用 hyobfs=0/no/off/false（空串也视为关闭）
+    # Hysteria2 混淆：支持 salamander 与 1.14 新增的 gecko 混淆
     case "$hyobfs" in
       ""|0|no|off|false|NO|OFF|FALSE) hyobfs_on="" ;;
-      *) hyobfs_on=1 ;;
+      gecko|GECKO) hyobfs_on="gecko" ;;
+      *) hyobfs_on="salamander" ;;
     esac
     if [ -n "$hyobfs_on" ]; then
       # obfs 密码必须独立于认证密码：两者相同的话，一份泄露就同时破掉混淆层与认证层
@@ -1123,12 +1178,18 @@ EOF
         hyobfs_pw=$(cat "$SB_SEC_DIR/hy2_obfs")
       fi
       echo "$hyobfs_pw" > "$SB_HOME/hyobfs_pw"
-      chmod 600 "$SB_HOME/hyobfs_pw" 2>/dev/null
-      hy_obfs="            \"obfs\": { \"type\": \"salamander\", \"password\": \"$hyobfs_pw\" },"
-      info "Hysteria2 已启用 salamander 混淆"
+      echo "$hyobfs_on" > "$SB_HOME/hyobfs_type"
+      chmod 600 "$SB_HOME/hyobfs_pw" "$SB_HOME/hyobfs_type" 2>/dev/null
+      if [ "$hyobfs_on" = "gecko" ]; then
+        hy_obfs="            \"obfs\": { \"type\": \"gecko\", \"password\": \"$hyobfs_pw\", \"min_packet_size\": 1200, \"max_packet_size\": 1400 },"
+        info "Hysteria2 已启用 gecko 混淆（sing-box 1.14 新特性）"
+      else
+        hy_obfs="            \"obfs\": { \"type\": \"salamander\", \"password\": \"$hyobfs_pw\" },"
+        info "Hysteria2 已启用 salamander 混淆"
+      fi
     else
       hy_obfs=""
-      rm -f "$SB_HOME/hyobfs_pw"
+      rm -f "$SB_HOME/hyobfs_pw" "$SB_HOME/hyobfs_type" 2>/dev/null
     fi
     # 主动探测防护：静态 404 页面对探测者是明显信号——一个只回 404、
     # 没有任何真实资源的 HTTPS 端口本身就可疑。反代一个真站点后，
@@ -1164,7 +1225,8 @@ $hy_mask
                 "enabled": true,
                 "alpn": [ "h3" ],
                 "certificate_path": "$cert_path",
-                "key_path": "$key_path"
+                "key_path": "$key_path",
+                "handshake_timeout": "15s"
             }
         },
 EOF
@@ -1188,13 +1250,14 @@ EOF
                 "min_version": "1.2",
                 "alpn": [ "h3", "h2", "http/1.1" ],
                 "certificate_path": "$CERT_DIR/fullchain.cer",
-                "key_path": "$CERT_DIR/private.key"
+                "key_path": "$CERT_DIR/private.key",
+                "handshake_timeout": "15s"
             }
         },
 EOF
   fi
 
-  # 收尾：outbounds + route
+  # 收尾：outbounds + route + experimental
   # 出站防护：
   #   1) 私网/回环一律拒绝 —— 否则任何持有节点凭据的人都能拿这台机器当跳板，
   #      打内网服务与 169.254.169.254 云元数据接口（可读出实例凭据）。
@@ -1212,7 +1275,7 @@ EOF
   cat >> "$SB_CONF" <<EOF
     ],
     "outbounds": [
-        { "type": "direct", "tag": "direct", "tcp_fast_open": true, "tcp_multi_path": true, "udp_fragment": true }
+        { "type": "direct", "tag": "direct", "tcp_fast_open": true, "tcp_multi_path": true, "udp_fragment": true, "bind_address_no_port": true }
     ],
     "route": {
         "rules": [
@@ -1220,6 +1283,13 @@ $route_rules
         ],
         "final": "direct",
         "default_domain_resolver": "dns-secure"
+    },
+    "experimental": {
+        "cache_file": {
+            "enabled": true,
+            "path": "$SB_HOME/cache.db",
+            "store_dns": true
+        }
     }
 }
 EOF
@@ -1291,18 +1361,38 @@ gen_client() {
   if [ "$CERT_OK" = 1 ] && [ -n "$ym" ]; then sni="$ym"; else sni="www.bing.com"; fi
   if [ "$CERT_OK" = 1 ]; then msins=false; jhins=0; else msins=true; jhins=1; fi
 
-  sxname="${name:+${name}-}"
+  # 节点备注名与主机名防歧义处理：
+  # 若主机名形如 instance-20260901-1745 这类云厂商常见格式，
+  # 末尾的 4 位数字（如 1745）极易被用户误认为是端口号；
+  # 故剥离末尾 4 位时间戳后缀，彻底避免误认。若用户指定了 name=，则直接采用 name 作为前缀。
+  local clean_host node_tag
+  clean_host=$(echo "$hostname_s" | sed -E 's/-[0-9]{4}$//')
+  if [ -n "$name" ]; then
+    node_tag="$name"
+  else
+    node_tag="$clean_host"
+  fi
 
-  # Hysteria2 salamander 混淆：服务端开了客户端就必须跟着开，
-  # 这里按服务端落盘的密码文件推导各客户端格式的片段。
+  # Hysteria2 混淆（支持 salamander 与 1.14 新增的 gecko）：服务端开了客户端就必须跟着开，
+  # 这里按服务端落盘的密码文件与类型推导各客户端格式的片段。
   hyobfs_json="" ; hyobfs_yaml=""
+  local _obfs_t="salamander"
+  [ -s "$SB_HOME/hyobfs_type" ] && _obfs_t=$(cat "$SB_HOME/hyobfs_type")
   if [ -s "$SB_HOME/hyobfs_pw" ]; then
     _obfs_pw=$(cat "$SB_HOME/hyobfs_pw")
-    hyobfs_json="
+    if [ "$_obfs_t" = "gecko" ]; then
+      hyobfs_json="
+        \"obfs\": { \"type\": \"gecko\", \"password\": \"$_obfs_pw\", \"min_packet_size\": 1200, \"max_packet_size\": 1400 },"
+      hyobfs_yaml="
+    obfs: gecko
+    obfs-password: $_obfs_pw"
+    else
+      hyobfs_json="
         \"obfs\": { \"type\": \"salamander\", \"password\": \"$_obfs_pw\" },"
-    hyobfs_yaml="
+      hyobfs_yaml="
     obfs: salamander
     obfs-password: $_obfs_pw"
+    fi
   fi
   : > "$SB_LINK"
 
@@ -1320,7 +1410,7 @@ gen_client() {
     case "$tuech" in
       1|on|yes|true) [ -n "$tuech_config" ] && tuic_ech="&ech=$(printf %s "$tuech_config" | base64 | tr -d '\n')" ;;
     esac
-    tuic_link="tuic://$uuid:$pw_tu@$add:$port_tu?congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=$sni&insecure=$jhins&allowInsecure=$jhins&allow_insecure=$jhins$tuic_fp$tuic_pin$tuic_ech#${sxname}tuic-$hostname_s"
+    tuic_link="tuic://$uuid:$pw_tu@$add:$port_tu?congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=$sni&insecure=$jhins&allowInsecure=$jhins&allow_insecure=$jhins$tuic_fp$tuic_pin$tuic_ech#tuic-$node_tag"
     echo "$tuic_link" >> "$SB_LINK"
     echo "💣【 Tuic 】节点信息如下："
     echo "$tuic_link"; echo
@@ -1342,12 +1432,12 @@ gen_client() {
     local hy2_pin="" hy2_pcs=""
     [ -n "$_sha" ] && hy2_pin="&pinSHA256=$_sha"
     [ -n "$_fp" ] && hy2_pcs="&pcs=$_fp"
-    # 服务端启用 salamander 时，客户端必须带相同 obfs 参数，否则握手不上
+    # 服务端启用混淆时，客户端必须带相同 obfs 参数，否则握手不上
     local hyobfs_q=""
     if [ -s "$SB_HOME/hyobfs_pw" ]; then
-      hyobfs_q="&obfs=salamander&obfs-password=$(cat "$SB_HOME/hyobfs_pw")"
+      hyobfs_q="&obfs=$_obfs_t&obfs-password=$(cat "$SB_HOME/hyobfs_pw")"
     fi
-    hy2_link="hysteria2://$pw_hy@$add:$port_hy2?security=tls&alpn=h3&insecure=$jhins&allowInsecure=$jhins$hyps$hy_bw_q&sni=$sni$hy2_pin$hy2_pcs$hyobfs_q#${sxname}hy2-$hostname_s"
+    hy2_link="hysteria2://$pw_hy@$add:$port_hy2?security=tls&alpn=h3&insecure=$jhins&allowInsecure=$jhins$hyps$hy_bw_q&sni=$sni$hy2_pin$hy2_pcs$hyobfs_q#hy2-$node_tag"
     echo "$hy2_link" >> "$SB_LINK"
     echo "💣【 Hysteria2 】节点信息如下："
     echo "$hy2_link"; echo
@@ -1355,30 +1445,32 @@ gen_client() {
 
 
   if [ -n "$nvp" ] && [ "$CERT_OK" = 1 ]; then
-    # Naiveproxy 同一入站同时服务 H2 与 H3，但不同客户端认的 URL scheme 不同：
-    #   naive+https:// / naive+quic://  —— v2rayN、NekoBox 等
-    #   http2://       / http3://       —— Shadowrocket（认不出 naive+ 前缀）
-    # 两套都放进订阅，各客户端各取所需。
-    # UDP over TCP 默认关闭，链接直接带 udp-over-tcp=true 让能解析的客户端默认开启。
-    # 注意：v2rayN 的 naive 节点**不解析**该 URL 参数（源码里 Uot 仅 UI 手动开关），
-    # 因此 v2rayN 里仍需在节点属性手动勾选一次 UDP over TCP；sing-box 客户端则确定开启。
-    # H3(naive+quic/http3) 拥塞控制用 congestion_control=bbr（H3 默认本就是 bbr）。
+    # Naiveproxy 同一入站同时服务 H2 与 H3，不同客户端认的 URL scheme 与参数：
+    #   naive+quic://  —— v2rayN、NekoBox 等（客户端根据 scheme 含 quic 自动勾选开启 QUIC 选项）
+    #   naive+https:// —— TCP/H2 回退通道
+    #   http3:// / http2:// —— Shadowrocket（认不出 naive+ 前缀）
     #
+    # UDP over TCP (UoT)：
+    #   链接直接带 uot=1、udp-over-tcp=true、udp_over_tcp=1 全兼容参数，
+    #   满足新版 v2rayN（已支持 uot=1 参数）、sing-box 以及 NekoBox 等客户端导入时默认勾选开启 UoT。
     # 固定证书：v2rayN 解析 pcs= 参数填充节点「固定证书」字段（CertSha，证书 SHA-256 指纹）。
     local nv_pcs="" nv_pin=""
     [ -n "$_fp" ] && nv_pcs="&pcs=$_fp"
     [ -n "$_sha" ] && nv_pin="&pinSHA256=$_sha"
-    # 默认优先使用 QUIC (HTTP/3) 极速通道，同时保留 HTTP/2 供客户端兼容与回退（均默认开启 QUIC 与 BBR 拥塞控制）
-    nv1_link="naive+quic://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs$nv_pin#${sxname}naive-h3-$hostname_s"
-    nv2_link="naive+https://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs$nv_pin#${sxname}naive-h2-$hostname_s"
-    nv3_link="http3://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs$nv_pin#${sxname}naive-h3-rocket-$hostname_s"
-    nv4_link="http2://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1&uot=1$nv_pcs$nv_pin#${sxname}naive-h2-rocket-$hostname_s"
+    local nv_uot="&uot=1&udp-over-tcp=true&udp_over_tcp=1"
 
-    for l in "$nv1_link" "$nv2_link" "$nv3_link" "$nv4_link"; do
+    # 默认节点均使用 naive+quic:// 极速通道，并默认开启 QUIC、BBR 与 UDP over TCP
+    nv1_link="naive+quic://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1$nv_uot$nv_pcs$nv_pin#naive-h3-$node_tag"
+    nv2_link="naive+quic://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1$nv_uot$nv_pcs$nv_pin#naive-h2-$node_tag"
+    nv3_link="naive+https://$nv_user:$nv_pw@$add:$port_nv?congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1$nv_uot$nv_pcs$nv_pin#naive-tcp-$node_tag"
+    nv4_link="http3://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1$nv_uot$nv_pcs$nv_pin#naive-h3-rocket-$node_tag"
+    nv5_link="http2://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1$nv_uot$nv_pcs$nv_pin#naive-h2-rocket-$node_tag"
+
+    for l in "$nv1_link" "$nv2_link" "$nv3_link" "$nv4_link" "$nv5_link"; do
       echo "$l" >> "$SB_LINK"
     done
-    echo "💣【 Naiveproxy 】节点信息如下（前两条 v2rayN/NekoBox，后两条 Shadowrocket）："
-    echo "$nv1_link"; echo "$nv2_link"; echo "$nv3_link"; echo "$nv4_link"; echo
+    echo "💣【 Naiveproxy 】节点信息如下（前 3 条为 v2rayN/NekoBox 极速/回退，后 2 条为 Shadowrocket）："
+    echo "$nv1_link"; echo "$nv2_link"; echo "$nv3_link"; echo "$nv4_link"; echo "$nv5_link"; echo
   fi
 
   # ---------- sing-box 客户端聚合配置 ----------
@@ -1611,6 +1703,8 @@ gen_client_sbox() {
         '"$tuic_udp"'
         "zero_rtt_handshake": true,
         "heartbeat": "10s",
+        "udp_fragment": true,
+        "bind_address_no_port": true,
         "tls": { "enabled": true, "server_name": "'"$sni"'", "insecure": '"$msins"', "alpn": ["h3"]'"$tuic_tls_extra"' }
     }')
     tags+=("tuic")
@@ -1644,6 +1738,8 @@ gen_client_sbox() {
         '"$hy_ports_json"'
         '"$hy_client_bw"'
         "password": "'"$pw_hy"'",'"$hyobfs_json"'
+        "udp_fragment": true,
+        "bind_address_no_port": true,
         "tls": { "enabled": true, "server_name": "'"$sni"'", "insecure": '"$msins"', "alpn": ["h3"]'"$hy2_tls_extra"' }
     }')
     tags+=("hysteria2")
@@ -1667,6 +1763,7 @@ gen_client_sbox() {
         "udp_over_tcp": true,
         "quic": true,
         "quic_congestion_control": "bbr",
+        "bind_address_no_port": true,
         "tls": { "enabled": true, "insecure": false, "server_name": "'"$sni"'" }
     }')
     tags+=("naive-h3")
@@ -1683,6 +1780,7 @@ gen_client_sbox() {
         "udp_over_tcp": true,
         "quic": true,
         "quic_congestion_control": "bbr",
+        "bind_address_no_port": true,
         "tls": { "enabled": true, "insecure": false, "server_name": "'"$sni"'" }
     }')
     tags+=("naive-h2")
@@ -1707,6 +1805,7 @@ gen_client_sbox() {
 
   cat > "$json_file" <<EOF
 {
+    "\$schema": "https://sing-box.sagernet.org/schema.json",
     "log": { "level": "warn", "timestamp": true },
     "dns": {
         "servers": [
@@ -1715,13 +1814,17 @@ gen_client_sbox() {
         ],
         "rules": [ { "rule_set": "geosite-cn", "server": "local" } ],
         "strategy": "prefer_ipv4",
-        "final": "remote"
+        "final": "remote",
+        "optimistic": true,
+        "timeout": "5s",
+        "cache_capacity": 4096
     },
     "outbounds": [
 $sel,
         {
             "type": "direct",
-            "tag": "direct"
+            "tag": "direct",
+            "bind_address_no_port": true
         },
         {
             "type": "urltest",
@@ -1760,9 +1863,17 @@ EOF
 gen_client_clash() {
   local proxies="" groups="" rules=""
   local p
+  local clean_host node_tag
+  clean_host=$(echo "$hostname_s" | sed -E 's/-[0-9]{4}$//')
+  if [ -n "$name" ]; then
+    node_tag="$name"
+  else
+    node_tag="$clean_host"
+  fi
+
   if [ -n "$tup" ]; then
     proxies="$proxies
-  - name: tuic-$hostname_s
+  - name: tuic-$node_tag
     server: $add
     port: $port_tu
     type: tuic
@@ -1778,7 +1889,7 @@ gen_client_clash() {
     skip-cert-verify: $msins"
 
     groups="$groups
-      - tuic-$hostname_s"
+      - tuic-$node_tag"
   fi
   if [ -n "$hyp" ]; then
     local hy_ports_yaml="" hy_clash_bw=""
@@ -1793,7 +1904,7 @@ gen_client_clash() {
     down: \"$hydown Mbps\""
     fi
     proxies="$proxies
-  - name: hysteria2-$hostname_s
+  - name: hysteria2-$node_tag
     server: $add
     port: $port_hy2
     type: hysteria2$hy_clash_bw
@@ -1802,12 +1913,12 @@ gen_client_clash() {
     sni: $sni
     skip-cert-verify: $msins"
     groups="$groups
-      - hysteria2-$hostname_s"
+      - hysteria2-$node_tag"
   fi
 
   if [ -n "$nvp" ] && [ "$CERT_OK" = 1 ]; then
     proxies="$proxies
-  - name: naive-h3-$hostname_s
+  - name: naive-h3-$node_tag
     server: $add
     port: $port_nv
     type: http
@@ -1816,7 +1927,8 @@ gen_client_clash() {
     tls: true
     sni: $sni
     skip-cert-verify: false
-  - name: naive-h2-$hostname_s
+    udp: true
+  - name: naive-h2-$node_tag
     server: $add
     port: $port_nv
     type: http
@@ -1824,10 +1936,11 @@ gen_client_clash() {
     password: $nv_pw
     tls: true
     sni: $sni
-    skip-cert-verify: false"
+    skip-cert-verify: false
+    udp: true"
     groups="$groups
-      - naive-h3-$hostname_s
-      - naive-h2-$hostname_s"
+      - naive-h3-$node_tag
+      - naive-h2-$node_tag"
   fi
   cat > "$SB_HOME/clmi.yaml" <<EOF
 port: 7890
@@ -2093,6 +2206,150 @@ cmd_speed() {
   info "Hysteria2 带宽已优化配置：客户端上行 ${hyup}Mbps / 客户端下行 ${hydown}Mbps"
 }
 
+# 更换端口：sbbox port [tu] [hy2] [nv] [sub] (未指定参数则为各协议分配 10000-65535 随机端口并同步)
+cmd_port() {
+  [ -x "$SB_BIN" ] || { error "未安装 sbbox，无法更改端口"; exit 1; }
+  load_state
+  local in_tu="${1:-}" in_hy2="${2:-}" in_nv="${3:-}" in_sub="${4:-}"
+  local old_tu="$port_tu" old_hy2="$port_hy2" old_nv="$port_nv" old_sub="$subport"
+
+  if [ "$in_tu" = "show" ]; then
+    echo "当前 sbbox 监听端口："
+    [ -n "$old_tu" ] && echo "  Tuic:        $old_tu (UDP)"
+    [ -n "$old_hy2" ] && echo "  Hysteria2:   $old_hy2 (UDP)"
+    [ -n "$old_nv" ] && echo "  Naiveproxy:  $old_nv (TCP/UDP)"
+    [ -n "$old_sub" ] && echo "  订阅服务:    $old_sub (TCP)"
+    return 0
+  fi
+
+  info "正在更新 sbbox 端口配置并同步……"
+
+  # 探测当前主机已占用的端口列表
+  local used
+  used=$(ss -tuln 2>/dev/null | awk 'NR>1 {print $5}' | awk -F: '{print $NF}' | tr -d '%' | sort -u)
+
+  local new_tu="" new_hy2="" new_nv="" new_sub=""
+
+  _gen_rand_port() {
+    local p
+    while :; do
+      p=$(shuf -i 10000-65535 -n 1)
+      if echo "$used" | grep -qx "$p"; then continue; fi
+      if [ "$p" = "$new_tu" ] || [ "$p" = "$new_hy2" ] || [ "$p" = "$new_nv" ] || [ "$p" = "$new_sub" ]; then continue; fi
+      if [ -n "$old_sub" ] && [ -z "$new_sub" ] && [ "$p" = "$old_sub" ]; then continue; fi
+      if [ -n "$hyjpt" ]; then
+        local hop_start hop_end
+        hop_start=$(echo "$hyjpt" | cut -d: -f1 | cut -d- -f1)
+        hop_end=$(echo "$hyjpt" | cut -d: -f2 | cut -d- -f2)
+        if [ "$p" -ge "$hop_start" ] && [ "$p" -le "$hop_end" ]; then continue; fi
+      fi
+      echo "$p"
+      break
+    done
+  }
+
+  if [ -n "$in_tu" ] && [ "$in_tu" != "rand" ] && [ "$in_tu" != "random" ]; then
+    new_tu="$in_tu"
+  elif [ "$tup" = yes ]; then
+    new_tu=$(_gen_rand_port)
+  fi
+
+  if [ -n "$in_hy2" ] && [ "$in_hy2" != "rand" ] && [ "$in_hy2" != "random" ]; then
+    new_hy2="$in_hy2"
+  elif [ "$hyp" = yes ]; then
+    new_hy2=$(_gen_rand_port)
+  fi
+
+  if [ -n "$in_nv" ] && [ "$in_nv" != "rand" ] && [ "$in_nv" != "random" ]; then
+    new_nv="$in_nv"
+  elif [ "$nvp" = yes ]; then
+    new_nv=$(_gen_rand_port)
+  fi
+
+  if [ -n "$in_sub" ]; then
+    if [ "$in_sub" = "rand" ] || [ "$in_sub" = "random" ]; then
+      new_sub=$(_gen_rand_port)
+    elif [ "$in_sub" != "keep" ] && [ "$in_sub" != "no" ]; then
+      new_sub="$in_sub"
+    fi
+  fi
+
+  # 确保 1.14 原生 API 服务端口也是 10000-65535 的 5 位数随机端口
+  local cur_api
+  cur_api=$(cat "$SB_HOME/api_port" 2>/dev/null)
+  if [ -z "$cur_api" ] || [ "$cur_api" -lt 10000 ] 2>/dev/null; then
+    cur_api=$(_gen_rand_port)
+    echo "$cur_api" > "$SB_HOME/api_port"
+    api_port="$cur_api"
+  fi
+
+  # 清理旧端口在防火墙与 NAT 表中的规则
+  _clean_old_port() {
+    local p="$1" proto="${2:-tcp}"
+    [ -n "$p" ] || return 0
+    if [ "$IS_ROOT" = 1 ]; then
+      if command -v iptables >/dev/null 2>&1; then
+        iptables -S INPUT 2>/dev/null | grep -E "(^| )--dport $p( |$)" | sed 's/^-A/iptables -D/' | bash 2>/dev/null || true
+      fi
+      if command -v ip6tables >/dev/null 2>&1; then
+        ip6tables -S INPUT 2>/dev/null | grep -E "(^| )--dport $p( |$)" | sed 's/^-A/ip6tables -D/' | bash 2>/dev/null || true
+      fi
+      if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+        ufw delete allow "${p}/${proto}" >/dev/null 2>&1 || true
+      fi
+      if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state 2>/dev/null | grep -q "running"; then
+        firewall-cmd --remove-port="${p}/${proto}" --permanent >/dev/null 2>&1 || true
+        firewall-cmd --reload >/dev/null 2>&1 || true
+      fi
+    fi
+  }
+
+  [ -n "$old_tu" ] && _clean_old_port "$old_tu" udp
+  [ -n "$old_hy2" ] && _clean_old_port "$old_hy2" udp
+  [ -n "$old_nv" ] && { _clean_old_port "$old_nv" tcp; _clean_old_port "$old_nv" udp; }
+  [ -n "$new_sub" ] && [ -n "$old_sub" ] && _clean_old_port "$old_sub" tcp
+
+  # 清理旧 Hysteria2 DNAT 规则
+  if [ -n "$old_hy2" ]; then
+    iptables -t nat -S PREROUTING 2>/dev/null | grep -w "$old_hy2" | sed 's/^-A/iptables -t nat -D/' | bash 2>/dev/null || true
+    ip6tables -t nat -S PREROUTING 2>/dev/null | grep -w "$old_hy2" | sed 's/^-A/ip6tables -t nat -D/' | bash 2>/dev/null || true
+  fi
+
+  # 写入新端口文件并更新变量
+  [ -n "$new_tu" ] && { echo "$new_tu" > "$SB_HOME/port_tu"; port_tu="$new_tu"; }
+  [ -n "$new_hy2" ] && { echo "$new_hy2" > "$SB_HOME/port_hy2"; port_hy2="$new_hy2"; }
+  [ -n "$new_nv" ] && { echo "$new_nv" > "$SB_HOME/port_nv"; port_nv="$new_nv"; }
+  [ -n "$new_sub" ] && { echo "$new_sub" > "$SB_HOME/subport"; subport="$new_sub"; }
+
+  v4v6
+  load_state
+  [ -s "$SB_HOME/subport" ] && sub=1
+  [ "$CERT_OK" = 1 ] && alns=1
+
+  installsb
+  apply_hy_hop
+  sbrestart
+  gen_client
+
+  if [ "$IS_ROOT" = 1 ]; then
+    if command -v netfilter-persistent >/dev/null 2>&1; then
+      netfilter-persistent save >/dev/null 2>&1 || true
+    elif [ -x "$(command -v iptables-save 2>/dev/null)" ] && [ -d /etc/iptables ]; then
+      iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+      ip6tables-save > /etc/iptables/rules.v6 2>/dev/null || true
+    fi
+  fi
+
+  info "端口更改与同步完成！"
+  [ -n "$new_tu" ] && echo -e "${GREEN}Tuic 端口:        ${new_tu} (UDP)${NC}"
+  [ -n "$new_hy2" ] && echo -e "${GREEN}Hysteria2 端口:   ${new_hy2} (UDP)${NC}"
+  [ -n "$new_nv" ] && echo -e "${GREEN}Naiveproxy 端口:  ${new_nv} (TCP/UDP)${NC}"
+  [ -n "$subport" ] && echo -e "${GREEN}订阅服务端口:     ${subport} (TCP)${NC}"
+  local live_api
+  live_api=$(cat "$SB_HOME/api_port" 2>/dev/null)
+  [ -n "$live_api" ] && echo -e "${GREEN}API 服务端口:     ${live_api} (127.0.0.1 TCP)${NC}"
+}
+
 
 # 密钥轮换：各协议密码、obfs 密码、订阅令牌全部换成新的独立随机值。
 # UUID、端口、证书保持不变。
@@ -2128,6 +2385,13 @@ status_show() {
   if command -v ss >/dev/null 2>&1; then
     echo -e "${CYAN}[+] 监听端口${NC}"
     ss -tulnp 2>/dev/null | grep -E 'sing-box' || echo "  （未发现 sing-box 监听）"
+  fi
+  local api_p
+  api_p=$(cat "$SB_HOME/api_port" 2>/dev/null)
+  if [ -x "$SB_BIN" ] && [ -n "$api_p" ] && ss -tuln 2>/dev/null | grep -q "127.0.0.1:$api_p"; then
+    echo ""
+    echo -e "${CYAN}[+] sing-box 实时运行指标 (1.14 API)${NC}"
+    "$SB_BIN" api status --url "127.0.0.1:$api_p" 2>/dev/null | sed 's/^/  /'
   fi
   echo ""
   tune_show
@@ -2178,6 +2442,7 @@ main() {
     sub)    shift; cmd_sub "$@"; exit ;;
     hop)    shift; cmd_hop "$@"; exit ;;
     speed|bw) shift; cmd_speed "$@"; exit ;;
+    port)   shift; cmd_port "$@"; exit ;;
     doctor) doctor; exit ;;
     rotate) cmd_rotate; exit ;;
     del)    cleandel; exit ;;
@@ -2564,6 +2829,8 @@ load_state() {
     hyup=$(awk '{print $1}' "$SB_HOME/hybw"); hydown=$(awk '{print $2}' "$SB_HOME/hybw")
   fi
   [ -s "$SB_HOME/hyobfs_pw" ] && hyobfs_pw=$(cat "$SB_HOME/hyobfs_pw")
+  [ -s "$SB_HOME/hyobfs_type" ] && hyobfs_type=$(cat "$SB_HOME/hyobfs_type")
+  [ -s "$SB_HOME/api_port" ] && api_port=$(cat "$SB_HOME/api_port")
   [ -z "$sbrel_explicit" ] && [ -f "$SB_HOME/sbrel" ] && sbrel=$(cat "$SB_HOME/sbrel")
   # 订阅曾启用过就保持启用，令牌/端口沿用，避免 list 后订阅地址变化
   if [ -f "$SB_HOME/subtoken" ]; then

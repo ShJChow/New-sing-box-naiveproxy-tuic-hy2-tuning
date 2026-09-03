@@ -182,7 +182,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 | `alns` | empty | enable ACME certificate issuance (`alns=1`) |
 | `ym` | empty | ACME certificate domain (required with `alns`) |
 | `hyjpt` | empty | Hysteria2 port hopping, e.g. `hyjpt="20000 20001 20002"` |
-| `hyobfs` | **1 (default)** | Hysteria2 salamander obfuscation; disable with `hyobfs=0` |
+| `hyobfs` | **1 (default)** | Hysteria2 obfuscation: `salamander` or 1.14 `gecko`; disable with `hyobfs=0` |
 | `hyobfs_pw` | independent | Hysteria2 obfuscation password |
 | `hymask` | `https://www.bing.com` | Hysteria2 masquerade target URL |
 | `sblevel` | `error` | server log level (`off` disables disk logs) |
@@ -197,6 +197,8 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 | `sbrel` | **`stable` (default)** | kernel release channel: default official stable (`stable`); beta/rc with `sbrel=pre` |
 | `tuicuos` | **0 (default native UDP)** | Tuic UDP relay mode: native UDP (default); QUIC stream with `tuicuos=1` |
 | `tuils` | **1 (default)** | Tuic TLS hardening (certificate SHA-256 pinning); disable with `tuils=0` |
+| `dns_optimistic` | **1 (default)** | sing-box 1.14 optimistic DNS cache with persistent storage |
+| `api` | **1 (default)** | sing-box 1.14 native API service (127.0.0.1 independent 5-digit random port) for live telemetry in `sbbox status` |
 
 ---
 
@@ -211,6 +213,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 | `sbbox tune off` | Roll back all kernel tuning |
 | `sbbox sub` | Show subscription URL |
 | `sbbox sub off` | Stop subscription server |
+| `sbbox port [tu] [hy2] [nv]` | Change node ports (no args assigns random ports 10000-65535 and syncs configs & subscription) |
 | `sbbox cert status` | Show certificate validity |
 | `sbbox cert renew` | Renew certificate and restart |
 | `sbbox up` | Update sing-box kernel (default stable channel; rollback on failure) |
