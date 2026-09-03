@@ -692,6 +692,7 @@ apply_nic_tuning() {
     else
       warn "网卡 $nic 不支持或不允许修改卸载选项（虚拟网卡常见），跳过"
     fi
+    ip link set dev "$nic" txqueuelen 10000 >/dev/null 2>&1 || true
   else
     warn "未安装 ethtool，跳过 GRO/GSO（apt install ethtool 后重跑 sbbox tune on 可启用）"
   fi
@@ -788,7 +789,8 @@ apply_tuning() {
   try_sysctl net.ipv4.tcp_comp_sack_delay_ns 1000000
   try_sysctl net.ipv4.tcp_mem "$(( MEM_PAGES * 6 / 100 )) $(( MEM_PAGES * 8 / 100 )) $(( MEM_PAGES * 12 / 100 ))"
   # QUIC / HTTP3：Hysteria2 / Tuic 关键
-  try_sysctl net.core.optmem_max 65536
+  try_sysctl net.core.optmem_max 262144
+  try_sysctl net.core.rps_sock_flow_entries 32768
   # udp_mem 是**全局**的 UDP 内存上限（页数）
   if [ "$MEM_MB" -ge 16384 ]; then
     try_sysctl net.ipv4.udp_mem "$(( MEM_PAGES * 4 / 100 )) $(( MEM_PAGES * 8 / 100 )) $(( MEM_PAGES * 16 / 100 ))"
@@ -825,13 +827,13 @@ apply_tuning() {
   try_sysctl net.ipv4.tcp_tw_reuse 1
   try_sysctl net.ipv4.tcp_ecn 2
   try_sysctl net.ipv4.tcp_ecn_fallback 1
-  try_sysctl net.ipv4.tcp_retries2 8
+  try_sysctl net.ipv4.tcp_retries2 12
   try_sysctl net.ipv4.tcp_syn_retries 4
   try_sysctl net.ipv4.tcp_rfc1337 1
   try_sysctl net.ipv4.tcp_fin_timeout 15
-  try_sysctl net.ipv4.tcp_keepalive_time 600
-  try_sysctl net.ipv4.tcp_keepalive_intvl 30
-  try_sysctl net.ipv4.tcp_keepalive_probes 5
+  try_sysctl net.ipv4.tcp_keepalive_time 60
+  try_sysctl net.ipv4.tcp_keepalive_intvl 10
+  try_sysctl net.ipv4.tcp_keepalive_probes 6
 
   # ---------- 内存行为 ----------
   if [ "$MEM_MB" -ge 4096 ]; then try_sysctl vm.swappiness 10; else try_sysctl vm.swappiness 30; fi
@@ -1132,6 +1134,7 @@ EOF
             "zero_rtt_handshake": true,
             "auth_timeout": "8s",
             "heartbeat": "10s",
+            "udp_timeout": "300s",
 
             "tls": {
                 "enabled": true,
@@ -1151,10 +1154,12 @@ EOF
     #   设了带宽上限                              → 走 Hysteria Brutal CC
     # Brutal 在高丢包跨境链路上吞吐显著更高，但会激进抢占带宽、特征更明显，
     # 且必须填写接近真实的带宽值，填错反而更慢，故设为可选。
+    # 注：服务端 up_mbps 对应客户端下载速率（服务端发向客户端），down_mbps 对应客户端上传速率。
     if [ -n "$hyup" ] && [ -n "$hydown" ]; then
-      hy_bw="            \"up_mbps\": $hyup,
-            \"down_mbps\": $hydown,"
-      info "Hysteria2 拥塞控制：Brutal（上行 ${hyup}Mbps / 下行 ${hydown}Mbps）"
+      hy_bw="            \"up_mbps\": $hydown,
+            \"down_mbps\": $hyup,
+            \"ignore_client_bandwidth\": false,"
+      info "Hysteria2 拥塞控制：Brutal（服务端下发带宽 ${hydown}Mbps / 接收带宽 ${hyup}Mbps）"
     else
       # 不设带宽 → 客户端统一走 BBR。bbr_profile 是 sing-box 1.14 新增项，
       # 不写等价于 standard；显式写出来是为了这条策略不随上游默认值漂移。
@@ -1221,6 +1226,7 @@ EOF
 $hy_bw
 ${hy_obfs:+$hy_obfs}
 $hy_mask
+            "udp_timeout": "300s",
             "tls": {
                 "enabled": true,
                 "alpn": [ "h3" ],
@@ -1241,6 +1247,7 @@ EOF
             "listen": "::",
             "listen_port": $port_nv,
             "tcp_fast_open": true,
+            "tcp_multi_path": true,
             "quic_congestion_control": "bbr",
             "users": [
                 { "username": "$nv_user", "password": "$nv_pw" }
@@ -1463,11 +1470,11 @@ gen_client() {
     # 保持各客户端节点严格统一（Tuic 1个、Hysteria2 1个、Naive-H3 1个、Naive-H2 1个，各端均统一为 4 个节点）
     # 1) v2rayN / NekoBox 格式：
     nv1_link="naive+quic://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1$nv_uot$nv_pcs$nv_pin#naive-h3-$node_tag"
-    nv2_link="naive+quic://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1$nv_uot$nv_pcs$nv_pin#naive-h2-$node_tag"
+    nv2_link="naive+https://$nv_user:$nv_pw@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1$nv_uot$nv_pcs$nv_pin#naive-h2-$node_tag"
 
     # 2) Shadowrocket 等移动端格式（Scheme 为 http3 与 http2，别名与 v2rayN 100% 统一）：
     nv3_link="http3://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1$nv_uot$nv_pcs$nv_pin#naive-h3-$node_tag"
-    nv4_link="http2://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1$nv_uot$nv_pcs$nv_pin#naive-h2-$node_tag"
+    nv4_link="http2://$nv_user:$nv_pw@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1$nv_uot$nv_pcs$nv_pin#naive-h2-$node_tag"
 
     for l in "$nv1_link" "$nv2_link" "$nv3_link" "$nv4_link"; do
       echo "$l" >> "$SB_LINK"
@@ -1872,7 +1879,7 @@ gen_client_sbox() {
         "tls": { "enabled": true, "insecure": false, "server_name": "'"$sni"'" }
     }')
     tags+=("naive-h3")
-    # 独立 H2 出站：供需要 TCP / HTTP2 的环境回退使用（默认开启 quic 与 bbr）
+    # 独立 H2 出站：供需要 TCP / HTTP2 的环境回退使用（标准 TCP TLS + HTTP/2）
     ob+=('{
         "type": "naive",
         "tag": "naive-h2",
@@ -1883,8 +1890,6 @@ gen_client_sbox() {
         "tcp_fast_open": true,
         "tcp_multi_path": true,
         "udp_over_tcp": true,
-        "quic": true,
-        "quic_congestion_control": "bbr",
         "bind_address_no_port": true,
         "tls": { "enabled": true, "insecure": false, "server_name": "'"$sni"'" }
     }')
@@ -2943,6 +2948,7 @@ load_state() {
     subid=$(cat "$SB_HOME/subtoken")
     subport=$(cat "$SB_HOME/subport" 2>/dev/null)
   fi
+  server_ip=$(cat "$SB_HOME/server_ip.log" 2>/dev/null || echo "")
   get_cert_paths
   if cert_ready; then CERT_OK=1; else CERT_OK=0; fi
   hostname_s=$(hostname 2>/dev/null || echo vps)
