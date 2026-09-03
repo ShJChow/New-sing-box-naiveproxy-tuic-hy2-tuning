@@ -1428,7 +1428,7 @@ gen_client() {
     if [ -n "$hyjpt" ]; then
       hy2_ports=$(iptables -t nat -nL --line 2>/dev/null | grep -w "$port_hy2" | awk '{print $8}' | sed 's/dpts://; s/dpt://' | tr '\n' ',' | sed 's/,$//')
       if [ -n "$hy2_ports" ]; then
-        local mport_val=$(echo "$hy2_ports" | sed 's/:/-/g')
+        local mport_val="${port_hy2},$(echo "$hy2_ports" | sed 's/:/-/g')"
         echo "Hysteria2 跳跃端口已开启：$mport_val"
         hyps="&mport=$mport_val"
       fi
@@ -2004,7 +2004,7 @@ gen_client_clash() {
   if [ -n "$hyp" ]; then
     local hy_ports_yaml="" hy_clash_bw=""
     if [ -n "$hyjpt" ]; then
-      local cl_ports=$(echo "$hyjpt" | tr ':' '-')
+      local cl_ports="${port_hy2},$(echo "$hyjpt" | tr ':' '-')"
       hy_ports_yaml="
     ports: $cl_ports"
     fi
