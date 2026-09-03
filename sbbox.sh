@@ -1459,18 +1459,21 @@ gen_client() {
     [ -n "$_sha" ] && nv_pin="&pinSHA256=$_sha"
     local nv_uot="&uot=1&udp-over-tcp=true&udp_over_tcp=1"
 
-    # 默认节点均使用 naive+quic:// 极速通道，并默认开启 QUIC、BBR 与 UDP over TCP
+    # Naiveproxy 节点生成：
+    # 保持各客户端节点严格统一（Tuic 1个、Hysteria2 1个、Naive-H3 1个、Naive-H2 1个，各端均统一为 4 个节点）
+    # 1) v2rayN / NekoBox 格式：
     nv1_link="naive+quic://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1$nv_uot$nv_pcs$nv_pin#naive-h3-$node_tag"
     nv2_link="naive+quic://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1$nv_uot$nv_pcs$nv_pin#naive-h2-$node_tag"
-    nv3_link="naive+https://$nv_user:$nv_pw@$add:$port_nv?congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1$nv_uot$nv_pcs$nv_pin#naive-tcp-$node_tag"
-    nv4_link="http3://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1$nv_uot$nv_pcs$nv_pin#naive-h3-rocket-$node_tag"
-    nv5_link="http2://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1$nv_uot$nv_pcs$nv_pin#naive-h2-rocket-$node_tag"
 
-    for l in "$nv1_link" "$nv2_link" "$nv3_link" "$nv4_link" "$nv5_link"; do
+    # 2) Shadowrocket 等移动端格式（Scheme 为 http3 与 http2，别名与 v2rayN 100% 统一）：
+    nv3_link="http3://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1$nv_uot$nv_pcs$nv_pin#naive-h3-$node_tag"
+    nv4_link="http2://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1$nv_uot$nv_pcs$nv_pin#naive-h2-$node_tag"
+
+    for l in "$nv1_link" "$nv2_link" "$nv3_link" "$nv4_link"; do
       echo "$l" >> "$SB_LINK"
     done
-    echo "💣【 Naiveproxy 】节点信息如下（前 3 条为 v2rayN/NekoBox 极速/回退，后 2 条为 Shadowrocket）："
-    echo "$nv1_link"; echo "$nv2_link"; echo "$nv3_link"; echo "$nv4_link"; echo "$nv5_link"; echo
+    echo "💣【 Naiveproxy 】节点信息如下（v2rayN 与 Shadowrocket 统一为 H3 与 H2 各一个）："
+    echo "$nv1_link"; echo "$nv2_link"; echo "$nv3_link"; echo "$nv4_link"; echo
   fi
 
   # ---------- sing-box 客户端聚合配置 ----------
@@ -1552,9 +1555,109 @@ gen_sub() {
 start_sub_server() {
   local runner=""
   if command -v python3 >/dev/null 2>&1; then
-    # 绑定 0.0.0.0（IPv4）而非 ::，纯 IPv4 VPS 上没有 IPv6 地址，绑定 :: 会启动失败
-    runner="python3 -m http.server $subport --bind 0.0.0.0 --directory $SUB_DIR"
-    SUB_MARK="python3 -m http.server $subport"
+    # 动态准备智能自适应订阅服务端脚本，优先支持 User-Agent 自适应与多客户端统一格式
+    if [ ! -f "$SB_HOME/sub_server.py" ]; then
+      cat > "$SB_HOME/sub_server.py" << 'PYEOF'
+#!/usr/bin/env python3
+import sys, os, base64
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 50934
+WEB_DIR = sys.argv[2] if len(sys.argv) > 2 else "/root/sbbox/websub"
+SB_HOME = os.path.dirname(WEB_DIR.rstrip("/"))
+
+class SubHandler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        sys.stdout.write("%s - - [%s] %s\n" % (self.address_string(), self.log_date_time_string(), format % args))
+        sys.stdout.flush()
+
+    def do_HEAD(self):
+        self.do_GET()
+
+    def do_GET(self):
+        token_path = self.path.lstrip("/").split("?")[0]
+        token_file = os.path.join(WEB_DIR, token_path)
+        if token_path in ("", "index.html"):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"sbbox subscription server is running.\n")
+            return
+        if not os.path.isfile(token_file):
+            self.send_response(404)
+            self.end_headers()
+            return
+        ua = self.headers.get("User-Agent", "").lower()
+        if any(k in ua for k in ("clash", "mihomo", "stash", "meta", "subconverter")):
+            clash_file = os.path.join(SB_HOME, "clmi.yaml")
+            if os.path.isfile(clash_file):
+                with open(clash_file, "rb") as f: content = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/yaml; charset=utf-8")
+                self.send_header("profile-update-interval", "24")
+                self.send_header("content-disposition", 'attachment; filename="sbbox_clash.yaml"')
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+                return
+        if "sing-box" in ua or "sbox" in ua:
+            sb_file = os.path.join(SB_HOME, "sbox_client.json")
+            if os.path.isfile(sb_file):
+                with open(sb_file, "rb") as f: content = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("content-disposition", 'attachment; filename="sbox_client.json"')
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+                return
+        raw_links = []
+        nodes_txt = os.path.join(SB_HOME, "nodes.txt")
+        if os.path.isfile(nodes_txt):
+            with open(nodes_txt, "r", encoding="utf-8", errors="ignore") as f:
+                raw_links = [line.strip() for line in f if line.strip() and not line.strip().startswith("#")]
+        else:
+            with open(token_file, "rb") as f: b64 = f.read().strip()
+            try:
+                decoded = base64.b64decode(b64).decode("utf-8", errors="ignore")
+                raw_links = [line.strip() for line in decoded.splitlines() if line.strip() and not line.strip().startswith("#")]
+            except Exception: pass
+        selected_links = []
+        if "shadowrocket" in ua:
+            for l in raw_links:
+                if l.startswith(("tuic://", "hysteria2://", "http3://", "http2://")):
+                    selected_links.append(l)
+        elif any(k in ua for k in ("v2rayn", "nekobox")):
+            for l in raw_links:
+                if l.startswith(("tuic://", "hysteria2://", "naive+quic://", "naive+https://")):
+                    selected_links.append(l)
+        else:
+            with open(token_file, "rb") as f: content = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+            return
+        body = base64.b64encode("\n".join(selected_links).encode("utf-8"))
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Subscription-Userinfo", "upload=0; download=0; total=0")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+def run():
+    httpd = HTTPServer(("0.0.0.0", PORT), SubHandler)
+    httpd.serve_forever()
+
+if __name__ == "__main__":
+    run()
+PYEOF
+      chmod +x "$SB_HOME/sub_server.py"
+    fi
+    runner="python3 $SB_HOME/sub_server.py $subport $SUB_DIR"
+    SUB_MARK="sub_server.py $subport"
   elif command -v busybox >/dev/null 2>&1; then
     runner="busybox httpd -f -p $subport -h $SUB_DIR"
     SUB_MARK="busybox httpd -f -p $subport"
@@ -1567,6 +1670,7 @@ start_sub_server() {
   open_port "$subport" tcp
 
   # 清理旧进程避免端口占用冲突
+  pkill -f "sub_server.py $subport" >/dev/null 2>&1
   pkill -f "python3 -m http.server $subport" >/dev/null 2>&1
   pkill -f "busybox httpd -f -p $subport" >/dev/null 2>&1
   [ -f "$SB_HOME/sub.pid" ] && kill "$(cat "$SB_HOME/sub.pid")" 2>/dev/null && rm -f "$SB_HOME/sub.pid"
@@ -1596,7 +1700,7 @@ EOF
     echo $! > "$SB_HOME/sub.pid"
     if [ "$SERVICE_TYPE" = "cron" ]; then
       crontab -l > /tmp/sbbox_sub_cron.tmp 2>/dev/null || true
-      sed -i '/sbbox-sub\|http.server\|httpd -f/d' /tmp/sbbox_sub_cron.tmp 2>/dev/null || true
+      sed -i '/sbbox-sub\|sub_server.py\|http.server\|httpd -f/d' /tmp/sbbox_sub_cron.tmp 2>/dev/null || true
       echo "@reboot sleep 12 && nohup $runner >/dev/null 2>&1 &" >> /tmp/sbbox_sub_cron.tmp
       crontab /tmp/sbbox_sub_cron.tmp >/dev/null 2>&1
       rm -f /tmp/sbbox_sub_cron.tmp
@@ -1620,10 +1724,11 @@ stop_sub_server() {
     systemctl daemon-reload >/dev/null 2>&1
   fi
   [ -f "$SB_HOME/sub.pid" ] && kill "$(cat "$SB_HOME/sub.pid")" 2>/dev/null
+  pkill -f "sub_server.py" >/dev/null 2>&1
   pkill -f "python3 -m http.server" >/dev/null 2>&1
   pkill -f "busybox httpd -f -p" >/dev/null 2>&1
   crontab -l > /tmp/sbbox_sub_cron.tmp 2>/dev/null || true
-  sed -i '/sbbox-sub\|http.server\|httpd -f/d' /tmp/sbbox_sub_cron.tmp 2>/dev/null || true
+  sed -i '/sbbox-sub\|sub_server.py\|http.server\|httpd -f/d' /tmp/sbbox_sub_cron.tmp 2>/dev/null || true
   crontab /tmp/sbbox_sub_cron.tmp >/dev/null 2>&1
   rm -f /tmp/sbbox_sub_cron.tmp
   rm -f "$SB_HOME/sub.pid"
@@ -1644,7 +1749,7 @@ cmd_sub() {
       fi
       open_port "$port" tcp
       case "$subhost" in *:*) subhost="[$subhost]" ;; esac
-      if ([ "$SERVICE_TYPE" = "systemd" ] && systemctl is-active --quiet sbbox-sub 2>/dev/null) || pgrep -f "http.server $port" >/dev/null 2>&1 || pgrep -f "httpd -f -p $port" >/dev/null 2>&1; then
+      if ([ "$SERVICE_TYPE" = "systemd" ] && systemctl is-active --quiet sbbox-sub 2>/dev/null) || pgrep -f "sub_server.py $port" >/dev/null 2>&1 || pgrep -f "http.server $port" >/dev/null 2>&1 || pgrep -f "httpd -f -p $port" >/dev/null 2>&1; then
         info "订阅服务：运行中"
       else
         warn "订阅服务：未运行，正在重新拉起……"
