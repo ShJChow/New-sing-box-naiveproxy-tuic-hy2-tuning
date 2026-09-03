@@ -59,7 +59,6 @@
 | 记录类型 | 域名名称 | 目标 IP | Cloudflare 代理状态（云朵颜色） | 用途 |
 | :--- | :--- | :--- | :--- | :--- |
 | **A 记录** | `reality.example.com` | `你的 VPS IP` |  **仅 DNS（灰色云朵）** | 用于证书申请与 Naiveproxy / Reality / Hy2 / Tuic 直连 |
-| **A 记录** | `cdn.example.com` | `你的 VPS IP` |  **已代理（橙色小黄云）/ 仅 DNS** | 用于双域名 SAN 证书申请、CDN 节点隐藏真实 IP 或备用分流 |
 
 >  **重要提示**：Naiveproxy (H3/H2)、Hysteria2 与 Tuic 均基于 UDP/QUIC 或专用端口直连，用于直连代理服务的主域名在 Cloudflare DNS 中**必须保持灰色云朵（仅 DNS）**，不要开启 CDN 代理，以保证极速低延迟与全协议兼容。
 
