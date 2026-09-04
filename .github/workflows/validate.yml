@@ -30,7 +30,9 @@ jobs:
       matrix:
         include:
           - name: 全部三协议
-            env: tup=1 hyp=1 nvp=1 alns=1
+            # alns=1 必须配 ym=：脚本要求启用证书功能时提供域名。
+            # 域名与下面预置的自签证书 CN 一致，install_cert 会命中复用分支。
+            env: tup=1 hyp=1 nvp=1 alns=1 ym=ci.example.com
           - name: 仅 Hysteria2
             env: hyp=1
           - name: 仅 Tuic
@@ -46,7 +48,7 @@ jobs:
           - name: Tuic 原生 UDP
             env: tup=1 tuicuos=0
           - name: Tuic 关闭 TLS 加固
-            env: tup=1 alns=1 tuils=0
+            env: tup=1 alns=1 tuils=0 ym=ci.example.com
     name: 配置校验 - ${{ matrix.name }}
     steps:
       - uses: actions/checkout@v4
@@ -75,11 +77,17 @@ jobs:
           # 脚本会优先复用已存在的内核，省去下载
           install -m755 /usr/local/bin/sing-box "$HOME/sbbox/sing-box"
           install -m644 /usr/local/bin/libcronet.so "$HOME/sbbox/libcronet.so"
-          # 预置证书让 alns=1 路径跳过 ACME 签发，从而覆盖到 naive 入站
+          # 预置证书让 alns=1 路径跳过 ACME 签发，从而覆盖到 naive 入站。
+          # 注意必须放在 install_cert 会检索的候选目录里 —— 它并不检查
+          # $SB_HOME/cert（那是输出目录，不是来源），放在那里会一路走到
+          # ACME 签发并在 CI 里失败。$HOME/.acme.sh/<域名>_ecc 是第一个候选。
+          ACME_DIR="$HOME/.acme.sh/ci.example.com_ecc"
+          mkdir -p "$ACME_DIR"
           openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
-            -keyout "$HOME/sbbox/cert/private.key" \
-            -out "$HOME/sbbox/cert/fullchain.cer" \
-            -subj "/CN=ci.example.com" 2>/dev/null
+            -keyout "$ACME_DIR/ci.example.com.key" \
+            -out    "$ACME_DIR/fullchain.cer" \
+            -subj "/CN=ci.example.com" \
+            -addext "subjectAltName=DNS:ci.example.com" 2>/dev/null
 
       - name: 生成配置并用真实内核校验
         run: |
@@ -111,8 +119,11 @@ jobs:
           if echo '${{ matrix.env }}' | grep -q 'hyup='; then
             # 设了带宽 → 必须走 Brutal，且不能同时出现 ignore_client_bandwidth
             echo "$HY" | jq -e '.up_mbps and .down_mbps' >/dev/null || { echo "缺少带宽上限"; exit 1; }
-            echo "$HY" | jq -e 'has("ignore_client_bandwidth")|not' >/dev/null \
-              || { echo "带宽上限与 ignore_client_bandwidth 互斥，不能并存"; exit 1; }
+            # 互斥的是「带宽上限」与「ignore_client_bandwidth=true」。
+            # 脚本会显式写出 ignore_client_bandwidth:false（等同默认值），
+            # 这不构成冲突；旧断言要求该键完全不存在，属误判。
+            echo "$HY" | jq -e '.ignore_client_bandwidth != true' >/dev/null \
+              || { echo "带宽上限与 ignore_client_bandwidth=true 互斥，不能并存"; exit 1; }
           else
             echo "$HY" | jq -e '.ignore_client_bandwidth==true' >/dev/null \
               || { echo "默认应 ignore_client_bandwidth=true 走 BBR"; exit 1; }
@@ -224,14 +235,17 @@ jobs:
 
       - name: 预置证书（覆盖 naive，用于验证订阅剔除逻辑）
         run: |
-          mkdir -p "$HOME/sbbox/cert"
+          # 同上：放在 install_cert 的候选目录，而不是 $SB_HOME/cert
+          ACME_DIR="$HOME/.acme.sh/ci.example.com_ecc"
+          mkdir -p "$ACME_DIR"
           openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
-            -keyout "$HOME/sbbox/cert/private.key" \
-            -out "$HOME/sbbox/cert/fullchain.cer" \
-            -subj "/CN=ci.example.com" 2>/dev/null
+            -keyout "$ACME_DIR/ci.example.com.key" \
+            -out    "$ACME_DIR/fullchain.cer" \
+            -subj "/CN=ci.example.com" \
+            -addext "subjectAltName=DNS:ci.example.com" 2>/dev/null
 
       - name: 生成配置
-        run: env SBBOX_CHECK_ONLY=1 tup=1 hyp=1 nvp=1 alns=1 bash sbbox.sh
+        run: env SBBOX_CHECK_ONLY=1 tup=1 hyp=1 nvp=1 alns=1 ym=ci.example.com bash sbbox.sh
 
       - name: 生成节点与订阅
         run: env sub=1 subport=18080 bash sbbox.sh list
