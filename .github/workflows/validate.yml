@@ -152,8 +152,11 @@ jobs:
           set -euo pipefail
           if ! echo '${{ matrix.env }}' | grep -q 'nvp=1'; then exit 0; fi
           CLIENT="$HOME/sbbox/sbox_client.json"
-          # H2 出站 + H3(QUIC) 出站都要在，且都开启 udp_over_tcp 与拥塞控制
-          jq -e '.outbounds[]|select(.tag=="naive")|.udp_over_tcp==true' "$CLIENT" >/dev/null             || { echo "naive H2 出站应开 udp_over_tcp"; exit 1; }
+          # H2 出站 + H3(QUIC) 出站都要在，且都开启 udp_over_tcp 与拥塞控制。
+          # H2 出站的 tag 是 naive-h2（不是 naive）—— 早期确实叫 naive，改名后
+          # 这条断言没跟着更新；又因本 job 长期卡在更早的步骤上从未执行到，
+          # 这个陈旧断言一直没被发现。
+          jq -e '.outbounds[]|select(.tag=="naive-h2")|.udp_over_tcp==true' "$CLIENT" >/dev/null             || { echo "naive-h2 出站应开 udp_over_tcp"; exit 1; }
           jq -e '.outbounds[]|select(.tag=="naive-h3")|.quic==true and .quic_congestion_control=="bbr" and .udp_over_tcp==true' "$CLIENT" >/dev/null             || { echo "naive H3 出站应 quic=true + cc=bbr + udp_over_tcp"; exit 1; }
           echo "OK: naive H2/H3 出站 UDP-over-TCP 与拥塞控制均开启"
           # 分享链接要带 uot=1（v2rayN NaiveFmt 解析）和 congestion_control=bbr
