@@ -38,7 +38,8 @@
 - [七、内核版本管理](#七内核版本管理)
 - [八、v2rayN 订阅与客户端配置](#八v2rayn-订阅与客户端配置)
 - [九、四条节点实测吞吐](#九四条节点实测吞吐)
-- [十、免责声明](#十免责声明)
+- [十、v2.1.0 实测诊断与修复记录](#十v210-实测诊断与修复记录)
+- [十一、免责声明](#十一免责声明)
 
 ---
 
@@ -313,6 +314,179 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 
 ---
 
-## 十、免责声明
+## 十、v2.1.0 实测诊断与修复记录
+
+本节记录一次在 **Oracle ARM (4 核 24G) / Ubuntu 26.04 / kernel 7.0** 上的完整诊断。
+**每一条都有实测数据支撑，包括两条"测了但结论与预期相反"的项目。**
+
+### 1.〔严重·安全〕私有地址防护对「域名目标」完全失效
+
+`sb.json` 里原有的拦截规则本意是挡住客户端打内网服务与 `169.254.169.254` 云元数据接口：
+
+```json
+{ "action": "reject", "ip_is_private": true }
+```
+
+**但 `ip_is_private` 只比对目标 IP。客户端只要把目标写成域名，规则就不匹配、直接放行。**
+
+实测（经 naive 节点，`--socks5-hostname` 表示把域名交给服务端解析）：
+
+| 目标写法 | 修复前 | 修复后 |
+| :--- | :--- | :--- |
+| `http://127.0.0.1/`（字面 IP） | 被阻断 ✅ | 被阻断 ✅ |
+| `http://127.0.0.1.nip.io/`（域名） | **301（打通了本机 nginx）** ❌ | 被阻断 ✅ |
+| `https://www.cloudflare.com/`（正常流量） | 200 ✅ | 200 ✅ |
+
+`301` 是本机 nginx 80 端口的应答——**任意客户端都能借此访问服务器的回环与内网服务**，
+包括 sing-box 自己的 API 端口、同机其他代理的本地入站、Docker 容器网段，以及云厂商元数据接口。
+
+**修复**：改用 sing-box 1.11+ 的 `resolve` action，**先解析成 IP 再判定**：
+
+```json
+"rules": [
+    { "action": "resolve", "strategy": "ipv4_only" },
+    { "action": "reject",  "ip_is_private": true },
+    ...
+]
+```
+
+> 同机 Xray 侧实测**不存在**此绕过（其 Reality 节点修复前就能拦住同一测试），这是 sing-box 侧特有的问题。
+
+### 2.〔严重〕基础端口被同机其他脚本的跳跃段劫持
+
+**现象**：`nodes.txt` 里发布的 `hysteria2://...@域名:44116` 完全连不上（客户端报
+`connect error: timeout: no recent network activity`），但同一节点的跳跃段 `25000-38000` 能正常连；
+**本机 hysteria 服务端日志里没有任何记录**。
+
+**根因**：同机另一套脚本安装了一条按**范围**匹配的 nat 规则
+
+```
+-A PREROUTING -p udp --dport 40000:50000 -j REDIRECT --to-ports 8443
+```
+
+本脚本随机分配的 Hysteria2 基础端口 `44116` 正好落在 `40000-50000` 内，
+于是所有直连 44116 的包被改写投递给对方的 8443 实例；两边 obfs 密码不同，握手包被**静默丢弃**。
+
+**验证**（用对方实例的凭据连本端口，能连通即证明劫持）：实测返回 `200`，且**对方**服务端日志出现
+`client connected`，本端日志为空 —— 劫持确认。
+
+**修复（三处）**：
+
+1. `assign_port` 随机分配端口时，**跳过已被 nat 端口段规则劫持的区间**（最多重试 50 次）：
+
+   ```bash
+   port_hijacked_by_nat "$val" >/dev/null 2>&1 || break
+   ```
+
+2. `apply_hy_hop` 在装完跳跃规则后，为基础端口插入 `RETURN` 例外（幂等），
+   保证直连基础端口的包不被任何端口段规则改写：
+
+   ```bash
+   iptables -t nat -I PREROUTING 1 -p udp --dport "$port_hy2" -j RETURN
+   ```
+
+3. 检出冲突时明确告警，指出是哪个段、导向哪个端口。
+
+修复后实测：直连 `44116` 返回 `200`，本机 hysteria 日志正常出现 `client connected`。
+
+> 原逻辑只排除了**自己的**跳跃段（`hyjpt`），无法感知同机其他脚本占用的范围——这是同机共存多套代理脚本时最难排查的一类故障。
+
+### 3. 无全局 IPv6 的机器仍在尝试 IPv6 出站
+
+本机只有链路本地 `fe80::`、无全局 IPv6，但配置用的是 `"strategy": "prefer_ipv4"` ——
+sing-box 仍会发 AAAA 查询并尝试 v6 连接。实测日志：
+
+```
+ERROR ... dial tcp [2a03:2880:f382:5:face:b00c:0:79f4]:443: connect: network is unreachable
+ERROR ... lookup zt.huya.com: (exchange6: NXDOMAIN | exchange4: NXDOMAIN)
+```
+
+每次失败都白白多耗一个 RTT。**修复**：新增 `detect_ip_strategy()`，安装时探测本机是否有全局 IPv6，
+无则自动使用 `ipv4_only`（有则保持 `prefer_ipv4`），并同步应用到 `default_domain_resolver`。
+
+### 4. 单网卡服务器上的 MPTCP 只有代价没有收益
+
+服务端 `direct` 出站原本开着 `tcp_multi_path: true`。内核计数器实测：
+
+| 计数器 | 值 | 含义 |
+| :--- | ---: | :--- |
+| `MPCapableSYNTX` | 11188 | 发起 MPTCP 协商的次数 |
+| `MPCapableSYNACKRX` | 33 | 对端接受的次数 |
+| `MPCapableFallbackSYNACK` | 11129 | **回退成普通 TCP（99.7%）** |
+| `MPCapableSYNTXDrop` | 14 | 带 MPTCP 选项的 SYN 被中间设备直接丢弃 |
+
+服务器只有一张网卡，MPTCP 本就不可能带来多路径收益；而 `SYNTXDrop` 说明部分路径上它反而**增加连接失败风险**。
+**修复**：服务端 `direct` 出站移除 `tcp_multi_path`。
+
+### 5. sing-box 1.14 已移除出站的 `domain_strategy`
+
+1.14.0 起，outbound 的 `domain_strategy` 会直接导致启动失败：
+
+```
+FATAL legacy domain strategy options is deprecated in sing-box 1.12.0 and will be removed in sing-box 1.14.0
+```
+
+改由 `route` 侧统一指定（`resolve` action 的 `strategy` + `default_domain_resolver.strategy`）。本版已完成迁移。
+
+### 6.〔实测〕salamander 混淆的吞吐代价约 2.4 倍
+
+同一台机器、同一条 loopback 路径、同一 Hysteria2 服务端二进制，仅切换是否启用 salamander 混淆：
+
+| 配置 | 吞吐 |
+| :--- | ---: |
+| 带 salamander 混淆（默认） | 571 Mbps |
+| 关闭混淆 | **1378 Mbps** |
+| 对照：TUIC（无混淆） | 1490 Mbps |
+
+**混淆是逐包做的用户态加扰，这是它的固有成本，不是配置错误。** 关掉后 Hysteria2 的吞吐与 TUIC 持平，
+说明此前"Hysteria2 比 TUIC 慢一半"的现象**完全由混淆造成**。
+
+这是一个需要你自己权衡的取舍：混淆换的是 UDP 特征抵抗（对抗运营商 QoS 与协议识别）。
+默认仍保持开启；确认所在网络不做 UDP 协议识别时，可用 `hyobfs=0` 关闭以换取约 2.4 倍吞吐。
+
+### 7.〔实测后推翻〕Hysteria2 的带宽声明不是瓶颈
+
+一度怀疑 `up_mbps/down_mbps` 与 Brutal 拥塞控制限制了吞吐。**扫描后证明无关**（loopback，服务端 `up/down` 均 1000mbps）：
+
+| 客户端声明 | 吞吐 |
+| :--- | ---: |
+| `up100/down1000`（当前默认） | 601 Mbps |
+| `up1000/down1000` | 569 Mbps |
+| `up2000/down3000`（超服务端上限） | 570 Mbps |
+| 省略声明（客户端 BBR） | 600 Mbps |
+| 服务端 `ignoreClientBandwidth: true` + BBR | 605 Mbps |
+
+**任何带宽/拥塞控制组合都稳定在 ~570-605 Mbps**，天花板另有其因（见上一条：混淆）。
+`sbbox speed` 的带宽设置在弱网上仍有意义，但在高质量链路上不要指望靠调它提速。
+
+### 8. 关于本机回环测速的口径（重要）
+
+在服务端本机经公网 IP 回环测速时，**UDP 会额外经过云厂商的发夹（hairpin）路径，吞吐大约减半**，TCP 则不受同等影响：
+
+| 路径 | 裸 UDP 吞吐 |
+| :--- | ---: |
+| 纯 loopback（127.0.0.1） | 1189 Mbps |
+| 经公网 IP 发夹 | 603 Mbps |
+
+同一实例对比：Hysteria2 loopback 593 / 发夹 312 Mbps；TUIC loopback 1490 / 发夹 748 Mbps。
+
+**因此本机自测出的 QUIC 类节点数字系统性偏低，不能据此判断"UDP 节点比 TCP 节点慢"**——
+要比较协议本身，必须固定在同一条路径上比。
+
+### 9. 修复前后节点连通性对照
+
+| 节点 | 修复前 | 修复后 |
+| :--- | :--- | :--- |
+| `hy2`（基础端口 44116） | **完全不通** ❌ | 通，310 Mbps ✅ |
+| `tuic` | 通，695 Mbps | 通，731 Mbps |
+| `naive-h3` | 通，450 Mbps | 通，440 Mbps |
+| `naive-h2` | 通，1422 Mbps | 通，1421 Mbps |
+| 私有地址防护（域名目标） | **被绕过** ❌ | 已阻断 ✅ |
+
+> 吞吐数字均为经公网 IP 回环的测量值，受第 8 条所述发夹路径影响而偏低，仅用于横向对比。
+
+---
+
+## 十一、免责声明
 
 本项目仅供网络技术研究与学习交流使用。使用者须自行遵守所在国家/地区的法律法规，因使用本脚本产生的一切后果由使用者自行承担。

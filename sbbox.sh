@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.0.0"
+SBBOX_VERSION="v2.1.0"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -1026,10 +1026,57 @@ installsb() {
   fi
 
   # ---------- 端口分配 ----------
+
+# 判断某 UDP 端口是否被 nat 表里「端口段」类规则劫持（DNAT/REDIRECT 到别处）。
+# 这类规则常由同机共存的其他代理脚本安装，会把落在段内的本机服务端口一并改写。
+port_hijacked_by_nat() {
+  local port="$1" line rng lo hi tgt
+  [ -z "$port" ] && return 1
+  while read -r line; do
+    rng=$(echo "$line" | grep -oE '\-\-dport [0-9]+:[0-9]+' | awk '{print $2}')
+    [ -z "$rng" ] && continue
+    tgt=$(echo "$line" | grep -oE '(to-destination :|--to-ports )[0-9]+' | grep -oE '[0-9]+$')
+    lo=${rng%%:*}; hi=${rng##*:}
+    if [ "$port" -ge "$lo" ] && [ "$port" -le "$hi" ] && [ "$port" != "$tgt" ]; then
+      echo "$lo-$hi=>$tgt"; return 0
+    fi
+  done < <(iptables -t nat -S PREROUTING 2>/dev/null | grep -E '\-\-dport [0-9]+:[0-9]+')
+  return 1
+}
+
+# 在所有端口段规则之前插一条 RETURN，保证直连本服务基础端口的包不被改写。
+# 幂等：已存在则不重复插入。
+guard_base_port() {
+  local port="$1"
+  [ -z "$port" ] && return 0
+  iptables  -t nat -C PREROUTING -p udp --dport "$port" -j RETURN 2>/dev/null || \
+    iptables  -t nat -I PREROUTING 1 -p udp --dport "$port" -j RETURN 2>/dev/null
+  ip6tables -t nat -C PREROUTING -p udp --dport "$port" -j RETURN 2>/dev/null || \
+    ip6tables -t nat -I PREROUTING 1 -p udp --dport "$port" -j RETURN 2>/dev/null
+}
+
+# 探测本机是否具备全局 IPv6 出口。没有却用 prefer_ipv4，sing-box 仍会发 AAAA
+# 并尝试 v6 连接，每次失败都白白多耗一个 RTT（实测日志里大量
+# "network is unreachable" 与 "exchange6: NXDOMAIN"）。无 v6 时直接用 ipv4_only。
+detect_ip_strategy() {
+  if ip -6 addr show scope global 2>/dev/null | grep -q 'inet6'; then
+    echo "prefer_ipv4"
+  else
+    echo "ipv4_only"
+  fi
+}
+
   assign_port() { # $1=name $2=env_port
     local name=$1 val=${2:-}
     if [ -z "$val" ] && [ ! -e "$SB_HOME/port_$name" ]; then
-      val=$(shuf -i 10000-65535 -n 1)
+      # 随机端口必须避开已被 nat 端口段规则劫持的区间，
+      # 否则装完看似正常、实际直连该端口的流量会被投递到别的实例。
+      local _try=0
+      while :; do
+        val=$(shuf -i 10000-65535 -n 1)
+        port_hijacked_by_nat "$val" >/dev/null 2>&1 || break
+        _try=$((_try+1)); [ $_try -ge 50 ] && break
+      done
       echo "$val" > "$SB_HOME/port_$name"
     elif [ -n "$val" ]; then
       echo "$val" > "$SB_HOME/port_$name"
@@ -1040,6 +1087,8 @@ installsb() {
   [ -n "$hyp" ] && { assign_port hy2 "$port_hy2"; echo "Hysteria2 端口：$port_hy2"; open_port "$port_hy2" udp; }
   [ -n "$nvp" ] && { assign_port nv "$port_nv"; echo "Naiveproxy 端口：$port_nv"; open_port "$port_nv" tcp; open_port "$port_nv" udp; }
 
+
+  local sb_strategy; sb_strategy=$(detect_ip_strategy)
 
   # ---------- 生成 sb.json ----------
   # 日志隐私：sing-box 的 warn/info 级别会把失败连接的目标域名写进磁盘日志，
@@ -1092,7 +1141,7 @@ installsb() {
             { "type": "tls", "tag": "dns-backup", "server": "9.9.9.9" },
             { "type": "https", "tag": "dns-doh", "server": "1.1.1.1" }
         ],
-        "strategy": "prefer_ipv4",
+        "strategy": "'"$sb_strategy"'",
         "disable_cache": false,
         "optimistic": true,
         "timeout": "5s",
@@ -1105,7 +1154,7 @@ installsb() {
             { "type": "tls", "tag": "dns-backup", "server": "9.9.9.9" },
             { "type": "https", "tag": "dns-doh", "server": "1.1.1.1" }
         ],
-        "strategy": "prefer_ipv4",
+        "strategy": "'"$sb_strategy"'",
         "disable_cache": false
     },'
   fi
@@ -1270,7 +1319,11 @@ EOF
   #      打内网服务与 169.254.169.254 云元数据接口（可读出实例凭据）。
   #   2) 邮件与 SMB 端口拒绝 —— 凭据外泄后最常见的滥用是发垃圾邮件，
   #      直接导致 VPS 被投诉停机。确需用代理发信时 blkport=0 关闭。
-  local route_rules='            { "action": "reject", "ip_is_private": true }'
+  # 必须先 resolve 再判私有地址：ip_is_private 只比对目标 IP，
+  # 客户端若把目标写成域名（如 127.0.0.1.nip.io、指向 169.254.169.254 的域名），
+  # 规则不匹配即被放行。resolve action 先把域名解析成 IP，拦截才真正生效。
+  local route_rules="            { \"action\": \"resolve\", \"strategy\": \"$sb_strategy\" },
+            { \"action\": \"reject\", \"ip_is_private\": true }"
   case "$blkport" in
     0|no|off|false) : ;;
     *) route_rules="$route_rules,
@@ -1282,14 +1335,14 @@ EOF
   cat >> "$SB_CONF" <<EOF
     ],
     "outbounds": [
-        { "type": "direct", "tag": "direct", "tcp_fast_open": true, "tcp_multi_path": true, "udp_fragment": true, "bind_address_no_port": true }
+        { "type": "direct", "tag": "direct", "tcp_fast_open": true, "udp_fragment": true, "bind_address_no_port": true }
     ],
     "route": {
         "rules": [
 $route_rules
         ],
         "final": "direct",
-        "default_domain_resolver": "dns-secure"
+        "default_domain_resolver": { "server": "dns-secure", "strategy": "$sb_strategy" }
     },
     "experimental": {
         "cache_file": {
@@ -2241,6 +2294,10 @@ apply_hy_hop() {
       iptables -C INPUT -p udp --dport "$ipt_port" -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p udp --dport "$ipt_port" -j ACCEPT 2>/dev/null
       ip6tables -C INPUT -p udp --dport "$ipt_port" -j ACCEPT 2>/dev/null || ip6tables -I INPUT 1 -p udp --dport "$ipt_port" -j ACCEPT 2>/dev/null
     done
+    # 保护基础端口：若它落在本机其他端口段规则的范围内，会被改写投递到别处。
+    guard_base_port "$port_hy2"
+    local _hij; _hij=$(port_hijacked_by_nat "$port_hy2" 2>/dev/null) && \
+      warn "基础端口 $port_hy2 落在已有端口段规则 ${_hij%%=>*} 内（该段导向 ${_hij##*=>}），已插入 RETURN 例外规则放行"
     netfilter-persistent save >/dev/null 2>&1
     [ -x "$(command -v iptables-save 2>/dev/null)" ] && iptables-save > /etc/iptables/rules.v4 2>/dev/null
     info "Hysteria2 跳跃端口配置完成并已在防火墙放行"
