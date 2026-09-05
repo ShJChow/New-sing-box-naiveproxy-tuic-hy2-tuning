@@ -39,7 +39,8 @@
 - [八、v2rayN 订阅与客户端配置](#八v2rayn-订阅与客户端配置)
 - [九、四条节点实测吞吐](#九四条节点实测吞吐)
 - [十、v2.1.0 实测诊断与修复记录](#十v210-实测诊断与修复记录)
-- [十一、免责声明](#十一免责声明)
+- [十一、v2.2.0 实测诊断与修复记录](#十一v220-实测诊断与修复记录)
+- [十二、免责声明](#十二免责声明)
 
 ---
 
@@ -240,11 +241,14 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 | `sbbox sub` | 显示订阅地址 |
 | `sbbox sub off` | 关闭订阅服务 |
 | `sbbox hop [范围\|off]` | 开启/设置/关闭 Hysteria2 端口跳跃（防运营商 UDP QoS 限速） |
-| `sbbox speed [上行] [下行]` | 极速调优：配置客户端上/下行并激活 Brutal 拥塞控制（如 `100 1000`） |
+| `sbbox speed [上行] [下行]` | 配置客户端上/下行并激活 Brutal 拥塞控制（如 `100 1000`） |
+| `sbbox speed bbr` | 清空带宽限额，客户端与服务端统一回落 BBR（默认推荐，见第十一节第 2 条） |
 | `sbbox port [tu] [hy2] [nv]` | 更换节点端口（无参数自动分配 10000-65535 随机端口并同步配置与订阅） |
 | `sbbox cert status` | 查看证书有效期 |
 
-| `sbbox cert renew` | 续期证书并重启 |
+| `sbbox cert renew` | 强制续期证书 → 落地 → 重启 → 重生成客户端配置 |
+| `sbbox cert sync` | 只做「续期之后」那半段：把已续期的证书落地、重启服务、按新指纹重生成客户端配置。不触发签发，证书未变时直接跳过 |
+| `sbbox cert hook` | 把 `sbbox cert sync` 挂进 acme.sh 的 `reloadcmd`（保留其中原有命令，幂等）。**装完 sbbox 必做一次**，见第十一节第 1 条 |
 | `sbbox up` | 升级 sing-box 内核（默认 stable 官方正式版；失败自动回滚） |
 | `sbbox log [N]` | 查看最近 N 行日志（默认 20） |
 | `sbbox rotate` | 轮换全部协议密码、混淆密码与订阅令牌（端口/UUID/证书不变，客户端需重新导入） |
@@ -487,6 +491,6 @@ FATAL legacy domain strategy options is deprecated in sing-box 1.12.0 and will b
 
 ---
 
-## 十一、免责声明
+## 十二、免责声明
 
 本项目仅供网络技术研究与学习交流使用。使用者须自行遵守所在国家/地区的法律法规，因使用本脚本产生的一切后果由使用者自行承担。

@@ -19,7 +19,7 @@
 #   sbbox status                      # 服务状态 + 流控状态
 #   sbbox res                         # 重启 sing-box
 #   sbbox tune [show|off]             # 流控调优管理
-#   sbbox cert [status|renew]         # 证书管理
+#   sbbox cert [status|renew|sync|hook] # 证书管理（sync=续期后落地+重生成，hook=挂到 acme 自动续期）
 #   sbbox up                          # 更新 sing-box 内核
 #   sbbox log [N]                     # 查看最近 N 行日志
 #   sbbox del                         # 卸载
@@ -136,7 +136,7 @@ showmode() {
   echo "重启 sing-box：sbbox res"
   echo "更新内核：sbbox up"
   echo "流控调优：sbbox tune show | sbbox tune off"
-  echo "证书管理：sbbox cert status | sbbox cert renew"
+  echo "证书管理：sbbox cert status | renew | sync | hook"
   echo "订阅地址：sbbox sub 【关闭】 sbbox sub off"
   echo "端口跳跃：sbbox hop 25000:38000 【关闭】 sbbox hop off"
   echo "极速优化：sbbox speed 100 1000（设置客户端上/下行并激活 Brutal 极速拥塞控制）"
@@ -1479,12 +1479,13 @@ gen_client() {
   if [ -n "$hyp" ]; then
     local hyps=""
     if [ -n "$hyjpt" ]; then
-      hy2_ports=$(iptables -t nat -nL --line 2>/dev/null | grep -w "$port_hy2" | awk '{print $8}' | sed 's/dpts://; s/dpt://' | tr '\n' ',' | sed 's/,$//')
-      if [ -n "$hy2_ports" ]; then
-        local mport_val="${port_hy2},$(echo "$hy2_ports" | sed 's/:/-/g')"
-        echo "Hysteria2 跳跃端口已开启：$mport_val"
-        hyps="&mport=$mport_val"
-      fi
+      # 跳跃段直接取自 hyjpt（就是当初用来下发 iptables 规则的那份状态），
+      # 不再回头解析 iptables 输出：nat 表里匹配 $port_hy2 的不止一条
+      # （基础端口的 RETURN、跳跃段的 DNAT、本机回环的 REDIRECT），
+      # 逐行拼接会拼出 "44116,44116,25000-38000,25000-38000" 这种重复 mport。
+      local mport_val="${port_hy2},$(echo "$hyjpt" | tr ':' '-')"
+      echo "Hysteria2 跳跃端口已开启：$mport_val"
+      hyps="&mport=$mport_val"
     fi
     local hy_bw_q=""
     [ -n "$hyup" ] && hy_bw_q="&upmbps=$hyup"
@@ -2080,8 +2081,16 @@ gen_client_clash() {
   fi
 
   if [ -n "$nvp" ] && [ "$CERT_OK" = 1 ]; then
+    # Clash/Mihomo 侧只出一个 naive 节点，与 nodes.txt 的 4 条链接不同：
+    #   1) Mihomo 的 http 类型是 TCP 上的 HTTPS 代理，不走 QUIC。原先并排生成的
+    #      naive-h3 / naive-h2 两条内容逐字节相同，"h3" 只是名字，url-test 组里
+    #      等于放了两个同一节点，既误导又让测速组失去意义。
+    #   2) http 类型不支持 UDP 中继，udp: true 在 Mihomo 里是空写：真按它分流，
+    #      UDP 流量会静默失败。要在 Mihomo 上走 naive 的 H3，得用 tuic/hy2 节点。
+    # v2rayN / NekoBox / Shadowrocket 走的是 nodes.txt 的 naive+quic:// 等链接，
+    # 那些客户端确实认 QUIC，不受这里影响。
     proxies="$proxies
-  - name: naive-h3-$node_tag
+  - name: naive-$node_tag
     server: $add
     port: $port_nv
     type: http
@@ -2089,21 +2098,9 @@ gen_client_clash() {
     password: $nv_pw
     tls: true
     sni: $sni
-    skip-cert-verify: false
-    udp: true
-  - name: naive-h2-$node_tag
-    server: $add
-    port: $port_nv
-    type: http
-    username: $nv_user
-    password: $nv_pw
-    tls: true
-    sni: $sni
-    skip-cert-verify: false
-    udp: true"
+    skip-cert-verify: false"
     groups="$groups
-      - naive-h3-$node_tag
-      - naive-h2-$node_tag"
+      - naive-$node_tag"
   fi
   cat > "$SB_HOME/clmi.yaml" <<EOF
 port: 7890
@@ -2248,6 +2245,31 @@ sbrestart() {
   fi
 }
 
+# Hysteria2 是否由 sbbox 之外的独立 hysteria 进程提供服务。
+# 本机可以有两种形态：
+#   a) 内置：hy2 作为 sing-box 的 hy2-in 入站，端口写在 sb.json 里；
+#   b) 外置：官方 hysteria 二进制 + hysteria-sbbox.service + /etc/hysteria/sbbox.yaml，
+#      sb.json 里没有 hy2 入站（为了 salamander 混淆与端口跳跃常这么部署）。
+# 形态 b 下若再让 installsb 重写 sb.json，会补出一个同端口的 hy2-in 入站，
+# 与已占用该端口的 hysteria 进程抢绑定，导致 sing-box 起不来。所以凡是要
+# 重写配置的路径都先问一句。
+hy2_external() {
+  [ -f "$SB_CONF" ] || return 1
+  grep -q '"tag": "hy2-in"' "$SB_CONF" 2>/dev/null && return 1
+  systemctl is-active --quiet hysteria-sbbox 2>/dev/null && return 0
+  return 1
+}
+
+# 重启外置 hysteria（若存在）。证书轮换后必须重启才会加载新证书。
+hy2_external_restart() {
+  hy2_external || return 0
+  if systemctl restart hysteria-sbbox >/dev/null 2>&1; then
+    info "hysteria-sbbox 已重启（外置 Hysteria2）"
+  else
+    error "hysteria-sbbox 重启失败"
+  fi
+}
+
 cleandel() {
   # 交互式确认，避免误删（非 TTY 自动跳过确认直接卸载）
   if [ -t 0 ]; then
@@ -2357,20 +2379,50 @@ cmd_speed() {
   if [ -z "$up" ] && [ -z "$down" ]; then
     echo "当前 Hysteria2 带宽配置："
     if [ -s "$SB_HOME/hybw" ]; then
-      awk '{print "  客户端上行: "$1" Mbps / 客户端下行: "$2" Mbps"}' "$SB_HOME/hybw"
+      awk '{print "  客户端上行: "$1" Mbps / 客户端下行: "$2" Mbps（Brutal CC）"}' "$SB_HOME/hybw"
     else
-      echo "  未配置 Brutal CC 限额（默认使用 BBR 拥塞控制）"
+      echo "  未配置 Brutal CC 限额（使用 BBR 拥塞控制）"
     fi
-    echo "用法: sbbox speed <上行Mbps> <下行Mbps> (例如: sbbox speed 100 1000)"
+    echo "用法: sbbox speed <上行Mbps> <下行Mbps>   例如: sbbox speed 100 1000"
+    echo "      sbbox speed bbr                     清空限额，改用 BBR"
     return 0
   fi
+
+  # Brutal 不看丢包反馈，按填写的数字硬发。数字填得比客户端真实链路大，
+  # 多出来的部分全是重传，实测反而慢于 BBR；而链接里的带宽是全局下发的，
+  # 一份订阅给到不同链路的客户端时必然有人被填错。所以提供退回 BBR 的开关。
+  case "$up" in
+    bbr|off|none|auto|0)
+      : > "$SB_HOME/hybw"
+      hyup=""; hydown=""
+      if hy2_external; then
+        warn "检测到外置 Hysteria2（hysteria-sbbox.service），已跳过 sb.json 重写"
+        warn "服务端侧请同时确认 /etc/hysteria/sbbox.yaml 内 ignoreClientBandwidth: true"
+        hy2_external_restart
+      else
+        installsb
+        sbrestart
+      fi
+      gen_client
+      info "Hysteria2 拥塞控制已切回 BBR（客户端链接不再带 upmbps/downmbps）"
+      return 0
+      ;;
+  esac
+
+  [ -n "$down" ] || { error "需同时给出上行与下行，例如: sbbox speed 100 1000"; return 1; }
   hyup="$up"
   hydown="$down"
   echo "$hyup $hydown" > "$SB_HOME/hybw"
-  installsb
-  sbrestart
+  if hy2_external; then
+    warn "检测到外置 Hysteria2（hysteria-sbbox.service），已跳过 sb.json 重写"
+    warn "服务端带宽请在 /etc/hysteria/sbbox.yaml 内调整"
+    hy2_external_restart
+  else
+    installsb
+    sbrestart
+  fi
   gen_client
-  info "Hysteria2 带宽已优化配置：客户端上行 ${hyup}Mbps / 客户端下行 ${hydown}Mbps"
+  info "Hysteria2 带宽已配置：客户端上行 ${hyup}Mbps / 客户端下行 ${hydown}Mbps（Brutal CC）"
 }
 
 # 更换端口：sbbox port [tu] [hy2] [nv] [sub] (未指定参数则为各协议分配 10000-65535 随机端口并同步)
@@ -2823,13 +2875,84 @@ cert_mgmt() {
         if [ "$CERT_OK" = 1 ]; then
           info "证书续期完成"
           sbrestart
+          hy2_external_restart
           gen_client
         fi
       else
         warn "未找到证书域名（安装时未设置 ym）。请手动执行 acme.sh 续期"
       fi
       ;;
-    *) echo "用法: sbbox cert [status|renew]" ;;
+    sync)
+      # 只做「续期之后」那一半：把已经躺在 acme.sh 目录里的新证书落到 sbbox，
+      # 重启吃证书的进程，再按新指纹重生成客户端配置。不触发签发，因此可以
+      # 安全地挂在 acme.sh 的 reloadcmd 上（renew 分支会 --force 再签一次，
+      # 挂上去会变成每次续期签两遍，不能用）。
+      #
+      # 存在的理由：acme.sh --cron 是每天自动跑的，它只认自己 reloadcmd 里
+      # 写的那几个服务。sbbox 的证书是 $CERT_DIR 下的独立副本，且节点链接里
+      # 的 pinSHA256 / pcs= 锁的是叶证书指纹——证书一换，不重新落地就用旧证
+      # 书直到过期，落地了不重生成链接则所有开了固定证书校验的客户端全连不上。
+      if [ -z "$ym" ]; then
+        warn "未找到证书域名（安装时未设置 ym），跳过同步"
+        return 0
+      fi
+      local _before=""
+      [ -s "$CERT_DIR/fullchain.cer" ] && _before=$(_cert_sha256)
+      load_state
+      install_cert || { error "证书同步失败：未找到 $ym 的可用证书"; return 1; }
+      get_cert_paths
+      [ "$CERT_OK" = 1 ] || { error "证书同步失败：$CERT_DIR 下证书不可用"; return 1; }
+      local _after; _after=$(_cert_sha256)
+      if [ -n "$_before" ] && [ "$_before" = "$_after" ]; then
+        info "证书未变化（指纹 ${_after:0:16}…），无需重启"
+        return 0
+      fi
+      info "证书已更新：${_before:0:16}… → ${_after:0:16}…"
+      sbrestart
+      hy2_external_restart
+      gen_client
+      info "客户端配置已按新指纹重生成（nodes.txt / clmi.yaml / sbox_client.json）"
+      warn "已开启固定证书校验的客户端需要重新导入订阅，旧的 pinSHA256 已失效"
+      ;;
+    hook)
+      # 把 sbbox cert sync 追加进 acme.sh 的 reloadcmd，保留其中原有的命令。
+      # 幂等：已经挂过就不重复追加。
+      local _acme="$HOME/.acme.sh/acme.sh"
+      [ -x "$_acme" ] || { error "未找到 acme.sh，无法安装续期钩子"; return 1; }
+      [ -n "$ym" ] || { error "未找到证书域名，无法安装续期钩子"; return 1; }
+      local _self="${SBBOX_BIN:-/usr/local/bin/sbbox}"
+      local _conf="" _d
+      for _d in "$HOME/.acme.sh/${ym}_ecc" "$HOME/.acme.sh/${ym}"; do
+        [ -f "$_d/${ym}.conf" ] && _conf="$_d/${ym}.conf" && break
+      done
+      [ -n "$_conf" ] || { error "未找到 acme.sh 的域名配置：$ym"; return 1; }
+      local _cur=""
+      _cur=$(. "$_conf" 2>/dev/null; printf '%s' "${Le_ReloadCmd:-}")
+      case "$_cur" in
+        *__ACME_BASE64__START_*)
+          _cur=$(printf '%s' "$_cur" | sed -e 's/^__ACME_BASE64__START_//' -e 's/__ACME_BASE64__END_$//' | base64 -d 2>/dev/null)
+          ;;
+      esac
+      case "$_cur" in
+        *"$_self cert sync"*)
+          info "续期钩子已存在，无需重复安装"
+          echo "  当前 reloadcmd: $_cur"
+          return 0
+          ;;
+      esac
+      local _new="$_self cert sync"
+      [ -n "$_cur" ] && _new="$_cur; $_self cert sync"
+      if "$_acme" --install-cert -d "$ym" --ecc --reloadcmd "$_new" >/dev/null 2>&1 || \
+         "$_acme" --install-cert -d "$ym" --reloadcmd "$_new" >/dev/null 2>&1; then
+        info "续期钩子已安装"
+        echo "  reloadcmd: $_new"
+      else
+        error "续期钩子安装失败，请手动执行："
+        echo "  $_acme --install-cert -d $ym --ecc --reloadcmd '$_new'"
+        return 1
+      fi
+      ;;
+    *) echo "用法: sbbox cert [status|renew|sync|hook]" ;;
   esac
 }
 
