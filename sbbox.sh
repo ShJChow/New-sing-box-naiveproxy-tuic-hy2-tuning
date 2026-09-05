@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.2.0"
+SBBOX_VERSION="v2.2.1"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -2942,8 +2942,25 @@ cert_mgmt() {
       esac
       local _new="$_self cert sync"
       [ -n "$_cur" ] && _new="$_cur; $_self cert sync"
-      if "$_acme" --install-cert -d "$ym" --ecc --reloadcmd "$_new" >/dev/null 2>&1 || \
-         "$_acme" --install-cert -d "$ym" --reloadcmd "$_new" >/dev/null 2>&1; then
+
+      # acme.sh 的 --install-cert 会**重写整组部署配置**：只传 --reloadcmd 时，
+      # Le_RealKeyPath / Le_RealFullChainPath / Le_RealCertPath 会被一并清空。
+      # 那几个路径是别的组件（如同机的 xray-xhttp 把证书装到 /etc/ssl/private/）
+      # 赖以在续期日拿到新证书的唯一机制——清掉之后 acme 仍会按时续期、reloadcmd
+      # 仍会照常重启服务，但服务重新加载的还是那份没被更新过的旧文件，直到旧证书
+      # 到期当天所有读它的服务一起失效。所以这里必须把原值原样带回去。
+      local _kf _fc _cf _extra=""
+      _kf=$(. "$_conf" 2>/dev/null; printf '%s' "${Le_RealKeyPath:-}")
+      _fc=$(. "$_conf" 2>/dev/null; printf '%s' "${Le_RealFullChainPath:-}")
+      _cf=$(. "$_conf" 2>/dev/null; printf '%s' "${Le_RealCertPath:-}")
+      [ -n "$_kf" ] && _extra="$_extra --key-file $_kf"
+      [ -n "$_fc" ] && _extra="$_extra --fullchain-file $_fc"
+      [ -n "$_cf" ] && _extra="$_extra --cert-file $_cf"
+      [ -n "$_extra" ] && echo "  保留原有证书部署路径:$_extra"
+
+      # shellcheck disable=SC2086  # _extra 需要按空格拆成多个参数
+      if "$_acme" --install-cert -d "$ym" --ecc $_extra --reloadcmd "$_new" >/dev/null 2>&1 || \
+         "$_acme" --install-cert -d "$ym" $_extra --reloadcmd "$_new" >/dev/null 2>&1; then
         info "续期钩子已安装"
         echo "  reloadcmd: $_new"
       else
