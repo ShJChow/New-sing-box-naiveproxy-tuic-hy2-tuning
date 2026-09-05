@@ -491,6 +491,273 @@ FATAL legacy domain strategy options is deprecated in sing-box 1.12.0 and will b
 
 ---
 
+## 十一、v2.2.0 实测诊断与修复记录
+
+同一台 **Oracle ARM (4 核 24G) / Ubuntu 26.04 / kernel 7.0** 上的第二轮诊断，主题是**兼容性与连接速度**。
+延续第十节的口径：每条都给实测数据，**包括两条"查了但根本不存在的问题"和一条"改了但并不提速"的项目**。
+
+体检基线（改动前）：sing-box 1.14.0 连续运行 1 天 3 小时、`NRestarts=0`、CPU 0.1%、句柄 17/1048576，
+`sing-box check` 与 `sbbox doctor` 全绿，网卡收发零丢包。**服务本身没有故障**，本节修的是三个会在未来某天才发作的问题。
+
+### 1.〔严重·定时炸弹〕acme.sh 自动续期不会通知 sbbox，且会作废所有客户端的证书指纹
+
+`acme.sh --cron` 每天跑，但它只执行自己 `reloadcmd` 里登记的命令。本机原值是：
+
+```
+nginx -t && systemctl restart nginx && { systemctl restart xray || true; }
+```
+
+只管 nginx 和 xray。而 sbbox 的证书是 `$CERT_DIR`（`/root/sbbox/cert/`）下的**独立副本**，
+不是 `/etc/ssl/private/` 那份的软链。于是续期当天会连锁发生两件事：
+
+| # | 后果 | 触发时刻 |
+| :--- | :--- | :--- |
+| 1 | sing-box 与 hysteria 仍加载旧证书，无人重启 | 续期日 |
+| 2 | 旧证书到期，**tuic / naive / hy2 三协议同时全断** | 旧证书 `notAfter` |
+| 3 | 就算手工补上证书，`nodes.txt` / `clmi.yaml` 里的 `pinSHA256` 与 `pcs=` 锁的是叶证书指纹，**换证即失配，所有开启固定证书校验的客户端一起连不上** | 补证书那一刻 |
+
+第 3 条最隐蔽：它不是"忘了重启"，而是**修得越及时、客户端断得越早**。
+
+脚本里原本就有 `sbbox cert renew` 走完了正确流程（`install_cert → sbrestart → gen_client`，
+`gen_client` 会用 `_cert_sha256()` 重新计算指纹），但它只能手工触发，而真正会自动跑的是 acme 那条路。
+
+**修复**：新增 `sbbox cert sync` 与 `sbbox cert hook` 两个子命令。
+
+- `cert sync` 只做续期之后的半段——落地新证书、重启 sing-box 与外置 hysteria、按新指纹重生成三份客户端配置。
+  **它不触发签发**，所以可以安全地挂在 `reloadcmd` 上（`cert renew` 会 `--force` 再签一次，挂上去等于每次续期签两遍，不能用）。
+  比对叶证书指纹，未变化时直接跳过重启：
+
+  ```
+  $ sbbox cert sync
+  [+] 证书未变化（指纹 24c2529f44c805ae…），无需重启
+  ```
+
+- `cert hook` 把 `cert sync` **追加**进 `reloadcmd`，保留其中原有命令，幂等：
+
+  ```
+  $ sbbox cert hook
+  [+] 续期钩子已安装
+    reloadcmd: nginx -t && systemctl restart nginx && { systemctl restart xray || true; }; /usr/local/bin/sbbox cert sync
+  $ sbbox cert hook
+  [+] 续期钩子已存在，无需重复安装
+  ```
+
+**验证命令**：
+
+```bash
+sbbox cert hook                      # 幂等，第二次应报"已存在"
+sbbox cert sync                      # 证书未变时应报"无需重启"且不重启任何服务
+# 确认钩子真的落进了 acme 的域名配置（值是 base64 包装的）
+ym=$(cat /root/sbbox/ym)
+grep Le_ReloadCmd ~/.acme.sh/${ym}_ecc/${ym}.conf \
+  | sed -e 's/.*START_//' -e 's/__ACME_BASE64__END_.*//' | base64 -d; echo
+```
+
+> 顺带：`cert sync` 复用 `install_cert`，会把证书链从 acme 给的 4 张裁到 3 张
+> （4841 → 3243 字节，每次 TLS 握手少传 1598 字节）。裁掉的是客户端本地已有的根证书。
+
+### 2.〔改了，但在好链路上并不提速〕Hysteria2 的 Brutal 参数改回 BBR
+
+订阅链接里原本写死 `upmbps=100&downmbps=1000`，服务端 `ignoreClientBandwidth: false`。
+
+**先说清楚它不是提速改动。** 第十节第 7 条已经实测过：Brutal 与 BBR 在本机各种组合下
+稳定在 ~570–605 Mbps，**任何带宽/拥塞控制组合都测不出差别**，天花板在 salamander 混淆（第十节第 6 条）。
+本次也没有复测出新的差异，不要指望改完变快。
+
+改它的真正理由是**一份订阅要发给链路各异的客户端**：Brutal 不看丢包反馈，按链接里写死的数字硬发。
+`upmbps=100` 对一条真实上行 20 Mbps 的客户端，多出来的 80 Mbps 全是重传；
+`downmbps=1000` 则让服务端不管对端什么链路都按 1 Gbps 下发。
+**填错方向只有一个：比真实带宽大**——而一份全局订阅必然对一部分人填错。
+这个代价在服务端本机是测不出来的（零丢包、本地回环），只会出现在客户端的真实链路上。
+
+BBR 没有这个失配面：它自己探测。代价是在**高丢包跨境链路**上，Brutal 填对了确实比 BBR 猛
+（这正是 Brutal 存在的意义），所以改动只换默认值，不删能力。
+
+**修复**：
+
+- 服务端 `/etc/hysteria/sbbox.yaml` 改 `ignoreClientBandwidth: true`（`bandwidth:` 段保留但不再参与拥塞控制，便于回滚）；
+- `sbbox speed` 新增 `bbr` / `off` / `none` / `auto` / `0` 参数，清空 `hybw` 并重生成不带 `upmbps/downmbps` 的链接。
+
+```bash
+sbbox speed bbr        # 切回 BBR（本次采用）
+sbbox speed 100 1000   # 明确知道自己链路带宽时，切回 Brutal
+sbbox speed            # 查看当前档位
+```
+
+**验证命令**：
+
+```bash
+grep ignoreClientBandwidth /etc/hysteria/sbbox.yaml   # 应为 true
+grep -c 'upmbps\|downmbps' /root/sbbox/nodes.txt      # 应为 0
+grep -n 'up:\|down:' /root/sbbox/clmi.yaml            # 应无输出
+journalctl -u hysteria-sbbox --since '10 min ago' | grep 'client connected'
+```
+
+改完后 hy2 在公网侧握手正常（日志可见真实客户端 `client connected`）。
+
+> **注意 loopback 测不了 hy2。** 本机经 `127.0.0.1:44116` 起客户端会 15 s 超时，
+> 而服务端日志里**连一条记录都没有**（包根本没到）——这是回环路径的问题，不是服务故障。
+> 判断 hy2 死活请看 `journalctl -u hysteria-sbbox | grep 'client connected'`，
+> 不要用本机自测的结果下结论。参见第十节第 8 条关于回环口径的说明。
+
+### 3.〔兼容性〕Clash/Mihomo 配置里两个 naive 节点是同一个节点
+
+`clmi.yaml` 原本并排生成 `naive-h3-*` 与 `naive-h2-*` 两条，**逐字节完全相同**：同端口、同 `type: http`。
+
+```yaml
+  - name: naive-h3-instance-xxx     # 和下面这条一模一样
+    port: 10489
+    type: http
+    udp: true
+  - name: naive-h2-instance-xxx
+    port: 10489
+    type: http
+    udp: true
+```
+
+两个问题：
+
+1. **Mihomo 的 `http` 类型是 TCP 上的 HTTPS 代理，不走 QUIC。** "h3" 只是个名字，
+   `url-test` 组里等于放了两个同一节点，测速组因此失去意义。
+2. **`http` 类型不支持 UDP 中继，`udp: true` 在 Mihomo 里是空写。** 真按它分流，UDP 流量会静默失败。
+   要在 Mihomo 上走 QUIC，得用 tuic 或 hy2 节点。
+
+**修复**：Clash 侧只生成一条 `naive-*`（TCP/H2），并去掉误导性的 `udp: true`。
+
+这**不影响 `nodes.txt`**：v2rayN / NekoBox / Shadowrocket 走的是 `naive+quic://`、`http3://` 等链接，
+那些客户端确实认 QUIC，六条链接原样保留。
+
+**验证命令**：
+
+```bash
+grep -c 'name: naive' /root/sbbox/clmi.yaml    # 应为 1（原为 2）
+grep -n 'udp: true' /root/sbbox/clmi.yaml      # 应无输出
+```
+
+### 4.〔顺带修复〕`mport` 重复：跳跃端口链接被拼成 `44116,44116,25000-38000,25000-38000`
+
+`gen_client` 原先靠解析 `iptables -t nat -nL` 的输出来还原跳跃段：
+
+```bash
+hy2_ports=$(iptables -t nat -nL --line | grep -w "$port_hy2" | awk '{print $8}' | ...)
+```
+
+自 v2.1.0 修掉「基础端口被跳跃段劫持」（第十节第 2 条）后，nat 表里匹配基础端口的规则**变成了三条**——
+基础端口的 `RETURN`、跳跃段的 `DNAT`、本机回环的 `REDIRECT`——逐行拼接就拼出了重复值：
+
+```
+mport=44116,44116,25000-38000,25000-38000     # 错
+mport=44116,25000-38000                       # 对
+```
+
+这个 bug 自 v2.1.0 起就存在，只是 `nodes.txt` 一直没重新生成，直到本次改动触发 `gen_client` 才显形。
+
+**修复**：跳跃段直接取自 `hyjpt`（当初用来下发 iptables 规则的那份状态，`gen_client_clash` 一直是这么做的），
+不再回头解析 iptables 输出。
+
+**验证命令**：
+
+```bash
+grep -o 'mport=[^&]*' /root/sbbox/nodes.txt   # 应为 mport=44116,25000-38000
+grep -n 'ports:' /root/sbbox/clmi.yaml        # 应为 ports: 44116,25000-38000
+```
+
+### 5.〔已知交互〕外置 Hysteria2 与 `installsb` 的端口冲突（本次加了保护）
+
+本机 hy2 是**外置形态**：官方 `hysteria` 二进制 + `hysteria-sbbox.service` + `/etc/hysteria/sbbox.yaml`，
+`sb.json` 里**没有** hy2 入站（这样才能用 salamander 混淆与端口跳跃）。
+但 `proto_hyp` 状态文件仍在，`load_state` 因此设 `hyp=yes`。
+
+于是任何会调用 `installsb` 重写 `sb.json` 的路径（原先的 `sbbox speed`），
+都会给 sing-box 补出一个 `hy2-in` 入站、监听同一个 44116，
+**与已占用该端口的 hysteria 进程抢绑定，导致 sing-box 起不来**。
+
+**修复**：新增 `hy2_external()` 判定（`sb.json` 无 `hy2-in` 且 `hysteria-sbbox` 在运行），
+命中时 `cmd_speed` 跳过 `installsb`，只重启外置 hysteria 并重生成客户端配置：
+
+```
+[!] 检测到外置 Hysteria2（hysteria-sbbox.service），已跳过 sb.json 重写
+[!] 服务端侧请同时确认 /etc/hysteria/sbbox.yaml 内 ignoreClientBandwidth: true
+```
+
+`cert renew` / `cert sync` 也一并调用 `hy2_external_restart()`，否则换证后外置 hysteria 不会加载新证书。
+
+> **周更 cron 是安全的**：`sbbox up`（`cmd_update`）只升级内核二进制 + 重启，不重写 `sb.json`，不受此影响。
+
+### 6.〔查了但不存在〕UDP 接收缓冲丢包
+
+一度怀疑 QUIC 类节点受 UDP 收包丢弃拖累。**读错字段导致的假警报**：
+
+`/proc/net/snmp` 的 `Udp:` 行字段序是 `InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors …`，
+用 `awk '{print $5}'` 取到的是 **OutDatagrams（出站报文数）**，不是 `RcvbufErrors`。
+按它算出的"50 次/秒丢包"其实是正常的出站流量计数。
+
+正确口径下的三项独立验证：
+
+| 方法 | 结果 |
+| :--- | :--- |
+| `nstat` 30 秒增量 | `UdpRcvbufErrors` 增量 **0** |
+| `bpftrace` 挂 `udp_fail_queue_rcv_skb` 探针 15 分钟 | **零命中** |
+| `ss -uanpm` 全部 UDP socket | 队列 `r0`、丢弃 `d0`，sing-box 两个入站 socket 的 `rb` 均为 16 MB |
+
+累计的 `UdpRcvbufErrors=218465` 摊到 3 天 20 小时是 0.66 次/秒，且当前不再增长。**无需处理。**
+
+```bash
+# 正确读法：不要用 awk 数字段
+nstat -az | grep UdpRcvbufErrors
+```
+
+### 7.〔查了但改不了〕virtio 网卡不支持 UDP GSO
+
+`ethtool -k` 显示 `tx-udp-segmentation: off [fixed]`——`[fixed]` 表示硬件/驱动不支持，无法开启。
+QUIC 因此只能逐包 `sendmsg`，高吞吐时 CPU 开销偏高。网卡 ring buffer 也已是硬件上限（RX/TX 各 256）。
+
+这是虚拟化平台的固有限制，**记录备查，无可调项**。实测未构成瓶颈（见下表）。
+
+### 8. 改动前后端到端对照
+
+本机 SOCKS 客户端 → sbbox 入站 → 公网，**纯 `127.0.0.1` 路径**（不经公网 IP 发夹，
+避开第十节第 8 条所述的吞吐减半），下载源 `speed.cloudflare.com/__down?bytes=50000000`：
+
+| 节点 | 改动前 | 改动后 |
+| :--- | ---: | ---: |
+| *直连基线* | *~270 MB/s* | — |
+| **Naiveproxy H2** | 185 MB/s | 179 MB/s |
+| **Tuic** | 160 MB/s | 145 MB/s |
+| **Hysteria2** | 见下 | 见下 |
+
+- 三项改动**都不是吞吐改动**，差异在采样噪声范围内（同一节点单轮极差可达 ±25%）。
+- **hy2 不在表内**：本机回环打不通它（见第 2 条注意事项），公网侧以服务端日志确认正常。
+- 两条 QUIC/TCP 节点都在 1.1 Gbps 以上，**服务端协议栈不是瓶颈**，
+  真实体感取决于客户端到 VPS 的跨境链路。
+
+出口链路质量（供对照）：`1.1.1.1` RTT 0.9 ms、`www.google.com` 0.35 ms、`github.com` 15.3 ms。
+
+### 9. 改动后连通性与幂等性核对
+
+| 检查项 | 结果 |
+| :--- | :--- |
+| `sing-box check -c sb.json` | 通过 |
+| `sbbox doctor` | tuic / hy2 / naive / 订阅 四项全绿 |
+| tuic、naive 端到端（本机 SOCKS） | HTTP 200，UDP/DNS 通 |
+| hy2 公网客户端 | 日志 `client connected` ×2 |
+| `sb.json` 是否被误改写 | **未改动**（外置 hy2 保护生效） |
+| `sbbox cert hook` 重复执行 | 报"已存在"，不重复追加 |
+| `sbbox cert sync` 证书未变时 | 报"无需重启"，不重启服务 |
+| 服务端下发证书链 | 3 张（叶 → YE2 → Root YE） |
+
+一句话回归验证：
+
+```bash
+sbbox doctor && \
+grep -c 'upmbps' /root/sbbox/nodes.txt && \
+grep -c 'name: naive' /root/sbbox/clmi.yaml && \
+grep -o 'mport=[^&]*' /root/sbbox/nodes.txt
+# 期望：全绿 / 0 / 1 / mport=44116,25000-38000
+```
+
+---
+
 ## 十二、免责声明
 
 本项目仅供网络技术研究与学习交流使用。使用者须自行遵守所在国家/地区的法律法规，因使用本脚本产生的一切后果由使用者自行承担。
