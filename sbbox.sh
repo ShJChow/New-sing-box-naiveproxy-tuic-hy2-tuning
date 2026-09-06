@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.2.1"
+SBBOX_VERSION="v2.3.1"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -2376,6 +2376,59 @@ TCP_BRUTAL_RULES_FILE="/etc/tcp-brutal.rules"
 TCP_BRUTAL_SERVICE_FILE="/etc/systemd/system/tcp-brutal-rules.service"
 TCP_BRUTAL_RESTORE_BIN="/usr/local/bin/tcp-brutal-restore"
 
+get_machine_max_speed_mbps() {
+  local speed=0
+  local dev
+  dev=$(default_nic)
+
+  # 1. 尝试从 Oracle Cloud (OCI) 元数据获取网络带宽
+  local oci_gbps
+  oci_gbps=$(curl -s -m 2 -H "Authorization: Bearer Oracle" -L http://169.254.169.254/opc/v2/instance/ 2>/dev/null | grep -o '"networkingBandwidthInGbps"[[:space:]]*:[[:space:]]*[0-9.]*' | head -n 1 | awk -F: '{print $2}' | tr -d ' ')
+  if [ -n "$oci_gbps" ] && awk "BEGIN {exit !($oci_gbps > 0)}" 2>/dev/null; then
+    speed=$(awk "BEGIN {printf \"%d\", $oci_gbps * 1000}")
+  fi
+
+  # 2. 尝试从网卡 sysfs speed 获取物理/虚拟链路协商速率
+  if [ "$speed" -le 0 ] && [ -n "$dev" ] && [ -r "/sys/class/net/$dev/speed" ]; then
+    local s
+    s=$(cat "/sys/class/net/$dev/speed" 2>/dev/null || echo 0)
+    case "$s" in ''|*[!0-9]*) s=0 ;; esac
+    if [ "$s" -gt 0 ]; then
+      speed="$s"
+    fi
+  fi
+
+  # 3. 尝试通过 ethtool 获取默认网卡速率
+  if [ "$speed" -le 0 ] && [ -n "$dev" ] && command -v ethtool >/dev/null 2>&1; then
+    local eth_s
+    eth_s=$(ethtool "$dev" 2>/dev/null | grep -i "Speed:" | grep -o "[0-9]\+" | head -n 1)
+    case "$eth_s" in ''|*[!0-9]*) eth_s=0 ;; esac
+    if [ "$eth_s" -gt 0 ]; then
+      speed="$eth_s"
+    fi
+  fi
+
+  # 4. 兜底基准速率（1000 Mbps，千兆 VPS 标准）
+  if [ "$speed" -le 0 ]; then
+    speed=1000
+  fi
+
+  echo "$speed"
+}
+
+get_default_brutal_speed_mbps() {
+  if [ -n "${BRUTAL_DEFAULT_MBPS:-}" ] && [ "${BRUTAL_DEFAULT_MBPS}" != "auto" ]; then
+    echo "$BRUTAL_DEFAULT_MBPS"
+    return 0
+  fi
+
+  local max_spd
+  max_spd=$(get_machine_max_speed_mbps)
+  local target=$(( max_spd * 3 / 4 ))
+  [ "$target" -gt 0 ] || target=750
+  echo "$target"
+}
+
 ensure_tcp_brutal() {
   local avail
   avail=$(sysctl_get net.ipv4.tcp_available_congestion_control)
@@ -2416,7 +2469,10 @@ ensure_tcp_brutal() {
 }
 
 init_tcp_brutal_service() {
-  local default_mbps="${1:-500}"
+  local default_mbps="${1:-}"
+  if [ -z "$default_mbps" ] || [ "$default_mbps" = "auto" ]; then
+    default_mbps="$(get_default_brutal_speed_mbps)"
+  fi
 
   if [ ! -f "$TCP_BRUTAL_RULES_FILE" ]; then
     cat << EOF > "$TCP_BRUTAL_RULES_FILE"
@@ -2480,8 +2536,11 @@ EOF
 }
 
 set_tcp_brutal_speed() {
-  local mbps="$1"
-  [ -n "$mbps" ] || { echo "用法: sbbox brutal speed <速率Mbps>"; return 1; }
+  local mbps="${1:-}"
+  if [ -z "$mbps" ] || [ "$mbps" = "auto" ]; then
+    mbps="$(get_default_brutal_speed_mbps)"
+    info "未指定速率，已自动设置为本机最大速度的 3/4: ${mbps} Mbps"
+  fi
   init_tcp_brutal_service "$mbps"
 
   sed -i -E "s/^(0\.0\.0\.0\/0)[[:space:]]+[0-9]+/\1 ${mbps}/" "$TCP_BRUTAL_RULES_FILE" 2>/dev/null || true
@@ -2496,8 +2555,11 @@ set_tcp_brutal_speed() {
 
 add_tcp_brutal_rule() {
   local ip="${1:-}"
-  local mbps="${2:-500}"
+  local mbps="${2:-}"
   [ -n "$ip" ] || { echo "用法: sbbox brutal add <目标IP/网段> [速率Mbps]"; return 1; }
+  if [ -z "$mbps" ] || [ "$mbps" = "auto" ]; then
+    mbps="$(get_default_brutal_speed_mbps)"
+  fi
   case "$ip" in
     */*) ;;
     *:*) ip="${ip}/128" ;;
@@ -2545,20 +2607,45 @@ cmd_speed() {
       fi
     fi
     if command -v brutalctl >/dev/null 2>&1 && lsmod | grep -qw brutal; then
-      local tcp_rate
+      local tcp_rate def_spd
       tcp_rate=$(sed -n -E 's/^0\.0\.0\.0\/0[[:space:]]+([0-9]+).*/\1/p' /etc/tcp-brutal.rules 2>/dev/null | head -1)
-      echo "  TCP Brutal 速率: 全局下发 ${tcp_rate:-500} Mbps（已应用至 Naive-h2 及全部 TCP 节点）"
+      def_spd=$(get_default_brutal_speed_mbps)
+      echo "  TCP Brutal 速率: 全局下发 ${tcp_rate:-$def_spd} Mbps（已应用至 Naive-h2 及全部 TCP 节点）"
     else
       echo "  TCP Brutal 速率: 未启用（使用系统默认 BBR）"
     fi
     echo ""
     echo "用法: sbbox speed <上行Mbps> <下行Mbps>   例如: sbbox speed 100 1000"
+    echo "      sbbox speed auto                    自适应设为本机最大速率的 3/4"
     echo "      sbbox speed bbr                     清空限额，统一切回 BBR"
     return 0
   fi
 
   case "$up" in
-    bbr|off|none|auto|0)
+    auto)
+      local def_spd up_spd
+      def_spd=$(get_default_brutal_speed_mbps)
+      up_spd=$(( def_spd / 4 ))
+      [ "$up_spd" -gt 0 ] || up_spd=50
+      if [ "$hyp" = yes ]; then
+        hyup="$up_spd"
+        hydown="$def_spd"
+        echo "$hyup $hydown" > "$SB_HOME/hybw"
+        if hy2_external; then
+          warn "检测到外置 Hysteria2（hysteria-sbbox.service），已跳过 sb.json 重写"
+          warn "服务端带宽请在 /etc/hysteria/sbbox.yaml 内调整"
+          hy2_external_restart
+        else
+          installsb
+          sbrestart
+        fi
+        gen_client
+        info "Hysteria2 带宽已自动设为本机规格 3/4：客户端上行 ${hyup}Mbps / 客户端下行 ${hydown}Mbps（Brutal CC）"
+      fi
+      cmd_brutal speed "$def_spd"
+      return 0
+      ;;
+    bbr|off|none|0)
       if [ "$hyp" = yes ]; then
         : > "$SB_HOME/hybw"
         hyup=""; hydown=""
@@ -2611,13 +2698,18 @@ cmd_brutal() {
   shift || true
   case "$action" in
     show|status|list|ls)
+      local max_spd default_spd
+      max_spd=$(get_machine_max_speed_mbps)
+      default_spd=$(get_default_brutal_speed_mbps)
       echo ""
       echo -e "${CYAN}=== TCP Brutal 状态 ===${NC}"
       if lsmod | grep -qw brutal; then
-        echo -e "  内核模块:   ${GREEN}已加载 (v$(cat /sys/module/brutal/version 2>/dev/null || echo '2.x'))${NC}"
+        echo -e "  内核模块:       ${GREEN}已加载 (v$(cat /sys/module/brutal/version 2>/dev/null || echo '2.x'))${NC}"
       else
-        echo -e "  内核模块:   ${RED}未加载${NC}"
+        echo -e "  内核模块:       ${RED}未加载${NC}"
       fi
+      echo -e "  本机最大带宽:   ${GREEN}${max_spd} Mbps${NC}"
+      echo -e "  默认下发速率:   ${GREEN}${default_spd} Mbps (本机最大带宽 3/4)${NC}"
       echo ""
       echo -e "${CYAN}=== 当前 Brutal 规则与实时连接 ===${NC}"
       if command -v brutalctl >/dev/null 2>&1; then
@@ -2628,10 +2720,10 @@ cmd_brutal() {
       echo ""
       ;;
     on)
-      local mbps="${1:-500}"
+      local mbps="${1:-auto}"
       ensure_tcp_brutal
       set_tcp_brutal_speed "$mbps"
-      info "TCP Brutal 已成功启用（全局默认下发速率: ${mbps} Mbps）"
+      info "TCP Brutal 已成功启用"
       ;;
     off)
       if command -v brutalctl >/dev/null 2>&1; then
@@ -2643,13 +2735,13 @@ cmd_brutal() {
       info "TCP Brutal 规则已清空并关闭"
       ;;
     speed)
-      local mbps="${1:-500}"
+      local mbps="${1:-auto}"
       ensure_tcp_brutal
       set_tcp_brutal_speed "$mbps"
       ;;
     add)
       local ip="${1:-}"
-      local mbps="${2:-500}"
+      local mbps="${2:-auto}"
       [ -n "$ip" ] || { echo "用法: sbbox brutal add <目标IP/网段> [速率Mbps]"; return 1; }
       ensure_tcp_brutal
       add_tcp_brutal_rule "$ip" "$mbps"
@@ -2662,9 +2754,9 @@ cmd_brutal() {
     *)
       echo "用法: sbbox brutal [show|on|off|speed|add|del]"
       echo "  sbbox brutal show          查看 TCP Brutal 状态与活跃连接"
-      echo "  sbbox brutal on [mbps]     开启 TCP Brutal 极速加速（默认 500 Mbps）"
+      echo "  sbbox brutal on [mbps]     开启 TCP Brutal 极速加速（默认设为本机最大速率的 3/4）"
       echo "  sbbox brutal off           关闭 TCP Brutal 规则（回落至 BBR）"
-      echo "  sbbox brutal speed <mbps>  修改全局默认下发速率"
+      echo "  sbbox brutal speed [mbps]  修改全局默认下发速率（不填则自动设为本机 3/4 速率）"
       echo "  sbbox brutal add <IP> [M]  为指定客户端 IP 设定独立下发速率"
       echo "  sbbox brutal del <IP>      删除指定客户端 IP 规则"
       ;;
