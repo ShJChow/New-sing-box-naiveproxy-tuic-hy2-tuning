@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.4.0"
+SBBOX_VERSION="v2.4.1"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -1252,6 +1252,8 @@ EOF
             "tls": {
                 "enabled": true,
                 "server_name": "$reality_sni",
+                "min_version": "1.2",
+                "alpn": [ "h2", "http/1.1" ],
                 "reality": {
                     "enabled": true,
                     "handshake": {
@@ -1612,7 +1614,7 @@ gen_client() {
   if [ -n "$reap" ]; then
     local rea_add="${server_ip:-$add}"
     [[ "$rea_add" == *:* && "$rea_add" != \[*\] ]] && rea_add="[$rea_add]"
-    rea_link="vless://$uuid@$rea_add:$port_rea?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$reality_sni&fp=chrome&pbk=$reality_pub&sid=$reality_sid&type=tcp&headerType=none&packetEncoding=xudp#reality-$node_tag"
+    rea_link="vless://$uuid@$rea_add:$port_rea?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$reality_sni&fp=chrome&pbk=$reality_pub&sid=$reality_sid&type=tcp&headerType=none&packetEncoding=xudp&alpn=h2,http%2F1.1#reality-$node_tag"
     echo "$rea_link" >> "$SB_LINK"
     echo "💣【 VLESS-Reality 】节点信息如下："
     echo "$rea_link"; echo
@@ -1819,20 +1821,23 @@ class SubHandler(BaseHTTPRequestHandler):
         selected_links = []
         if "shadowrocket" in ua:
             for l in raw_links:
-                if l.startswith(("tuic://", "hysteria2://", "http3://", "http2://")):
+                if l.startswith(("tuic://", "hysteria2://", "vless://", "http3://", "http2://")):
                     selected_links.append(l)
         elif any(k in ua for k in ("v2rayn", "nekobox")):
             for l in raw_links:
-                if l.startswith(("tuic://", "hysteria2://", "naive+quic://", "naive+https://")):
+                if l.startswith(("tuic://", "hysteria2://", "vless://", "naive+quic://", "naive+https://")):
                     selected_links.append(l)
         else:
-            with open(token_file, "rb") as f: content = f.read()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Content-Length", str(len(content)))
-            self.end_headers()
-            self.wfile.write(content)
-            return
+            if raw_links:
+                selected_links = raw_links
+            else:
+                with open(token_file, "rb") as f: content = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+                return
         body = base64.b64encode("\n".join(selected_links).encode("utf-8"))
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -2053,6 +2058,8 @@ gen_client_sbox() {
         "uuid": "'"$uuid"'",
         "flow": "xtls-rprx-vision",
         "packet_encoding": "xudp",
+        "tcp_fast_open": true,
+        "tcp_multi_path": true,
         "tls": {
             "enabled": true,
             "server_name": "'"$reality_sni"'",
