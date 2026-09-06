@@ -694,6 +694,7 @@ apply_nic_tuning() {
       warn "网卡 $nic 不支持或不允许修改卸载选项（虚拟网卡常见），跳过"
     fi
     ip link set dev "$nic" txqueuelen 10000 >/dev/null 2>&1 || true
+    ip link set dev "$nic" mtu 1480 >/dev/null 2>&1 || true
   else
     warn "未安装 ethtool，跳过 GRO/GSO（apt install ethtool 后重跑 sbbox tune on 可启用）"
   fi
