@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.3.2"
+SBBOX_VERSION="v2.3.3"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -159,7 +159,7 @@ showmode() {
   echo "  dns_optimistic=1  启用 1.14 乐观 DNS 缓存并持久化（默认 1）"
   echo "  api=1        启用 1.14 原生 API 服务与实时指标（默认 1）"
   echo "  sblevel=error|warn|info|off  服务端日志级别（默认 error）"
-  echo "轮换全部密码：sbbox rotate（各协议独立新密钥，需重新导入客户端）"
+  echo "轮换全部密码：sbbox rotate（UUID + 各协议独立新密钥，需重新导入客户端）"
   echo "-----------------------------------------------------------"
   echo "免责声明：本脚本仅供网络技术研究与学习交流。使用者须遵守所在国家/地区"
   echo "法律法规，一切后果自负，作者不承担任何责任。请勿用于非法用途。"
@@ -992,6 +992,16 @@ installsb() {
   insuuid
   load_secrets
 
+  # 外置 Hysteria2 形态必须在这里判定：hy2_external() 是靠读现有 sb.json
+  # 判断的，而下面马上就要重写 sb.json，判完再问就永远是"内置"。
+  # 判为外置时不再写 hy2-in 入站，否则会和已占用该端口的 hysteria 进程
+  # 抢绑定，sing-box 直接 FATAL: address already in use（tuic/naive 一并陪葬）。
+  HY2_EXTERNAL_MODE=0
+  if hy2_external; then
+    HY2_EXTERNAL_MODE=1
+    warn "检测到外置 Hysteria2（hysteria-sbbox.service），sb.json 不写 hy2-in 入站"
+  fi
+
   # ---------- 证书准备 ----------
   if [ -n "$nvp" ] && [ -z "$alns" ] && [ -z "$ym" ]; then
     error "Naiveproxy 需要有效 TLS 证书。请设置 alns=1 与 ym=你的域名后再安装"
@@ -1264,6 +1274,10 @@ EOF
                 \"rewrite_host\": true
             }," ;;
     esac
+    # 外置形态：上面的 obfs / 带宽 / 伪装状态照常生成（节点链接与
+    # /etc/hysteria/sbbox.yaml 都要用），但入站不落进 sb.json——
+    # 端口已被 hysteria 进程占着，写进去 sing-box 会直接 FATAL。
+    if [ "$HY2_EXTERNAL_MODE" != 1 ]; then
     cat >> "$SB_CONF" <<EOF
         {
             "type": "hysteria2",
@@ -1286,6 +1300,7 @@ $hy_mask
             }
         },
 EOF
+    fi
   fi
 
   # Naiveproxy
@@ -2279,6 +2294,25 @@ hy2_external() {
   return 1
 }
 
+# 把当前 hy2 认证密码 / obfs 密码写进外置 hysteria 的配置。
+# 轮换密钥时只改 sb.json 与订阅是不够的：真正在 44116 上认证的是
+# /etc/hysteria/sbbox.yaml 里的那份，不同步就会出现"订阅换了新密码、
+# 服务端还认旧密码"的静默失配——节点看着正常，客户端一律认证失败。
+hy2_external_sync_secrets() {
+  local f=/etc/hysteria/sbbox.yaml
+  [ -f "$f" ] || return 0
+  local pw obfs
+  pw=$(cat "$SB_SEC_DIR/hy2_pw" 2>/dev/null)
+  obfs=$(cat "$SB_HOME/hyobfs_pw" 2>/dev/null || cat "$SB_SEC_DIR/hy2_obfs" 2>/dev/null)
+  [ -n "$pw" ] || return 0
+  cp -a "$f" "$f.bak" 2>/dev/null
+  # auth.password 与 obfs.salamander.password 都是 "password:" 行，靠缩进区分：
+  # 前者两空格缩进（auth 段下），后者四空格缩进（salamander 段下）。
+  sed -i -E "s|^(  password: ).*|\1\"$pw\"|" "$f"
+  [ -n "$obfs" ] && sed -i -E "s|^(    password: ).*|\1\"$obfs\"|" "$f"
+  info "已同步新密钥到外置 Hysteria2 配置（$f）"
+}
+
 # 重启外置 hysteria（若存在）。证书轮换后必须重启才会加载新证书。
 hy2_external_restart() {
   hy2_external || return 0
@@ -2926,12 +2960,14 @@ cmd_port() {
 }
 
 
-# 密钥轮换：各协议密码、obfs 密码、订阅令牌全部换成新的独立随机值。
-# UUID、端口、证书保持不变。
+# 密钥轮换：UUID、各协议密码、obfs 密码、订阅令牌全部换成新的独立随机值。
+# 端口与证书保持不变。
+# UUID 也必须换：它是 Tuic 的用户标识，与密码一样属于凭据，
+# 一旦随订阅/节点链接泄露，只换密码不换 UUID 等于只换了一半。
 cmd_rotate() {
   [ -x "$SB_BIN" ] || { error "未安装 sbbox，无需轮换"; exit 1; }
   if [ -t 0 ]; then
-    printf '%s' "轮换后所有客户端必须重新导入节点/订阅，确认继续？(y/N) " >&2
+    printf '%s' "将轮换 UUID、各协议密码、obfs 密码与订阅令牌，之后所有客户端必须重新导入节点/订阅，确认继续？(y/N) " >&2
     read -r _c
     case "$_c" in y|Y|yes|YES) : ;; *) warn "已取消"; return 0 ;; esac
   fi
@@ -2940,10 +2976,20 @@ cmd_rotate() {
   hyobfs_pw=""
   v4v6
   load_state
+  # 新 UUID：load_state 会把旧值读进 $uuid，必须在其后覆盖，
+  # insuuid 见到非空 $uuid 就会直接落盘新值。
+  uuid=$("$SB_BIN" generate uuid 2>/dev/null || cat /proc/sys/kernel/random/uuid)
   subid=""                       # 令牌一并换新：旧订阅 URL 里存的是旧密码
   [ -s "$SB_HOME/subport" ] && sub=1
   [ "$CERT_OK" = 1 ] && alns=1   # 证书已在本地，installsb 不会重新签发
   installsb
+  # 外置 Hysteria2 的密码不在 sb.json 里，必须单独同步并重启，
+  # 否则订阅里是新密码、44116 上仍认旧密码。
+  if [ "$HY2_EXTERNAL_MODE" = 1 ]; then
+    hy2_external_sync_secrets
+    systemctl restart hysteria-sbbox >/dev/null 2>&1 && info "hysteria-sbbox 已重启（外置 Hysteria2）" \
+      || error "hysteria-sbbox 重启失败"
+  fi
   sbrestart
   gen_client
   info "密钥轮换完成，请用上面的新节点信息重新导入客户端"

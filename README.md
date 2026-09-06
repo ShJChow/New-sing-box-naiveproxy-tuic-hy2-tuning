@@ -41,7 +41,8 @@
 - [十、v2.1.0 实测诊断与修复记录](#十v210-实测诊断与修复记录)
 - [十一、v2.2.0 实测诊断与修复记录](#十一v220-实测诊断与修复记录)
 - [十二、v2.3.2 实测诊断与修复记录](#十二v232-实测诊断与修复记录)
-- [十三、免责声明](#十三免责声明)
+- [十三、v2.3.3 密钥轮换与外置 Hysteria2 修复记录](#十三v233-密钥轮换与外置-hysteria2-修复记录)
+- [十四、免责声明](#十四免责声明)
 
 ---
 
@@ -906,6 +907,90 @@ connection: connection upload closed: H3 error (0x0)           # H3 正常关流
 
 ---
 
-## 十三、免责声明
+## 十三、v2.3.3 密钥轮换与外置 Hysteria2 修复记录
+
+第十二节的路径穿越漏洞意味着 **uuid 与各协议密码曾长期可被公网读取**，必须轮换。
+执行 `sbbox rotate` 时暴露出三个连环 bug，本节记录。
+
+### 1.〔严重〕`sbbox rotate` 不换 UUID，等于只换了一半凭据
+
+原实现的注释写得很明白：「UUID、端口、证书保持不变」。但 **UUID 是 Tuic 的用户标识，
+和密码一样是凭据**，随订阅或节点链接一起泄露。只轮换密码而留着 UUID，
+攻击者手里那半份凭据仍然有效。
+
+**修复**：`cmd_rotate` 在 `load_state` 之后重新生成 UUID（必须在其后，
+否则会被 `load_state` 读回的旧值覆盖），`insuuid` 见到非空 `$uuid` 即落盘新值。
+
+### 2.〔严重〕轮换会让 sing-box 崩溃启动失败，Tuic 与 Naive 一并陪葬
+
+本机 Hysteria2 是**外置形态**：官方 `hysteria` 二进制 + `hysteria-sbbox.service` +
+`/etc/hysteria/sbbox.yaml`，`sb.json` 里**没有** `hy2-in` 入站。
+`cmd_rotate` 直接调用 `installsb` 重写 `sb.json`，就补出了一个同端口的 `hy2-in`：
+
+```
+FATAL start service: start inbound/hysteria2[hy2-in]:
+      listen udp 0.0.0.0:44116: bind: address already in use
+```
+
+sing-box 进入 crash-loop（`restart counter` 一路上涨），**Tuic 与 Naiveproxy 两个
+完全无关的协议同时下线**——它们和 hy2 在同一个进程里。
+
+脚本里其实早有 `hy2_external()` 这个判定函数，注释也写了「凡是要重写配置的路径都先问一句」，
+`sbbox speed` / `sbbox brutal` 三处都问了，**唯独 `cmd_rotate` 没问**。
+
+**修复**：判定挪进 `installsb` 开头，对所有重写路径统一生效。
+注意 `hy2_external()` 是靠读现有 `sb.json` 判断的，而 `installsb` 马上要重写它——
+**判完再问就永远是"内置"**，所以必须在截断前捕获成 `HY2_EXTERNAL_MODE`。
+
+### 3.〔严重·第一次修复引入的新 bug〕跳过整个 hy2 分支会丢掉 obfs 密码
+
+第一版修复把守卫加在了外层 `if [ -n "$hyp" ]` 上，结果连 obfs 密码的生成一起跳过了：
+`hyobfs_pw` 文件消失，节点链接不再带 `obfs-password`，而服务端 `sbbox.yaml`
+里 salamander 混淆仍然开着 —— **客户端全部连不上，且服务端不报错**。
+
+**修复**：守卫只包住 `cat >> "$SB_CONF"` 那一段入站落盘，
+前面的 obfs / 带宽 / 伪装状态照常生成（节点链接与 `sbbox.yaml` 都要用）。
+
+### 4.〔严重〕外置 Hysteria2 的密码不在 `sb.json` 里，轮换后静默失配
+
+真正在 44116 上做认证的是 `/etc/hysteria/sbbox.yaml`，`rotate` 只改 `sb.json` 与订阅。
+实测轮换后：
+
+```
+nodes.txt   hysteria2://9fc153fdea9bb0fb840492275cbc3fef@...   ← 新密码
+sbbox.yaml  password: "a3814e463ded84b5dc2e7db114708a89"       ← 旧密码
+```
+
+`sbbox doctor` 全绿（端口在听、进程在跑），但所有客户端认证失败。
+这类"服务端无日志的静默失配"正是最难排查的一类。
+
+**修复**：新增 `hy2_external_sync_secrets()`，把 `sec/hy2_pw` 与 `hyobfs_pw`
+写回 `sbbox.yaml` 并重启 `hysteria-sbbox`。两处都是 `password:` 行，靠缩进区分
+（`auth` 段两空格、`salamander` 段四空格），改前自动备份 `sbbox.yaml.bak`。
+
+### 轮换后的验证
+
+```bash
+# 1. 三份凭据必须完全一致
+cat /root/sbbox/sec/hy2_pw
+grep -A2 '^auth:' /etc/hysteria/sbbox.yaml | tail -1
+grep -o 'hysteria2://[^@]*' /root/sbbox/nodes.txt
+
+# 2. obfs 同理（缺任一侧都会静默连不上）
+cat /root/sbbox/hyobfs_pw
+grep -A3 '^obfs:' /etc/hysteria/sbbox.yaml | tail -1
+grep -o 'obfs-password=[^&#]*' /root/sbbox/nodes.txt
+
+# 3. 外置形态下 sb.json 不该有 hy2-in
+grep -c hy2-in /root/sbbox/sb.json          # 期望 0
+systemctl is-active sbbox hysteria-sbbox    # 期望 active active
+```
+
+实测结果：三处密码逐字一致、`hy2-in` 计数 0、两服务 active，
+11/11 节点（Xray 7 + sbbox 4）用新凭据全部通过。
+
+---
+
+## 十四、免责声明
 
 本项目仅供网络技术研究与学习交流使用。使用者须自行遵守所在国家/地区的法律法规，因使用本脚本产生的一切后果由使用者自行承担。
