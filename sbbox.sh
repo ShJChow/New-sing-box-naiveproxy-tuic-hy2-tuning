@@ -1197,6 +1197,7 @@ detect_ip_strategy() {
   if [ "$dns_optimistic" != "0" ]; then
     dns_block='    "dns": {
         "servers": [
+            { "type": "local", "tag": "dns-local", "detour": "direct" },
             { "type": "tls", "tag": "dns-secure", "server": "1.1.1.1" },
             { "type": "tls", "tag": "dns-backup", "server": "9.9.9.9" },
             { "type": "https", "tag": "dns-doh", "server": "1.1.1.1" }
@@ -1210,6 +1211,7 @@ detect_ip_strategy() {
   else
     dns_block='    "dns": {
         "servers": [
+            { "type": "local", "tag": "dns-local", "detour": "direct" },
             { "type": "tls", "tag": "dns-secure", "server": "1.1.1.1" },
             { "type": "tls", "tag": "dns-backup", "server": "9.9.9.9" },
             { "type": "https", "tag": "dns-doh", "server": "1.1.1.1" }
@@ -1236,6 +1238,11 @@ EOF
             "tag": "vless-reality-in",
             "listen": "::",
             "listen_port": $port_rea,
+            "tcp_fast_open": true,
+            "tcp_multi_path": true,
+            "udp_fragment": true,
+            "tcp_keep_alive": "30s",
+            "tcp_keep_alive_interval": "5s",
             "users": [
                 {
                     "uuid": "$uuid",
@@ -1605,7 +1612,7 @@ gen_client() {
   if [ -n "$reap" ]; then
     local rea_add="${server_ip:-$add}"
     [[ "$rea_add" == *:* && "$rea_add" != \[*\] ]] && rea_add="[$rea_add]"
-    rea_link="vless://$uuid@$rea_add:$port_rea?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$reality_sni&fp=chrome&pbk=$reality_pub&sid=$reality_sid&type=tcp&headerType=none#reality-$node_tag"
+    rea_link="vless://$uuid@$rea_add:$port_rea?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$reality_sni&fp=chrome&pbk=$reality_pub&sid=$reality_sid&type=tcp&headerType=none&packetEncoding=xudp#reality-$node_tag"
     echo "$rea_link" >> "$SB_LINK"
     echo "💣【 VLESS-Reality 】节点信息如下："
     echo "$rea_link"; echo
@@ -2248,7 +2255,13 @@ gen_client_clash() {
     reality-opts:
       public-key: $reality_pub
       short-id: $reality_sid
-    client-fingerprint: chrome"
+    client-fingerprint: chrome
+    packet-encoding: xudp
+    tfo: true
+    mptcp: true
+    alpn:
+      - h2
+      - http/1.1"
 
     groups="$groups
       - reality-$node_tag"
