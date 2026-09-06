@@ -2,11 +2,11 @@
 """
 sbbox Smart Subscription Server
 Provides User-Agent adaptive subscription distribution:
-- Shadowrocket: returns Shadowrocket compatible base64 (tuic, hy2, http3, http2)
-- v2rayN / NekoBox: returns v2rayN compatible base64 (tuic, hy2, naive+quic)
+- Shadowrocket: returns Shadowrocket compatible base64 (tuic, hy2, vless reality, http3, http2)
+- v2rayN / NekoBox: returns v2rayN compatible base64 (tuic, hy2, vless reality, naive+quic, naive+https)
 - Clash / Mihomo: returns clmi.yaml directly
 - sing-box: returns sbox_client.json directly
-- Default / Other: returns full static base64 file
+- Default / Other: returns all raw_links base64
 """
 
 import sys
@@ -121,23 +121,25 @@ class SubHandler(BaseHTTPRequestHandler):
         if "shadowrocket" in ua:
             # Shadowrocket: Tuic, Hy2, Vless Reality, http3, http2
             for l in raw_links:
-                if l.startswith("tuic://") or l.startswith("hysteria2://") or l.startswith("vless://") or l.startswith("http3://") or l.startswith("http2://"):
+                if l.startswith(("tuic://", "hysteria2://", "vless://", "http3://", "http2://")):
                     selected_links.append(l)
         elif "v2rayn" in ua or "nekobox" in ua:
             # v2rayN / NekoBox: Tuic, Hy2, Vless Reality, naive+quic, naive+https
             for l in raw_links:
-                if l.startswith("tuic://") or l.startswith("hysteria2://") or l.startswith("vless://") or l.startswith("naive+quic://") or l.startswith("naive+https://"):
+                if l.startswith(("tuic://", "hysteria2://", "vless://", "naive+quic://", "naive+https://")):
                     selected_links.append(l)
         else:
-            # Default: if no specific UA matched, serve token_file directly
-            with open(token_file, "rb") as f:
-                content = f.read()
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
-            self.send_header("Content-Length", str(len(content)))
-            self.end_headers()
-            self.wfile.write(content)
-            return
+            if raw_links:
+                selected_links = raw_links
+            else:
+                with open(token_file, "rb") as f:
+                    content = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/plain; charset=utf-8")
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+                return
 
         body = base64.b64encode("\n".join(selected_links).encode("utf-8"))
         self.send_response(200)
