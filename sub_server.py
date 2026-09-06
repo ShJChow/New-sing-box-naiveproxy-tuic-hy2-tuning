@@ -11,12 +11,33 @@ Provides User-Agent adaptive subscription distribution:
 
 import sys
 import os
+import re
 import base64
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import unquote
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 50934
 WEB_DIR = sys.argv[2] if len(sys.argv) > 2 else "/root/sbbox/websub"
 SB_HOME = os.path.dirname(WEB_DIR.rstrip("/"))
+
+# 订阅 token 只可能是安装期生成的十六进制串（见 sbbox.sh 的 subtoken）。
+# 这里用白名单而不是黑名单：任何带 "/"、".." 或转义字符的请求路径一律 404，
+# 否则 os.path.join(WEB_DIR, token_path) 会被 "/../../../etc/passwd" 这类路径
+# 带出 WEB_DIR，变成公网上的任意文件读取（订阅端口监听 0.0.0.0）。
+SAFE_TOKEN_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+WEB_DIR_REAL = os.path.realpath(WEB_DIR)
+
+
+def resolve_token_file(token_path):
+    """把请求路径解析成 WEB_DIR 内的文件；越界或非法一律返回 None。"""
+    if not SAFE_TOKEN_RE.match(token_path) or token_path.startswith("."):
+        return None
+    candidate = os.path.realpath(os.path.join(WEB_DIR_REAL, token_path))
+    if candidate != WEB_DIR_REAL and not candidate.startswith(WEB_DIR_REAL + os.sep):
+        return None
+    if not os.path.isfile(candidate):
+        return None
+    return candidate
 
 class SubHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -31,8 +52,8 @@ class SubHandler(BaseHTTPRequestHandler):
         self.do_GET()
 
     def do_GET(self):
-        token_path = self.path.lstrip("/").split("?")[0]
-        token_file = os.path.join(WEB_DIR, token_path)
+        raw_path = self.path.split("?")[0].split("#")[0]
+        token_path = unquote(raw_path).lstrip("/")
 
         # 1. Root / healthcheck
         if token_path in ("", "index.html"):
@@ -42,8 +63,9 @@ class SubHandler(BaseHTTPRequestHandler):
             self.wfile.write(b"sbbox subscription server is running.\n")
             return
 
-        # 2. Check if requested token file exists
-        if not os.path.isfile(token_file):
+        # 2. Check if requested token file exists (且必须落在 WEB_DIR 内)
+        token_file = resolve_token_file(token_path)
+        if token_file is None:
             self.send_response(404)
             self.end_headers()
             return

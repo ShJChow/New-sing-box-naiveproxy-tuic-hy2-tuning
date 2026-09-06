@@ -40,7 +40,8 @@
 - [九、四条节点实测吞吐](#九四条节点实测吞吐)
 - [十、v2.1.0 实测诊断与修复记录](#十v210-实测诊断与修复记录)
 - [十一、v2.2.0 实测诊断与修复记录](#十一v220-实测诊断与修复记录)
-- [十二、免责声明](#十二免责声明)
+- [十二、v2.3.2 实测诊断与修复记录](#十二v232-实测诊断与修复记录)
+- [十三、免责声明](#十三免责声明)
 
 ---
 
@@ -758,6 +759,153 @@ grep -o 'mport=[^&]*' /root/sbbox/nodes.txt
 
 ---
 
-## 十二、免责声明
+## 十二、v2.3.2 实测诊断与修复记录
+
+第三轮诊断的口径与前两节一致：先跑全量连通性与自检，再针对**跑得好好的、但存在风险**的地方下手。
+
+体检基线（改动前）：`xh diag` 14 项全绿、`sbbox doctor` 全绿、`sing-box check` 与 `xray -test` 均 OK，
+11 条节点（Xray 7 条 + sbbox 4 条）SOCKS 实测 **11/11 全通**：
+
+```
+Xray  n0-h2-cdn              PASS  421.9ms   TCP/H2 + Cloudflare CDN
+Xray  n1-h3-cdn              PASS  151.8ms   QUIC/H3 + Cloudflare CDN
+Xray  n2-h3-direct           PASS  105.1ms   QUIC/H3 + VLESS Direct
+Xray  n3-hy2-obfs            PASS   29.7ms   Hysteria 2 + Salamander
+Xray  n4-reality-vision      PASS    7.6ms   VLESS + Reality + Vision
+Xray  n5-reality-xhttp       PASS    9.6ms   VLESS + Reality + XHTTP
+Xray  n6-reality-up-cdn-down PASS   44.7ms   Reality Up + CDN Down
+sbbox tuic                   PASS    2.2ms   TUIC v5 + BBR
+sbbox hysteria2              PASS    4.6ms   Hysteria 2 + Hop + Brutal
+sbbox naive-h3               PASS    3.2ms   NaiveProxy + QUIC/H3 + BBR
+sbbox naive-h2               PASS    5.4ms   NaiveProxy + TCP/H2 TLS
+```
+
+**服务本身没有任何故障**，本节修的是订阅服务里的一个可被公网利用的漏洞。
+
+### 1.〔严重·安全漏洞〕订阅服务存在未授权路径穿越，可从公网读取本机任意文件
+
+`sub_server.py` 用请求路径直接拼文件名：
+
+```python
+token_path = self.path.lstrip("/").split("?")[0]
+token_file = os.path.join(WEB_DIR, token_path)      # WEB_DIR=/root/sbbox/websub
+```
+
+`lstrip("/")` 只去掉开头的斜杠，`..` 原样保留，`os.path.join` 又会老老实实往上走。
+订阅端口监听的是 `0.0.0.0` 且防火墙已放行，于是**任何人只要知道端口号**（不需要 token）
+就能读走这台机器上 root 可读的任意文件。
+
+**实测复现（修复前，本机 50934 端口）：**
+
+```bash
+P=$(cat /root/sbbox/subport)
+printf 'GET /../../../etc/passwd HTTP/1.0\r\n\r\n' | nc 127.0.0.1 $P | head -3
+# 修复前：HTTP/1.0 200 OK ... root:x:0:0:root:/root:/bin/bash
+printf 'GET /../uuid HTTP/1.0\r\n\r\n'              | nc 127.0.0.1 $P | tail -1
+# 修复前：b1bacb9c-...（节点 UUID 直接泄露）
+```
+
+公网侧同样成立（`curl -o /dev/null -w '%{http_code}' http://<VPS_IP>:<subport>/<token>` 返回 `200`，
+说明该端口对外可达，不是只在环回上开着）。
+
+危害不止 `/etc/passwd`：`/root/sbbox/uuid`、`hyobfs_pw`、`sec`、`cert/private.key`、
+`/root/.ssh/*` 全部在射程内 —— 拿到这些等于拿到全部节点凭据。
+
+**还有第二层放大**：token 校验其实是靠"文件存在"来做的，而穿越路径同样能让
+`os.path.isfile()` 为真。所以带 `User-Agent: clash` 请求 `/../uuid`，
+服务端会直接吐出**完整的 `clmi.yaml`（含所有协议的密码）**，全程不需要正确 token。
+
+**根因**：把未经校验的 URL 路径当作文件名使用，且用"文件是否存在"代替鉴权。
+
+**修复方式**（`sub_server.py` 与 `sbbox.sh` 内嵌的那份**同时**改）：
+
+1. 先 `unquote()` 再取路径，堵住 `%2e%2e` / `..%2f` 这类编码绕过；
+2. 白名单校验 `^[A-Za-z0-9._-]{1,128}$`，任何含 `/` 或以 `.` 开头的路径直接 404；
+3. `os.path.realpath()` 解析后再确认结果确实落在 `WEB_DIR` 之内（防软链逃逸）。
+
+**另一处配套修复**：`start_sub_server()` 原来是
+
+```bash
+if [ ! -f "$SB_HOME/sub_server.py" ]; then      # ← 老安装永远不会被刷新
+```
+
+这意味着**已经装过的机器升级脚本后，磁盘上仍是那份带漏洞的旧文件**，补丁等于没打。
+现改为无条件重写（该文件是脚本生成物，不存在用户手改的语义）。
+
+**修复后实测：**
+
+```
+/../../../etc/passwd      -> HTTP/1.0 404 Not Found
+/../uuid                  -> HTTP/1.0 404 Not Found
+/%2e%2e/uuid              -> HTTP/1.0 404 Not Found
+/..%2fuuid                -> HTTP/1.0 404 Not Found
+/subdir/../../uuid        -> HTTP/1.0 404 Not Found
+/../uuid  (UA: clash)     -> HTTP/1.0 404 Not Found
+正常订阅：plain=200 clash=200 singbox=200 v2rayn=200 根路径=200
+```
+
+一句话回归验证：
+
+```bash
+P=$(cat /root/sbbox/subport); T=$(cat /root/sbbox/subtoken)
+printf 'GET /../../../etc/passwd HTTP/1.0\r\n\r\n' | nc 127.0.0.1 $P | head -1
+curl -s -o /dev/null -w '%{http_code}\n' -A clash "http://127.0.0.1:$P/$T"
+# 期望：404 / 200
+```
+
+> **已装机器请务必 `sbbox sub off && sbbox sub on`（或重启 `sbbox-sub`）**，
+> 让新版 `sub_server.py` 真正落盘生效；并考虑轮换 `uuid` 与各协议密码。
+
+### 2.〔默认值调整〕端口跳跃明确为「默认关闭」
+
+`hyjpt` 本来就默认为空（不开跳跃），但 `sbbox hop` 无参数时会提示"**推荐执行** `sbbox hop 25000:38000`"，
+帮助里也没写默认状态，实际效果是在鼓励用户打开它。**同机跑着第二套代理脚本时，
+一个上万端口的 DNAT 段是最容易吃掉对方随机端口的东西**（见第十节的事故），
+不该由脚本主动推荐。本版把措辞与注释统一为"默认关闭，需要时再手动开"：
+
+| 位置 | 改动 |
+| :--- | :--- |
+| `hyjpt` 变量注释 | 注明"默认关闭（空）" |
+| 帮助行 `端口跳跃：` | `【关闭】` → `【默认关闭】` |
+| `hyjpt=` 环境变量说明 | 加"默认关闭；同机有其他代理脚本时慎开" |
+| `sbbox hop`（无参数） | "推荐执行" → "当前未开启端口跳跃（默认关闭）。需要时执行：" |
+
+行为本身未变：`sbbox hop 25000:38000` 照常开启，`sbbox hop off` 照常关闭。
+本机同时执行了 `sbbox hop off`，并清掉了 Xray 项目遗留的 `40000:50000` REDIRECT 残留规则
+（该项目的 `FEATURE_PORT_HOPPING` 已是 `false`，订阅文件里 `mport` 出现 0 次，属于早期开启后没撤干净的规则）：
+
+```bash
+iptables -t nat -S PREROUTING     # 期望：只剩 DOCKER 一条，无任何端口段 DNAT/REDIRECT
+iptables -S INPUT | grep ':'      # 期望：无输出（无端口段放行）
+```
+
+### 3.〔查了但不是问题〕两套项目的 UDP 端口跳跃段没有互相劫持
+
+按第十一节留下的怀疑方向复查了同机共存的 Xray 项目与 sbbox 的 nat 规则：
+
+```
+-A PREROUTING -p udp --dport 44116 -j RETURN                      # sbbox 自保
+-A PREROUTING -p udp --dport 25000:38000 -j DNAT --to :44116      # sbbox 跳跃段
+-A PREROUTING -p udp --dport 40000:50000 -j REDIRECT --to 8443    # Xray 跳跃段
+```
+
+Xray 的 `40000:50000` 确实覆盖了 sbbox 的 hy2 端口 `44116`，但排在它前面的 `RETURN` 已经把
+`44116` 摘出去了，规则顺序正确。sbbox 的 `25000:38000` 未覆盖 Xray 的 `443 / 8003 / 8443 / 8446`。
+`xh diag` 的"UDP 端口段劫持检测"同样报无劫持。**本轮未发现劫持，不需要改动。**
+
+### 4.〔查了但不予处理〕`sb.log` 里的 ERROR 多数不是故障
+
+```
+dns: lookup failed for status-ipv6.jpush.cn: empty result      # 客户端查 IPv6 无记录
+router: lookup ...invalid: NXDOMAIN                            # 就是不存在的域名
+connection: connection upload closed: H3 error (0x0)           # H3 正常关流
+```
+
+三类都是**客户端行为的正常回声**，不是服务端异常。判据：`NRestarts=0`、
+`journalctl -p warning` 三天零条、11/11 节点全通。把它们当 bug 去"修"只会引入噪音。
+
+---
+
+## 十三、免责声明
 
 本项目仅供网络技术研究与学习交流使用。使用者须自行遵守所在国家/地区的法律法规，因使用本脚本产生的一切后果由使用者自行承担。

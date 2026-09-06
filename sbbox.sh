@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.3.1"
+SBBOX_VERSION="v2.3.2"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -63,7 +63,7 @@ uuid="${uuid:-}"
 ym="${ym:-}"                                # acme 证书域名（启用 alns 时必需）
 alns="${alns:-}"                            # 申请 acme 证书：alns=1
 tup="${tup:-}" hyp="${hyp:-}" nvp="${nvp:-}"
-hyjpt="${hyjpt:-}"                          # Hysteria2 跳跃端口，如 "20000:30000"
+hyjpt="${hyjpt:-}"                          # Hysteria2 跳跃端口，默认关闭（空）；如 "25000:38000"
 hyobfs="${hyobfs:-1}"                       # Hysteria2 salamander 混淆，默认开启；关闭用 hyobfs=0
 hyobfs_pw="${hyobfs_pw:-}"                  # 混淆密码（默认独立随机值）
 hymask="${hymask:-https://www.bing.com}"    # Hysteria2 伪装：反代真实站点；静态 404 用 hymask=none
@@ -138,7 +138,7 @@ showmode() {
   echo "流控调优：sbbox tune show | sbbox tune off"
   echo "证书管理：sbbox cert status | renew | sync | hook"
   echo "订阅地址：sbbox sub 【关闭】 sbbox sub off"
-  echo "端口跳跃：sbbox hop 25000:38000 【关闭】 sbbox hop off"
+  echo "端口跳跃：sbbox hop 25000:38000 【默认关闭】 sbbox hop off"
   echo "极速优化：sbbox speed 100 1000（设置客户端上/下行并激活 Hy2 与 TCP Brutal 极速拥塞控制）"
   echo "TCP Brutal：sbbox brutal show | on | off | speed | add | del（TCP Brutal 拥塞控制与限速）"
   echo "更换端口：sbbox port [tu] [hy2] [nv]（无参数分配 10000-65535 随机端口并同步）"
@@ -148,7 +148,7 @@ showmode() {
   echo "环境变量（安装期）：tup=1 hyp=1 nvp=1"
   echo "  alns=1   启用 acme 证书（需 ym=你的域名）"
   echo "  ym=域名  acme 证书域名（Hysteria2/Tuic/Naive 使用）"
-  echo "  hyjpt=25000:38000  Hysteria2 跳跃端口（防运营商 UDP QoS 限速）"
+  echo "  hyjpt=25000:38000  Hysteria2 跳跃端口（默认关闭；同机有其他代理脚本时慎开）"
   echo "  hyup=100 hydown=1000  Hysteria2 Brutal 拥塞控制客户端带宽"
 
   echo "  sub=1    启用 v2rayN 订阅服务（subport=端口 subid=令牌 可选）"
@@ -1618,15 +1618,33 @@ start_sub_server() {
   local runner=""
   if command -v python3 >/dev/null 2>&1; then
     # 动态准备智能自适应订阅服务端脚本，优先支持 User-Agent 自适应与多客户端统一格式
-    if [ ! -f "$SB_HOME/sub_server.py" ]; then
+    # 注意：这里必须无条件重写。早期版本用 `[ ! -f ]` 跳过，导致升级后
+    # 老安装一直沿用带路径穿越漏洞的旧 sub_server.py。
+    if true; then
       cat > "$SB_HOME/sub_server.py" << 'PYEOF'
 #!/usr/bin/env python3
-import sys, os, base64
+import sys, os, re, base64
 from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import unquote
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 50934
 WEB_DIR = sys.argv[2] if len(sys.argv) > 2 else "/root/sbbox/websub"
 SB_HOME = os.path.dirname(WEB_DIR.rstrip("/"))
+
+# 订阅端口监听 0.0.0.0，请求路径必须白名单校验后才能拼进 WEB_DIR，
+# 否则 "/../../../etc/passwd" 会变成公网任意文件读取。
+SAFE_TOKEN_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+WEB_DIR_REAL = os.path.realpath(WEB_DIR)
+
+def resolve_token_file(token_path):
+    if not SAFE_TOKEN_RE.match(token_path) or token_path.startswith("."):
+        return None
+    candidate = os.path.realpath(os.path.join(WEB_DIR_REAL, token_path))
+    if candidate != WEB_DIR_REAL and not candidate.startswith(WEB_DIR_REAL + os.sep):
+        return None
+    if not os.path.isfile(candidate):
+        return None
+    return candidate
 
 class SubHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
@@ -1637,15 +1655,15 @@ class SubHandler(BaseHTTPRequestHandler):
         self.do_GET()
 
     def do_GET(self):
-        token_path = self.path.lstrip("/").split("?")[0]
-        token_file = os.path.join(WEB_DIR, token_path)
+        token_path = unquote(self.path.split("?")[0].split("#")[0]).lstrip("/")
         if token_path in ("", "index.html"):
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.end_headers()
             self.wfile.write(b"sbbox subscription server is running.\n")
             return
-        if not os.path.isfile(token_file):
+        token_file = resolve_token_file(token_path)
+        if token_file is None:
             self.send_response(404)
             self.end_headers()
             return
@@ -2353,7 +2371,7 @@ cmd_hop() {
       if [ -s "$SB_HOME/hyjpt" ]; then
         info "当前 Hysteria2 跳跃端口：$(cat "$SB_HOME/hyjpt")"
       else
-        info "当前未开启端口跳跃。推荐执行：sbbox hop 25000:38000"
+        info "当前未开启端口跳跃（默认关闭）。需要时执行：sbbox hop 25000:38000"
       fi
       echo "用法: sbbox hop <端口范围|off> (例如: sbbox hop 25000:38000 或 sbbox hop off)"
       ;;
