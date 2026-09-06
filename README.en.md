@@ -213,6 +213,9 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 | `sbbox tune off` | Roll back all kernel tuning |
 | `sbbox sub` | Show subscription URL |
 | `sbbox sub off` | Stop subscription server |
+| `sbbox speed [up] [down]` | Set up/down bandwidth and enable Hysteria2 & TCP Brutal congestion control |
+| `sbbox speed bbr` | Clear bandwidth limits and switch back to BBR |
+| `sbbox brutal [show\|on\|off\|speed\|add\|del]` | Manage TCP Brutal (HyNetworks/tcp-brutal) congestion control and rules |
 | `sbbox port [tu] [hy2] [nv]` | Change node ports (no args assigns random ports 10000-65535 and syncs configs & subscription) |
 | `sbbox cert status` | Show certificate validity |
 | `sbbox cert renew` | Renew certificate and restart |

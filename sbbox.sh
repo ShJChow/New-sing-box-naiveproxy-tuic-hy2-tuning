@@ -139,7 +139,8 @@ showmode() {
   echo "证书管理：sbbox cert status | renew | sync | hook"
   echo "订阅地址：sbbox sub 【关闭】 sbbox sub off"
   echo "端口跳跃：sbbox hop 25000:38000 【关闭】 sbbox hop off"
-  echo "极速优化：sbbox speed 100 1000（设置客户端上/下行并激活 Brutal 极速拥塞控制）"
+  echo "极速优化：sbbox speed 100 1000（设置客户端上/下行并激活 Hy2 与 TCP Brutal 极速拥塞控制）"
+  echo "TCP Brutal：sbbox brutal show | on | off | speed | add | del（TCP Brutal 拥塞控制与限速）"
   echo "更换端口：sbbox port [tu] [hy2] [nv]（无参数分配 10000-65535 随机端口并同步）"
   echo "自检修复：sbbox doctor"
   echo "卸载：sbbox del"
@@ -2368,61 +2369,306 @@ cmd_hop() {
   esac
 }
 
-# sbbox speed [up] [down]
-cmd_speed() {
-  load_state
-  if [ "$hyp" != yes ]; then
-    warn "未启用 Hysteria2 协议"
-    return 0
-  fi
-  local up="${1:-}" down="${2:-}"
-  if [ -z "$up" ] && [ -z "$down" ]; then
-    echo "当前 Hysteria2 带宽配置："
-    if [ -s "$SB_HOME/hybw" ]; then
-      awk '{print "  客户端上行: "$1" Mbps / 客户端下行: "$2" Mbps（Brutal CC）"}' "$SB_HOME/hybw"
-    else
-      echo "  未配置 Brutal CC 限额（使用 BBR 拥塞控制）"
-    fi
-    echo "用法: sbbox speed <上行Mbps> <下行Mbps>   例如: sbbox speed 100 1000"
-    echo "      sbbox speed bbr                     清空限额，改用 BBR"
+# ==================================================
+# TCP Brutal (HyNetworks/tcp-brutal) 极速拥塞控制
+# ==================================================
+TCP_BRUTAL_RULES_FILE="/etc/tcp-brutal.rules"
+TCP_BRUTAL_SERVICE_FILE="/etc/systemd/system/tcp-brutal-rules.service"
+TCP_BRUTAL_RESTORE_BIN="/usr/local/bin/tcp-brutal-restore"
+
+ensure_tcp_brutal() {
+  local avail
+  avail=$(sysctl_get net.ipv4.tcp_available_congestion_control)
+  if echo "$avail" | grep -qw brutal && command -v brutalctl >/dev/null 2>&1; then
     return 0
   fi
 
-  # Brutal 不看丢包反馈，按填写的数字硬发。数字填得比客户端真实链路大，
-  # 多出来的部分全是重传，实测反而慢于 BBR；而链接里的带宽是全局下发的，
-  # 一份订阅给到不同链路的客户端时必然有人被填错。所以提供退回 BBR 的开关。
+  info "正在检测并安装 TCP Brutal (tcp-brutal) 内核模块..."
+  if ! command -v dkms >/dev/null 2>&1; then
+    apt-get update -qq && apt-get install -y -qq dkms "linux-headers-$(uname -r)" || true
+  fi
+
+  if ! command -v dkms >/dev/null 2>&1; then
+    warn "未安装 dkms，无法编译 tcp-brutal 内核模块"
+    return 1
+  fi
+
+  local tmp_tar
+  tmp_tar=$(mktemp --suffix=.tar.gz)
+  if curl -fsSL https://github.com/HyNetworks/tcp-brutal/releases/latest/download/tcp-brutal.dkms.tar.gz -o "$tmp_tar" 2>/dev/null; then
+    dkms install "$tmp_tar" 2>/dev/null || true
+    rm -f "$tmp_tar"
+  fi
+
+  if ! command -v brutalctl >/dev/null 2>&1; then
+    bash <(curl -fsSL https://tcp.hy2.sh/) install 2>/dev/null || true
+  fi
+
+  modprobe brutal 2>/dev/null || true
+  if lsmod | grep -qw brutal; then
+    echo "brutal" > /etc/modules-load.d/tcp-brutal.conf 2>/dev/null || true
+    info "TCP Brutal 内核模块已加载成功"
+    return 0
+  else
+    warn "TCP Brutal 模块加载失败，请确认内核头文件匹配"
+    return 1
+  fi
+}
+
+init_tcp_brutal_service() {
+  local default_mbps="${1:-500}"
+
+  if [ ! -f "$TCP_BRUTAL_RULES_FILE" ]; then
+    cat << EOF > "$TCP_BRUTAL_RULES_FILE"
+# TCP Brutal Destination Rules (/etc/tcp-brutal.rules)
+# Format: <prefix> <rate_in_mbps> [noroute|lock|nolock]
+0.0.0.0/0 ${default_mbps} noroute
+::/0 ${default_mbps} noroute
+EOF
+  fi
+
+  cat << 'EOF' > "$TCP_BRUTAL_RESTORE_BIN"
+#!/usr/bin/env bash
+set -euo pipefail
+RULES_FILE="/etc/tcp-brutal.rules"
+
+if ! modprobe brutal 2>/dev/null && ! lsmod | grep -qw brutal; then
+  exit 0
+fi
+
+command -v brutalctl >/dev/null 2>&1 || exit 0
+
+brutalctl flush 2>/dev/null || true
+
+if [ -f "$RULES_FILE" ]; then
+  while read -r line || [ -n "$line" ]; do
+    line="$(echo "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+    [ -z "$line" ] || echo "$line" | grep -q '^#' && continue
+    read -r prefix rate opts <<< "$line"
+    if [ -n "$prefix" ] && [ -n "$rate" ]; then
+      if [ -n "${opts:-}" ]; then
+        brutalctl add "$prefix" "$rate" $opts 2>/dev/null || true
+      else
+        brutalctl add "$prefix" "$rate" 2>/dev/null || true
+      fi
+    fi
+  done < "$RULES_FILE"
+fi
+EOF
+  chmod +x "$TCP_BRUTAL_RESTORE_BIN"
+
+  cat << EOF > "$TCP_BRUTAL_SERVICE_FILE"
+[Unit]
+Description=TCP Brutal Rules Persistence Service
+After=network.target systemd-modules-load.service
+Wants=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=${TCP_BRUTAL_RESTORE_BIN}
+ExecReload=${TCP_BRUTAL_RESTORE_BIN}
+ExecStop=/usr/local/bin/brutalctl flush
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload 2>/dev/null || true
+  systemctl enable tcp-brutal-rules.service 2>/dev/null || true
+  systemctl restart tcp-brutal-rules.service 2>/dev/null || true
+}
+
+set_tcp_brutal_speed() {
+  local mbps="$1"
+  [ -n "$mbps" ] || { echo "用法: sbbox brutal speed <速率Mbps>"; return 1; }
+  init_tcp_brutal_service "$mbps"
+
+  sed -i -E "s/^(0\.0\.0\.0\/0)[[:space:]]+[0-9]+/\1 ${mbps}/" "$TCP_BRUTAL_RULES_FILE" 2>/dev/null || true
+  sed -i -E "s/^(::\/0)[[:space:]]+[0-9]+/\1 ${mbps}/" "$TCP_BRUTAL_RULES_FILE" 2>/dev/null || true
+
+  if command -v brutalctl >/dev/null 2>&1; then
+    brutalctl add 0.0.0.0/0 "$mbps" noroute 2>/dev/null || true
+    brutalctl add ::/0 "$mbps" noroute 2>/dev/null || true
+    info "TCP Brutal 全局默认下发速率已更新为: ${mbps} Mbps"
+  fi
+}
+
+add_tcp_brutal_rule() {
+  local ip="${1:-}"
+  local mbps="${2:-500}"
+  [ -n "$ip" ] || { echo "用法: sbbox brutal add <目标IP/网段> [速率Mbps]"; return 1; }
+  case "$ip" in
+    */*) ;;
+    *:*) ip="${ip}/128" ;;
+    *)   ip="${ip}/32" ;;
+  esac
+
+  init_tcp_brutal_service
+  sed -i "\|^${ip}[[:space:]]|d" "$TCP_BRUTAL_RULES_FILE" 2>/dev/null || true
+  echo "${ip} ${mbps}" >> "$TCP_BRUTAL_RULES_FILE"
+
+  if command -v brutalctl >/dev/null 2>&1; then
+    brutalctl add "$ip" "$mbps"
+    info "已为 ${ip} 添加 TCP Brutal 限速规则: ${mbps} Mbps"
+  fi
+}
+
+del_tcp_brutal_rule() {
+  local ip="${1:-}"
+  [ -n "$ip" ] || { echo "用法: sbbox brutal del <目标IP/网段>"; return 1; }
+  case "$ip" in
+    */*) ;;
+    *:*) ip="${ip}/128" ;;
+    *)   ip="${ip}/32" ;;
+  esac
+
+  sed -i "\|^${ip}[[:space:]]|d" "$TCP_BRUTAL_RULES_FILE" 2>/dev/null || true
+
+  if command -v brutalctl >/dev/null 2>&1; then
+    brutalctl del "$ip" 2>/dev/null || true
+    info "已删除 ${ip} 的 TCP Brutal 规则"
+  fi
+}
+
+# sbbox speed [up] [down]
+cmd_speed() {
+  load_state
+  local up="${1:-}" down="${2:-}"
+  if [ -z "$up" ] && [ -z "$down" ]; then
+    echo "当前节点带宽与拥塞控制配置："
+    if [ "$hyp" = yes ]; then
+      if [ -s "$SB_HOME/hybw" ]; then
+        awk '{print "  Hysteria2 带宽:  客户端上行: "$1" Mbps / 客户端下行: "$2" Mbps（Brutal CC）"}' "$SB_HOME/hybw"
+      else
+        echo "  Hysteria2 带宽:  未配置 Brutal 限额（使用 BBR 拥塞控制）"
+      fi
+    fi
+    if command -v brutalctl >/dev/null 2>&1 && lsmod | grep -qw brutal; then
+      local tcp_rate
+      tcp_rate=$(sed -n -E 's/^0\.0\.0\.0\/0[[:space:]]+([0-9]+).*/\1/p' /etc/tcp-brutal.rules 2>/dev/null | head -1)
+      echo "  TCP Brutal 速率: 全局下发 ${tcp_rate:-500} Mbps（已应用至 Naive-h2 及全部 TCP 节点）"
+    else
+      echo "  TCP Brutal 速率: 未启用（使用系统默认 BBR）"
+    fi
+    echo ""
+    echo "用法: sbbox speed <上行Mbps> <下行Mbps>   例如: sbbox speed 100 1000"
+    echo "      sbbox speed bbr                     清空限额，统一切回 BBR"
+    return 0
+  fi
+
   case "$up" in
     bbr|off|none|auto|0)
-      : > "$SB_HOME/hybw"
-      hyup=""; hydown=""
-      if hy2_external; then
-        warn "检测到外置 Hysteria2（hysteria-sbbox.service），已跳过 sb.json 重写"
-        warn "服务端侧请同时确认 /etc/hysteria/sbbox.yaml 内 ignoreClientBandwidth: true"
-        hy2_external_restart
-      else
-        installsb
-        sbrestart
+      if [ "$hyp" = yes ]; then
+        : > "$SB_HOME/hybw"
+        hyup=""; hydown=""
+        if hy2_external; then
+          warn "检测到外置 Hysteria2（hysteria-sbbox.service），已跳过 sb.json 重写"
+          warn "服务端侧请同时确认 /etc/hysteria/sbbox.yaml 内 ignoreClientBandwidth: true"
+          hy2_external_restart
+        else
+          installsb
+          sbrestart
+        fi
+        gen_client
+        info "Hysteria2 拥塞控制已切回 BBR（客户端链接不再带 upmbps/downmbps）"
       fi
-      gen_client
-      info "Hysteria2 拥塞控制已切回 BBR（客户端链接不再带 upmbps/downmbps）"
+      if command -v brutalctl >/dev/null 2>&1; then
+        brutalctl flush 2>/dev/null || true
+        sed -i -E "s/^(0\.0\.0\.0\/0)[[:space:]]+[0-9]+/\1 0/" /etc/tcp-brutal.rules 2>/dev/null || true
+        info "TCP Brutal 规则已清空，TCP 节点已切回默认 BBR"
+      fi
       return 0
       ;;
   esac
 
   [ -n "$down" ] || { error "需同时给出上行与下行，例如: sbbox speed 100 1000"; return 1; }
-  hyup="$up"
-  hydown="$down"
-  echo "$hyup $hydown" > "$SB_HOME/hybw"
-  if hy2_external; then
-    warn "检测到外置 Hysteria2（hysteria-sbbox.service），已跳过 sb.json 重写"
-    warn "服务端带宽请在 /etc/hysteria/sbbox.yaml 内调整"
-    hy2_external_restart
-  else
-    installsb
-    sbrestart
+
+  # 1. 配置 Hysteria2 带宽 (UDP Brutal)
+  if [ "$hyp" = yes ]; then
+    hyup="$up"
+    hydown="$down"
+    echo "$hyup $hydown" > "$SB_HOME/hybw"
+    if hy2_external; then
+      warn "检测到外置 Hysteria2（hysteria-sbbox.service），已跳过 sb.json 重写"
+      warn "服务端带宽请在 /etc/hysteria/sbbox.yaml 内调整"
+      hy2_external_restart
+    else
+      installsb
+      sbrestart
+    fi
+    gen_client
+    info "Hysteria2 带宽已配置：客户端上行 ${hyup}Mbps / 客户端下行 ${hydown}Mbps（Brutal CC）"
   fi
-  gen_client
-  info "Hysteria2 带宽已配置：客户端上行 ${hyup}Mbps / 客户端下行 ${hydown}Mbps（Brutal CC）"
+
+  # 2. 配置 TCP Brutal (HyNetworks/tcp-brutal) 用于 Naive-h2 及全部 TCP 节点
+  cmd_brutal speed "$down"
+}
+
+# sbbox brutal [show|on|off|speed|add|del]
+cmd_brutal() {
+  local action="${1:-show}"
+  shift || true
+  case "$action" in
+    show|status|list|ls)
+      echo ""
+      echo -e "${CYAN}=== TCP Brutal 状态 ===${NC}"
+      if lsmod | grep -qw brutal; then
+        echo -e "  内核模块:   ${GREEN}已加载 (v$(cat /sys/module/brutal/version 2>/dev/null || echo '2.x'))${NC}"
+      else
+        echo -e "  内核模块:   ${RED}未加载${NC}"
+      fi
+      echo ""
+      echo -e "${CYAN}=== 当前 Brutal 规则与实时连接 ===${NC}"
+      if command -v brutalctl >/dev/null 2>&1; then
+        brutalctl list
+      else
+        echo "  未安装 brutalctl（执行 sbbox brutal on 自动安装）"
+      fi
+      echo ""
+      ;;
+    on)
+      local mbps="${1:-500}"
+      ensure_tcp_brutal
+      set_tcp_brutal_speed "$mbps"
+      info "TCP Brutal 已成功启用（全局默认下发速率: ${mbps} Mbps）"
+      ;;
+    off)
+      if command -v brutalctl >/dev/null 2>&1; then
+        brutalctl flush 2>/dev/null || true
+      fi
+      rm -f /etc/tcp-brutal.rules 2>/dev/null || true
+      systemctl stop tcp-brutal-rules.service 2>/dev/null || true
+      systemctl disable tcp-brutal-rules.service 2>/dev/null || true
+      info "TCP Brutal 规则已清空并关闭"
+      ;;
+    speed)
+      local mbps="${1:-500}"
+      ensure_tcp_brutal
+      set_tcp_brutal_speed "$mbps"
+      ;;
+    add)
+      local ip="${1:-}"
+      local mbps="${2:-500}"
+      [ -n "$ip" ] || { echo "用法: sbbox brutal add <目标IP/网段> [速率Mbps]"; return 1; }
+      ensure_tcp_brutal
+      add_tcp_brutal_rule "$ip" "$mbps"
+      ;;
+    del|rm)
+      local ip="${1:-}"
+      [ -n "$ip" ] || { echo "用法: sbbox brutal del <目标IP/网段>"; return 1; }
+      del_tcp_brutal_rule "$ip"
+      ;;
+    *)
+      echo "用法: sbbox brutal [show|on|off|speed|add|del]"
+      echo "  sbbox brutal show          查看 TCP Brutal 状态与活跃连接"
+      echo "  sbbox brutal on [mbps]     开启 TCP Brutal 极速加速（默认 500 Mbps）"
+      echo "  sbbox brutal off           关闭 TCP Brutal 规则（回落至 BBR）"
+      echo "  sbbox brutal speed <mbps>  修改全局默认下发速率"
+      echo "  sbbox brutal add <IP> [M]  为指定客户端 IP 设定独立下发速率"
+      echo "  sbbox brutal del <IP>      删除指定客户端 IP 规则"
+      ;;
+  esac
 }
 
 # 更换端口：sbbox port [tu] [hy2] [nv] [sub] (未指定参数则为各协议分配 10000-65535 随机端口并同步)
@@ -2661,6 +2907,7 @@ main() {
     sub)    shift; cmd_sub "$@"; exit ;;
     hop)    shift; cmd_hop "$@"; exit ;;
     speed|bw) shift; cmd_speed "$@"; exit ;;
+    brutal) shift; cmd_brutal "$@"; exit ;;
     port)   shift; cmd_port "$@"; exit ;;
     doctor) doctor; exit ;;
     rotate) cmd_rotate; exit ;;
