@@ -29,6 +29,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - name: 全部四协议（含 Reality）
+            env: reap=1 tup=1 hyp=1 nvp=1 alns=1 ym=ci.example.com
+          - name: 仅 Reality
+            env: reap=1
           - name: 全部三协议
             # alns=1 必须配 ym=：脚本要求启用证书功能时提供域名。
             # 域名与下面预置的自签证书 CN 一致，install_cert 会命中复用分支。
@@ -105,9 +109,24 @@ jobs:
               tup=1) jq -e '.inbounds[]|select(.type=="tuic")'      "$CONF" >/dev/null ;;
               hyp=1) jq -e '.inbounds[]|select(.type=="hysteria2")' "$CONF" >/dev/null ;;
               nvp=1) jq -e '.inbounds[]|select(.type=="naive")'     "$CONF" >/dev/null ;;
+              reap=1) jq -e '.inbounds[]|select(.type=="vless")'    "$CONF" >/dev/null ;;
             esac
           done
           echo "OK: 所有启用的协议均已生成"
+
+      - name: 断言 VLESS-Reality 配置正确
+        run: |
+          set -euo pipefail
+          if ! echo '${{ matrix.env }}' | grep -q 'reap=1'; then exit 0; fi
+          CLIENT="$HOME/sbbox/sbox_client.json"
+          CONF="$HOME/sbbox/sb.json"
+          jq -e '.inbounds[]|select(.type=="vless")|.tls.reality.enabled==true' "$CONF" >/dev/null \
+            || { echo "服务端 vless 入站应启用 reality"; exit 1; }
+          jq -e '.outbounds[]|select(.type=="vless")|.tls.reality.enabled==true and .flow=="xtls-rprx-vision"' "$CLIENT" >/dev/null \
+            || { echo "客户端 vless 出站应启用 reality 与 vision 流控"; exit 1; }
+          grep -q '^vless://' "$HOME/sbbox/nodes.txt" \
+            || { echo "nodes.txt 应包含 vless:// 节点链接"; exit 1; }
+          echo "OK: VLESS-Reality 配置与节点链接符合预期"
 
       - name: 断言 Hysteria2 拥塞控制与混淆互斥关系正确
         run: |

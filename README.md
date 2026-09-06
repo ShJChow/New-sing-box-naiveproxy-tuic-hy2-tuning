@@ -1,13 +1,14 @@
-# New-sing-box-naiveproxy-tuic-hy2-tuning — Sing-box 三协议安全加固代理脚本
+# New-sing-box-naiveproxy-tuic-hy2-tuning — Sing-box 四协议安全加固代理脚本
 
 [![validate](https://github.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/actions/workflows/validate.yml/badge.svg)](https://github.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/actions/workflows/validate.yml)
 
 **语言：** **简体中文** · [English](./README.en.md)
 
-基于 **sing-box 单内核** 部署脚本，保留三个主流协议：
+基于 **sing-box 单内核** 部署脚本，提供四大主流核心协议：
 
 | 协议 | 用途 | 传输 | 证书 |
 |------|------|------|------|
+| **VLESS-Reality** | 最新极速防封锁直连（默认开启） | TCP (XTLS Vision) | **免域名 / 免证书（借用官方 SNI）** |
 | **Tuic** | 低延迟 UDP 加速 | QUIC (HTTP/3) | 真实证书 / 自签+指纹固定 |
 | **Hysteria2** | 高吞吐 / 抗丢包 | QUIC (HTTP/3) | 真实证书 / 自签+指纹固定 |
 | **Naiveproxy H3** | 高隐匿性 HTTP/3 代理（默认） | HTTP/3 (QUIC) | **强制真实证书** |
@@ -185,17 +186,18 @@ systemctl --failed                             # 有 205/LIMITS 就是踩了这�
 ### 2. 一键安装
 
 ```bash
-# Tuic + Hysteria2（无域名，自签证书 + SHA256 固定指纹）
+# 推荐全协议一键安装（含最新 TCP Reality + Tuic + Hysteria2 + Naiveproxy）：
 bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) \
-  tup=1 hyp=1
+  reap=1 tup=1 hyp=1 nvp=1 alns=1 ym=your.domain.com
 
-# 装全部三协议（需域名，自动申请 Let's Encrypt 证书，默认正式版 + 默认开启 QUIC）
+# 无域名极速安装（含最新 TCP Reality + Tuic + Hysteria2，免申请证书）：
 bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) \
-  tup=1 hyp=1 nvp=1 alns=1 ym=your.domain.com
+  reap=1 tup=1 hyp=1
 ```
 
 > `alns=1` 时 acme.sh 走 standalone 模式，需要 **80 端口空闲**、域名 A 记录已解析到本机。
 > 若未提供 `ym=域名`，脚本会**交互提示输入**（不写入命令行历史）。
+> `reap=1`（VLESS-Reality TCP 节点）完全**免域名、免证书**，借用官方优质 SNI 伪装抗封锁，默认安装即一并启用。
 
 ---
 
@@ -203,7 +205,9 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `tup` / `hyp` / `nvp` | 空 | 协议开关，非空即启用（至少显式指定一个才会进入安装流程）|
+| `reap` | **1（默认开启）** | 启用最新 VLESS-Reality TCP + XTLS-Vision 节点（免域名免证书；关闭用 `reap=0`） |
+| `reap_sni` | `gateway.icloud.com` | Reality 目标 SNI 伪装域名（支持任意合规 TLS 1.3 域名） |
+| `tup` / `hyp` / `nvp` | 空 | 协议开关，非空即启用（至少显式指定一个协议才会进入安装流程）|
 | `alns` | 空 | 启用 acme 证书申请（`alns=1`） |
 | `ym` | 空 | acme 证书域名（启用 alns 时必需） |
 | `hyjpt` | 空 | Hysteria2 跳跃端口，如 `hyjpt="20000 20001 20002"` |
@@ -217,8 +221,8 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 | `subport` | 随机 | 订阅服务端口 |
 | `subid` | 独立随机 | 订阅令牌（URL 路径，相当于密码） |
 | `sub_nonaive` | 空 | 剔除 Naiveproxy 节点（客户端不支持 naive+ 链接时用 `sub_nonaive=1`） |
-| `uuid` | 自动生成 | 自定义 UUID（Tuic 用；各协议密码独立随机，不再复用 UUID） |
-| `port_tu` / `port_hy2` / `port_nv` | 随机 | 指定固定端口 |
+| `uuid` | 自动生成 | 自定义 UUID（Tuic / Reality 用；各协议密码独立随机，不再复用 UUID） |
+| `port_tu` / `port_hy2` / `port_nv` / `port_rea` | 随机 | 指定各协议固定端口 |
 | `name` | 空 | 节点名称前缀 |
 | `noautoup` | 空 | 关闭每周内核自动升级（`noautoup=1`） |
 | `sbrel` | **`stable`（默认）** | 内核版本通道：默认只取官方最新正式版（`stable`）；跟踪 beta/rc 用 `sbrel=pre` |

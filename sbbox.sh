@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ======================================================
-# sing-box-naiveproxy (sbbox.sh) — Sing-box 三协议安全加固代理脚本
+# sing-box-naiveproxy (sbbox.sh) — Sing-box 四协议安全加固代理脚本
 #
 # 基于 yonggekkk/argosbx 架构，剥离为 sing-box 单内核，
-# 保留 Tuic / Hysteria2 / Naiveproxy(H2+H3) 三协议。
+# 支持 VLESS-Reality / Tuic / Hysteria2 / Naiveproxy(H2+H3) 四协议。
 # 默认使用官方正式版内核（sbrel=stable），默认开启 QUIC 与 BBR 拥塞控制。
 #
 # 集成内核级流控调优 (xh tuning on) + acme.sh 证书申请。
@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.3.3"
+SBBOX_VERSION="v2.4.0"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -63,6 +63,9 @@ uuid="${uuid:-}"
 ym="${ym:-}"                                # acme 证书域名（启用 alns 时必需）
 alns="${alns:-}"                            # 申请 acme 证书：alns=1
 tup="${tup:-}" hyp="${hyp:-}" nvp="${nvp:-}"
+reap="${reap:-${vlp:-${rea:-}}}"            # 最新 VLESS-Reality TCP 节点（免域名免证书）
+reap_sni="${reap_sni:-${reality_sni:-}}"    # Reality 伪装目标 SNI（默认 gateway.icloud.com）
+port_rea="${port_rea:-${port_vl:-}}"        # Reality 监听端口（默认随机 10000-65535）
 hyjpt="${hyjpt:-}"                          # Hysteria2 跳跃端口，默认关闭（空）；如 "25000:38000"
 hyobfs="${hyobfs:-1}"                       # Hysteria2 salamander 混淆，默认开启；关闭用 hyobfs=0
 hyobfs_pw="${hyobfs_pw:-}"                  # 混淆密码（默认独立随机值）
@@ -127,10 +130,10 @@ v4v6() {
 # ---------- 帮助信息 ----------
 showmode() {
   echo "==========================================================="
-  echo "sbbox $SBBOX_VERSION — Sing-box-Only 三协议安全代理脚本"
-  echo "支持协议：Tuic / Hysteria2 / Naiveproxy(H2+H3)"
+  echo "sbbox $SBBOX_VERSION — Sing-box-Only 四协议安全加固代理脚本"
+  echo "支持协议：Tuic / Hysteria2 / Naiveproxy(H2+H3) / VLESS-Reality(TCP+Vision)"
   echo "-----------------------------------------------------------"
-  echo "主脚本：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh)"
+  echo "主脚本：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) reap=1 tup=1 hyp=1 nvp=1 alns=1 ym=你的域名"
   echo "显示节点信息：sbbox list 【或】 bash sbbox.sh list"
   echo "服务与流控状态：sbbox status"
   echo "重启 sing-box：sbbox res"
@@ -141,11 +144,13 @@ showmode() {
   echo "端口跳跃：sbbox hop 25000:38000 【默认关闭】 sbbox hop off"
   echo "极速优化：sbbox speed 100 1000（设置客户端上/下行并激活 Hy2 与 TCP Brutal 极速拥塞控制）"
   echo "TCP Brutal：sbbox brutal show | on | off | speed | add | del（TCP Brutal 拥塞控制与限速）"
-  echo "更换端口：sbbox port [tu] [hy2] [nv]（无参数分配 10000-65535 随机端口并同步）"
+  echo "更换端口：sbbox port [tu] [hy2] [nv] [rea]（无参数分配 10000-65535 随机端口并同步）"
   echo "自检修复：sbbox doctor"
   echo "卸载：sbbox del"
   echo "-----------------------------------------------------------"
-  echo "环境变量（安装期）：tup=1 hyp=1 nvp=1"
+  echo "环境变量（安装期）：reap=1 tup=1 hyp=1 nvp=1"
+  echo "  reap=1   启用最新 VLESS-Reality TCP 节点（支持 Vision 流控，免域名/免证书，默认开启）"
+  echo "  reap_sni=域名  Reality 伪装 SNI 目标（默认 gateway.icloud.com）"
   echo "  alns=1   启用 acme 证书（需 ym=你的域名）"
   echo "  ym=域名  acme 证书域名（Hysteria2/Tuic/Naive 使用）"
   echo "  hyjpt=25000:38000  Hysteria2 跳跃端口（默认关闭；同机有其他代理脚本时慎开）"
@@ -352,6 +357,48 @@ load_secrets() {
   pw_hy=$(_load_sec hy2_pw)
   nv_user=$(_load_sec naive_user)
   nv_pw=$(_load_sec naive_pw)
+
+  # Reality 秘钥对与 short_id（支持 sing-box 原生 reality-keypair / rand）
+  local f_priv="$SB_SEC_DIR/reality_priv"
+  local f_pub="$SB_SEC_DIR/reality_pub"
+  local f_sid="$SB_SEC_DIR/reality_sid"
+  local f_sni="$SB_SEC_DIR/reality_sni"
+  if [ ! -s "$f_priv" ] || [ ! -s "$f_pub" ]; then
+    local kp=""
+    if [ -x "$SB_BIN" ]; then
+      kp=$("$SB_BIN" generate reality-keypair 2>/dev/null || true)
+    elif command -v sing-box >/dev/null 2>&1; then
+      kp=$(sing-box generate reality-keypair 2>/dev/null || true)
+    fi
+    if [ -n "$kp" ]; then
+      echo "$kp" | awk '/PrivateKey/ {print $2}' > "$f_priv"
+      echo "$kp" | awk '/PublicKey/ {print $2}' > "$f_pub"
+    fi
+    chmod 600 "$f_priv" "$f_pub" 2>/dev/null
+  fi
+  if [ ! -s "$f_sid" ]; then
+    local sid=""
+    if [ -x "$SB_BIN" ]; then
+      sid=$("$SB_BIN" generate rand --hex 8 2>/dev/null || true)
+    elif command -v sing-box >/dev/null 2>&1; then
+      sid=$(sing-box generate rand --hex 8 2>/dev/null || true)
+    fi
+    [ -n "$sid" ] || sid=$(openssl rand -hex 8 2>/dev/null || head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    echo "$sid" > "$f_sid"
+    chmod 600 "$f_sid" 2>/dev/null
+  fi
+  if [ -n "$reap_sni" ]; then
+    echo "$reap_sni" > "$f_sni"
+  elif [ ! -s "$f_sni" ]; then
+    echo "gateway.icloud.com" > "$f_sni"
+  fi
+  chmod 600 "$f_sni" 2>/dev/null
+
+  reality_priv=$(cat "$f_priv" 2>/dev/null || true)
+  reality_pub=$(cat "$f_pub" 2>/dev/null || true)
+  reality_sid=$(cat "$f_sid" 2>/dev/null || true)
+  reality_sni=$(cat "$f_sni" 2>/dev/null || echo "gateway.icloud.com")
+
   if [ "$legacy" = 1 ]; then
     warn "检测到旧版共用密码的安装，已沿用以免现网客户端掉线"
     warn "建议执行 sbbox rotate 换成各协议独立密钥（之后需重新导入订阅）"
@@ -1098,6 +1145,7 @@ detect_ip_strategy() {
   [ -n "$tup" ] && { assign_port tu "$port_tu"; echo "Tuic 端口：$port_tu"; open_port "$port_tu" udp; }
   [ -n "$hyp" ] && { assign_port hy2 "$port_hy2"; echo "Hysteria2 端口：$port_hy2"; open_port "$port_hy2" udp; }
   [ -n "$nvp" ] && { assign_port nv "$port_nv"; echo "Naiveproxy 端口：$port_nv"; open_port "$port_nv" tcp; open_port "$port_nv" udp; }
+  [ -n "$reap" ] && { assign_port rea "$port_rea"; echo "VLESS-Reality 端口：$port_rea"; open_port "$port_rea" tcp; }
 
 
   local sb_strategy; sb_strategy=$(detect_ip_strategy)
@@ -1179,6 +1227,39 @@ $dns_block
 $api_block
     "inbounds": [
 EOF
+
+  # VLESS-Reality (TCP + Vision)
+  if [ -n "$reap" ]; then
+    cat >> "$SB_CONF" <<EOF
+        {
+            "type": "vless",
+            "tag": "vless-reality-in",
+            "listen": "::",
+            "listen_port": $port_rea,
+            "users": [
+                {
+                    "uuid": "$uuid",
+                    "flow": "xtls-rprx-vision"
+                }
+            ],
+            "tls": {
+                "enabled": true,
+                "server_name": "$reality_sni",
+                "reality": {
+                    "enabled": true,
+                    "handshake": {
+                        "server": "$reality_sni",
+                        "server_port": 443
+                    },
+                    "private_key": "$reality_priv",
+                    "short_id": [
+                        "$reality_sid"
+                    ]
+                }
+            }
+        },
+EOF
+  fi
 
   # Tuic
   if [ -n "$tup" ]; then
@@ -1521,6 +1602,15 @@ gen_client() {
     echo "$hy2_link"; echo
   fi
 
+  if [ -n "$reap" ]; then
+    local rea_add="${server_ip:-$add}"
+    [[ "$rea_add" == *:* && "$rea_add" != \[*\] ]] && rea_add="[$rea_add]"
+    rea_link="vless://$uuid@$rea_add:$port_rea?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$reality_sni&fp=chrome&pbk=$reality_pub&sid=$reality_sid&type=tcp&headerType=none#reality-$node_tag"
+    echo "$rea_link" >> "$SB_LINK"
+    echo "💣【 VLESS-Reality 】节点信息如下："
+    echo "$rea_link"; echo
+  fi
+
 
   if [ -n "$nvp" ] && [ "$CERT_OK" = 1 ]; then
     # Naiveproxy 同一入站同时服务 H2 与 H3，不同客户端认的 URL scheme 与参数：
@@ -1570,6 +1660,7 @@ gen_client() {
 # 订阅：base64 节点列表 + 本机 HTTP 托管（v2rayN 可直接导入）
 # ======================================================
 gen_sub() {
+  [ -z "$sub" ] && [ -f "$SB_HOME/subtoken" ] && sub=1
   [ -n "$sub" ] || return 0
   [ -s "$SB_LINK" ] || { warn "无节点可生成订阅"; return 0; }
 
@@ -1946,6 +2037,32 @@ gen_client_sbox() {
     tags+=("hysteria2")
   fi
 
+  if [ -n "$reap" ]; then
+    ob+=('{
+        "type": "vless",
+        "tag": "vless-reality",
+        "server": "'"${server_ip:-$add}"'",
+        "server_port": '"$port_rea"',
+        "uuid": "'"$uuid"'",
+        "flow": "xtls-rprx-vision",
+        "packet_encoding": "xudp",
+        "tls": {
+            "enabled": true,
+            "server_name": "'"$reality_sni"'",
+            "utls": {
+                "enabled": true,
+                "fingerprint": "chrome"
+            },
+            "reality": {
+                "enabled": true,
+                "public_key": "'"$reality_pub"'",
+                "short_id": "'"$reality_sid"'"
+            }
+        }
+    }')
+    tags+=("vless-reality")
+  fi
+
 
   # naive 出站需要 libcronet.so 与 sing-box 二进制同目录（官方 tarball 已附带，
   # 本脚本安装时会一并保留）。缺库时该出站会以 "cronet: library not found" 启动失败，
@@ -2113,6 +2230,28 @@ gen_client_clash() {
     skip-cert-verify: $msins"
     groups="$groups
       - hysteria2-$node_tag"
+  fi
+
+  if [ -n "$reap" ]; then
+    proxies="$proxies
+  - name: reality-$node_tag
+    server: ${server_ip:-$add}
+    port: $port_rea
+    type: vless
+    uuid: $uuid
+    cipher: auto
+    tls: true
+    flow: xtls-rprx-vision
+    udp: true
+    servername: $reality_sni
+    network: tcp
+    reality-opts:
+      public-key: $reality_pub
+      short-id: $reality_sid
+    client-fingerprint: chrome"
+
+    groups="$groups
+      - reality-$node_tag"
   fi
 
   if [ -n "$nvp" ] && [ "$CERT_OK" = 1 ]; then
@@ -2816,19 +2955,20 @@ cmd_brutal() {
   esac
 }
 
-# 更换端口：sbbox port [tu] [hy2] [nv] [sub] (未指定参数则为各协议分配 10000-65535 随机端口并同步)
+# 更换端口：sbbox port [tu] [hy2] [nv] [rea] [sub] (未指定参数则为各协议分配 10000-65535 随机端口并同步)
 cmd_port() {
   [ -x "$SB_BIN" ] || { error "未安装 sbbox，无法更改端口"; exit 1; }
   load_state
-  local in_tu="${1:-}" in_hy2="${2:-}" in_nv="${3:-}" in_sub="${4:-}"
-  local old_tu="$port_tu" old_hy2="$port_hy2" old_nv="$port_nv" old_sub="$subport"
+  local in_tu="${1:-}" in_hy2="${2:-}" in_nv="${3:-}" in_rea="${4:-}" in_sub="${5:-}"
+  local old_tu="$port_tu" old_hy2="$port_hy2" old_nv="$port_nv" old_rea="$port_rea" old_sub="$subport"
 
   if [ "$in_tu" = "show" ]; then
     echo "当前 sbbox 监听端口："
-    [ -n "$old_tu" ] && echo "  Tuic:        $old_tu (UDP)"
-    [ -n "$old_hy2" ] && echo "  Hysteria2:   $old_hy2 (UDP)"
-    [ -n "$old_nv" ] && echo "  Naiveproxy:  $old_nv (TCP/UDP)"
-    [ -n "$old_sub" ] && echo "  订阅服务:    $old_sub (TCP)"
+    [ -n "$old_tu" ] && echo "  Tuic:          $old_tu (UDP)"
+    [ -n "$old_hy2" ] && echo "  Hysteria2:     $old_hy2 (UDP)"
+    [ -n "$old_nv" ] && echo "  Naiveproxy:    $old_nv (TCP/UDP)"
+    [ -n "$old_rea" ] && echo "  VLESS-Reality: $old_rea (TCP)"
+    [ -n "$old_sub" ] && echo "  订阅服务:      $old_sub (TCP)"
     return 0
   fi
 
@@ -2838,14 +2978,14 @@ cmd_port() {
   local used
   used=$(ss -tuln 2>/dev/null | awk 'NR>1 {print $5}' | awk -F: '{print $NF}' | tr -d '%' | sort -u)
 
-  local new_tu="" new_hy2="" new_nv="" new_sub=""
+  local new_tu="" new_hy2="" new_nv="" new_rea="" new_sub=""
 
   _gen_rand_port() {
     local p
     while :; do
       p=$(shuf -i 10000-65535 -n 1)
       if echo "$used" | grep -qx "$p"; then continue; fi
-      if [ "$p" = "$new_tu" ] || [ "$p" = "$new_hy2" ] || [ "$p" = "$new_nv" ] || [ "$p" = "$new_sub" ]; then continue; fi
+      if [ "$p" = "$new_tu" ] || [ "$p" = "$new_hy2" ] || [ "$p" = "$new_nv" ] || [ "$p" = "$new_rea" ] || [ "$p" = "$new_sub" ]; then continue; fi
       if [ -n "$old_sub" ] && [ -z "$new_sub" ] && [ "$p" = "$old_sub" ]; then continue; fi
       if [ -n "$hyjpt" ]; then
         local hop_start hop_end
@@ -2874,6 +3014,12 @@ cmd_port() {
     new_nv="$in_nv"
   elif [ "$nvp" = yes ]; then
     new_nv=$(_gen_rand_port)
+  fi
+
+  if [ -n "$in_rea" ] && [ "$in_rea" != "rand" ] && [ "$in_rea" != "random" ]; then
+    new_rea="$in_rea"
+  elif [ "$reap" = yes ]; then
+    new_rea=$(_gen_rand_port)
   fi
 
   if [ -n "$in_sub" ]; then
@@ -2917,6 +3063,7 @@ cmd_port() {
   [ -n "$old_tu" ] && _clean_old_port "$old_tu" udp
   [ -n "$old_hy2" ] && _clean_old_port "$old_hy2" udp
   [ -n "$old_nv" ] && { _clean_old_port "$old_nv" tcp; _clean_old_port "$old_nv" udp; }
+  [ -n "$old_rea" ] && _clean_old_port "$old_rea" tcp
   [ -n "$new_sub" ] && [ -n "$old_sub" ] && _clean_old_port "$old_sub" tcp
 
   # 清理旧 Hysteria2 DNAT 规则
@@ -2929,6 +3076,7 @@ cmd_port() {
   [ -n "$new_tu" ] && { echo "$new_tu" > "$SB_HOME/port_tu"; port_tu="$new_tu"; }
   [ -n "$new_hy2" ] && { echo "$new_hy2" > "$SB_HOME/port_hy2"; port_hy2="$new_hy2"; }
   [ -n "$new_nv" ] && { echo "$new_nv" > "$SB_HOME/port_nv"; port_nv="$new_nv"; }
+  [ -n "$new_rea" ] && { echo "$new_rea" > "$SB_HOME/port_rea"; port_rea="$new_rea"; }
   [ -n "$new_sub" ] && { echo "$new_sub" > "$SB_HOME/subport"; subport="$new_sub"; }
 
   v4v6
@@ -2954,6 +3102,7 @@ cmd_port() {
   [ -n "$new_tu" ] && echo -e "${GREEN}Tuic 端口:        ${new_tu} (UDP)${NC}"
   [ -n "$new_hy2" ] && echo -e "${GREEN}Hysteria2 端口:   ${new_hy2} (UDP)${NC}"
   [ -n "$new_nv" ] && echo -e "${GREEN}Naiveproxy 端口:  ${new_nv} (TCP/UDP)${NC}"
+  [ -n "$new_rea" ] && echo -e "${GREEN}VLESS-Reality 端口: ${new_rea} (TCP)${NC}"
   [ -n "$subport" ] && echo -e "${GREEN}订阅服务端口:     ${subport} (TCP)${NC}"
   local live_api
   live_api=$(cat "$SB_HOME/api_port" 2>/dev/null)
@@ -3074,14 +3223,25 @@ main() {
 
 
   # 安装流程
-  if [ -z "$tup" ] && [ -z "$hyp" ] && [ -z "$nvp" ]; then
+  case "$reap" in
+    0|no|off|false|NO|OFF|FALSE) reap="" ;;
+    1|yes|on|true|YES|ON|TRUE) reap=1 ;;
+    "")
+      # 若启用了其他协议但未显式传 reap，默认开启 Reality（保证默认安装链接与默认安装包含 Reality）
+      if [ -n "$tup" ] || [ -n "$hyp" ] || [ -n "$nvp" ]; then
+        reap=1
+      fi
+      ;;
+  esac
+
+  if [ -z "$tup" ] && [ -z "$hyp" ] && [ -z "$nvp" ] && [ -z "$reap" ]; then
     if [ -x "$SB_BIN" ]; then
       # 已安装但未指定协议 → 显示帮助
       showmode
       status_show
       exit
     else
-      error "未指定任何协议。请至少设置一个：tup=1 hyp=1 nvp=1"
+      error "未指定任何协议。请至少设置一个：reap=1 tup=1 hyp=1 nvp=1"
       echo ""
       showmode
       exit 1
@@ -3155,10 +3315,12 @@ install_cmd() {
 save_state() {
   # 先清空再按本次实际启用写入：重装若减少协议，旧标记必须消失，
   # 否则 list 会生成服务端已不存在的节点链接
-  rm -f "$SB_HOME"/proto_tup "$SB_HOME"/proto_hyp "$SB_HOME"/proto_nvp 2>/dev/null
+  rm -f "$SB_HOME"/proto_tup "$SB_HOME"/proto_hyp "$SB_HOME"/proto_nvp "$SB_HOME"/proto_rea 2>/dev/null
   [ -n "$tup" ] && touch "$SB_HOME/proto_tup"
   [ -n "$hyp" ] && touch "$SB_HOME/proto_hyp"
   [ -n "$nvp" ] && touch "$SB_HOME/proto_nvp"
+  [ -n "$reap" ] && touch "$SB_HOME/proto_rea"
+  [ -n "$port_rea" ] && echo "$port_rea" > "$SB_HOME/port_rea"
   echo "$ym" > "$SB_HOME/ym"
   [ -n "$hyjpt" ] && echo "$hyjpt" > "$SB_HOME/hyjpt"
   # Brutal 带宽必须持久化：否则 rotate / 重新生成配置时静默退回 BBR，
@@ -3453,6 +3615,7 @@ doctor() {
   [ "$tup" = yes ] && check_one Tuic "$port_tu" udp
   [ "$hyp" = yes ] && check_one Hysteria2 "$port_hy2" udp
   [ "$nvp" = yes ] && check_one Naiveproxy "$port_nv" tcp
+  [ "$reap" = yes ] && check_one "VLESS-Reality" "$port_rea" tcp
   if [ "$sub" = 1 ] && [ -n "$subport" ]; then
     check_one "订阅服务" "$subport" tcp
   fi
@@ -3496,12 +3659,13 @@ doctor() {
     sbrestart
     sleep 2
     # 重启后复查每个有问题的端口，仍未恢复则重新生成配置
-    for spec in "Tuic:$port_tu:udp" "Hysteria2:$port_hy2:udp" "Naiveproxy:$port_nv:tcp"; do
+    for spec in "Tuic:$port_tu:udp" "Hysteria2:$port_hy2:udp" "Naiveproxy:$port_nv:tcp" "VLESS-Reality:$port_rea:tcp"; do
       name=${spec%%:*}; rest=${spec#*:}; p=${rest%%:*}; proto=${rest##*:}
       case "$name" in
-        Tuic)       [ "$tup" = yes ] || continue ;;
-        Hysteria2)  [ "$hyp" = yes ] || continue ;;
-        Naiveproxy) [ "$nvp" = yes ] || continue ;;
+        Tuic)          [ "$tup" = yes ] || continue ;;
+        Hysteria2)     [ "$hyp" = yes ] || continue ;;
+        Naiveproxy)    [ "$nvp" = yes ] || continue ;;
+        VLESS-Reality) [ "$reap" = yes ] || continue ;;
       esac
       if ! port_listening "$p" "$proto"; then
         echo "  ${name} 重启后仍不通，重新生成配置……"
@@ -3532,9 +3696,11 @@ load_state() {
   [ -f "$SB_HOME/proto_tup" ] && tup=yes
   [ -f "$SB_HOME/proto_hyp" ] && hyp=yes
   [ -f "$SB_HOME/proto_nvp" ] && nvp=yes
+  [ -f "$SB_HOME/proto_rea" ] && reap=yes
   [ -f "$SB_HOME/port_tu" ] && port_tu=$(cat "$SB_HOME/port_tu")
   [ -f "$SB_HOME/port_hy2" ] && port_hy2=$(cat "$SB_HOME/port_hy2")
   [ -f "$SB_HOME/port_nv" ] && port_nv=$(cat "$SB_HOME/port_nv")
+  [ -f "$SB_HOME/port_rea" ] && port_rea=$(cat "$SB_HOME/port_rea")
   [ -f "$SB_HOME/hyjpt" ] && hyjpt=$(cat "$SB_HOME/hyjpt")
   if [ -z "$hyup" ] && [ -z "$hydown" ] && [ -s "$SB_HOME/hybw" ]; then
     hyup=$(awk '{print $1}' "$SB_HOME/hybw"); hydown=$(awk '{print $2}' "$SB_HOME/hybw")

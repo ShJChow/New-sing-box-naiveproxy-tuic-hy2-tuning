@@ -1,13 +1,14 @@
-# New-sing-box-naiveproxy-tuic-hy2-tuning — Sing-box Three-Protocol Secure Proxy Script
+# New-sing-box-naiveproxy-tuic-hy2-tuning — Sing-box Four-Protocol Secure Proxy Script
 
 [![validate](https://github.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/actions/workflows/validate.yml/badge.svg)](https://github.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/actions/workflows/validate.yml)
 
 **Language:** [简体中文](./README.md) · **English**
 
-A **sing-box single-core** deployment script, covering three main protocols:
+A **sing-box single-core** deployment script, covering four major protocols:
 
 | Protocol | Purpose | Transport | Certificate |
 |----------|---------|-----------|-------------|
+| **VLESS-Reality** | Latest anti-censorship direct link (Default) | TCP (XTLS Vision) | **No Domain / No Cert required (SNI Steal)** |
 | **Tuic** | Low-latency UDP acceleration | QUIC (HTTP/3) | Real Cert / Self-signed + Pinning |
 | **Hysteria2** | High throughput / loss resistance | QUIC (HTTP/3) | Real Cert / Self-signed + Pinning |
 | **Naiveproxy H3** | High-disguise HTTP/3 proxy (Default) | HTTP/3 (QUIC) | **Mandatory Real Cert** |
@@ -163,14 +164,16 @@ Main process exited, code=exited, status=205/LIMITS
 ### 4.2 One-Command Installation
 
 ```bash
-# Tuic + Hysteria2 (no domain; self-signed cert + SHA256 pinning)
+# Recommended All-in-One Installation (includes latest TCP Reality + Tuic + Hysteria2 + Naiveproxy):
 bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) \
-  tup=1 hyp=1
+  reap=1 tup=1 hyp=1 nvp=1 alns=1 ym=your.domain.com
 
-# All three protocols (domain required; auto-issues Let's Encrypt cert; default stable + QUIC)
+# No-Domain Fast Installation (includes latest TCP Reality + Tuic + Hysteria2, no cert application needed):
 bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) \
-  tup=1 hyp=1 nvp=1 alns=1 ym=your.domain.com
+  reap=1 tup=1 hyp=1
 ```
+
+> `reap=1` (VLESS-Reality TCP node) requires **no domain and no certificate**, using official TLS 1.3 SNI camouflage to resist censorship. Enabled by default during installation.
 
 ---
 
@@ -178,6 +181,8 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `reap` | **1 (default)** | enable latest VLESS-Reality TCP + XTLS-Vision node (no domain/cert needed; disable with `reap=0`) |
+| `reap_sni` | `gateway.icloud.com` | Reality target camouflage SNI domain |
 | `tup` / `hyp` / `nvp` | empty | protocol toggles (at least one must be specified) |
 | `alns` | empty | enable ACME certificate issuance (`alns=1`) |
 | `ym` | empty | ACME certificate domain (required with `alns`) |
@@ -192,8 +197,8 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 | `subport` | random | subscription server port |
 | `subid` | independent | subscription token |
 | `sub_nonaive` | empty | omit Naiveproxy nodes from subscription |
-| `uuid` | auto-generated | custom UUID for Tuic |
-| `port_tu` / `port_hy2` / `port_nv` | random | fixed port assignment |
+| `uuid` | auto-generated | custom UUID for Tuic and Reality |
+| `port_tu` / `port_hy2` / `port_nv` / `port_rea` | random | fixed port assignment |
 | `sbrel` | **`stable` (default)** | kernel release channel: default official stable (`stable`); beta/rc with `sbrel=pre` |
 | `tuicuos` | **0 (default native UDP)** | Tuic UDP relay mode: native UDP (default); QUIC stream with `tuicuos=1` |
 | `tuils` | **1 (default)** | Tuic TLS hardening (certificate SHA-256 pinning); disable with `tuils=0` |

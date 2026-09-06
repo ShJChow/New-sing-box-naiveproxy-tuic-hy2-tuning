@@ -119,14 +119,14 @@ class SubHandler(BaseHTTPRequestHandler):
         # 6. Filter nodes by client User-Agent
         selected_links = []
         if "shadowrocket" in ua:
-            # Shadowrocket: Tuic, Hy2, http3, http2
+            # Shadowrocket: Tuic, Hy2, Vless Reality, http3, http2
             for l in raw_links:
-                if l.startswith("tuic://") or l.startswith("hysteria2://") or l.startswith("http3://") or l.startswith("http2://"):
+                if l.startswith("tuic://") or l.startswith("hysteria2://") or l.startswith("vless://") or l.startswith("http3://") or l.startswith("http2://"):
                     selected_links.append(l)
         elif "v2rayn" in ua or "nekobox" in ua:
-            # v2rayN / NekoBox: Tuic, Hy2, naive+quic, naive+https
+            # v2rayN / NekoBox: Tuic, Hy2, Vless Reality, naive+quic, naive+https
             for l in raw_links:
-                if l.startswith("tuic://") or l.startswith("hysteria2://") or l.startswith("naive+quic://") or l.startswith("naive+https://"):
+                if l.startswith("tuic://") or l.startswith("hysteria2://") or l.startswith("vless://") or l.startswith("naive+quic://") or l.startswith("naive+https://"):
                     selected_links.append(l)
         else:
             # Default: if no specific UA matched, serve token_file directly
