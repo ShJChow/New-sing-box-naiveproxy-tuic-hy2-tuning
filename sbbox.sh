@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.4.1"
+SBBOX_VERSION="v2.4.2"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -184,6 +184,14 @@ install_deps() {
       dnf install -y curl wget openssl ca-certificates iptables ethtool iproute >/dev/null 2>&1
     fi
     touch "$SB_HOME/deps_done"
+  fi
+  # 检查并修正 systemd-resolved 强制 DoT 导致的云厂商内网 DNS 死锁
+  if [ "$IS_ROOT" = 1 ] && [ -f /etc/systemd/resolved.conf ] && grep -q '^DNSOverTLS=yes' /etc/systemd/resolved.conf 2>/dev/null; then
+    sed -i 's/^DNSOverTLS=yes/DNSOverTLS=opportunistic/' /etc/systemd/resolved.conf 2>/dev/null || true
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+      systemctl restart systemd-resolved 2>/dev/null || true
+    fi
+    info "已将 systemd-resolved 的 DNSOverTLS 调整为 opportunistic（避免云厂商本地 DHCP DNS 853 端口拒连）"
   fi
 }
 
@@ -1197,10 +1205,10 @@ detect_ip_strategy() {
   if [ "$dns_optimistic" != "0" ]; then
     dns_block='    "dns": {
         "servers": [
-            { "type": "local", "tag": "dns-local", "detour": "direct" },
             { "type": "tls", "tag": "dns-secure", "server": "1.1.1.1" },
             { "type": "tls", "tag": "dns-backup", "server": "9.9.9.9" },
-            { "type": "https", "tag": "dns-doh", "server": "1.1.1.1" }
+            { "type": "https", "tag": "dns-doh", "server": "1.1.1.1" },
+            { "type": "local", "tag": "dns-local", "detour": "direct" }
         ],
         "strategy": "'"$sb_strategy"'",
         "disable_cache": false,
@@ -1211,10 +1219,10 @@ detect_ip_strategy() {
   else
     dns_block='    "dns": {
         "servers": [
-            { "type": "local", "tag": "dns-local", "detour": "direct" },
             { "type": "tls", "tag": "dns-secure", "server": "1.1.1.1" },
             { "type": "tls", "tag": "dns-backup", "server": "9.9.9.9" },
-            { "type": "https", "tag": "dns-doh", "server": "1.1.1.1" }
+            { "type": "https", "tag": "dns-doh", "server": "1.1.1.1" },
+            { "type": "local", "tag": "dns-local", "detour": "direct" }
         ],
         "strategy": "'"$sb_strategy"'",
         "disable_cache": false
@@ -1429,7 +1437,7 @@ EOF
   # 必须先 resolve 再判私有地址：ip_is_private 只比对目标 IP，
   # 客户端若把目标写成域名（如 127.0.0.1.nip.io、指向 169.254.169.254 的域名），
   # 规则不匹配即被放行。resolve action 先把域名解析成 IP，拦截才真正生效。
-  local route_rules="            { \"action\": \"resolve\", \"strategy\": \"$sb_strategy\" },
+  local route_rules="            { \"action\": \"resolve\", \"strategy\": \"$sb_strategy\", \"server\": \"dns-secure\" },
             { \"action\": \"reject\", \"ip_is_private\": true }"
   case "$blkport" in
     0|no|off|false) : ;;
