@@ -278,7 +278,33 @@ Benchmark measured locally on VPS over 9 iterations showing median (min–max):
 
 ---
 
-## 10. Disclaimer
+## 10. What's new in v2.5.0 — handshake latency and "newest settings everywhere"
+
+- **TLS floor raised to 1.3.** Both `tls.min_version` sites in `sb.json`
+  (`vless-reality-in` and `naive-in`) now say `"1.3"`. Note that *deleting*
+  `min_version` does the opposite of what it looks like — sing-box then falls
+  back to its own, lower default — so the newest behaviour must be stated
+  explicitly. Verify with `grep -n min_version /root/sbbox/sb.json` and
+  `sing-box check -c /root/sbbox/sb.json`.
+- **Certificate chain: already minimal, no change needed.** `trim_cert_chain`
+  (added in v2.4.x) had already cut `fullchain.cer` to 3 certificates / 3243
+  bytes. Re-checked this round against the original 4-cert chain: **3 is the
+  floor** — with only leaf + YE2, `openssl verify` fails because Root YE is not
+  yet in mainstream trust stores. The sibling Xray project on the same host
+  gained the same trimming this round and produced a **byte-identical** chain.
+- **DNS: already ordered correctly.** `dns-secure` (DoT 1.1.1.1) was already
+  first. Measured on cold random subdomains: 1.1.1.1 **4 ms**, 8.8.8.8 14 ms,
+  9.9.9.9 14 ms.
+- **Tested and rejected:** moving Reality's `handshake.server` from
+  `gateway.icloud.com:443` to a local target. The remote target costs only
+  **1.6 ms** to connect (Apple's edge is in the same region), so there is no
+  measurable win, and it would force a client SNI and subscription change.
+
+Regression after the change: 13/13 nodes pass, including all five sbbox nodes
+(tuic 2.6 ms, hysteria2 19.2 ms, naive-h3 3.4 ms, naive-h2 4.1 ms,
+vless-reality 8.8 ms).
+
+## 11. Disclaimer
 
 This project is provided for network technology research and educational purposes only. Users are responsible for complying with local laws and regulations.
 

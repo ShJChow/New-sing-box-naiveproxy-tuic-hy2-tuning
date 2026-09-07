@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.4.4"
+SBBOX_VERSION="v2.5.0"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -1263,7 +1263,7 @@ EOF
             "tls": {
                 "enabled": true,
                 "server_name": "$reality_sni",
-                "min_version": "1.2",
+                "min_version": "1.3",
                 "alpn": [ "h2", "http/1.1" ],
                 "reality": {
                     "enabled": true,
@@ -1421,7 +1421,7 @@ EOF
             ],
             "tls": {
                 "enabled": true,
-                "min_version": "1.2",
+                "min_version": "1.3",
                 "alpn": [ "h3", "h2", "http/1.1" ],
                 "certificate_path": "$CERT_DIR/fullchain.cer",
                 "key_path": "$CERT_DIR/private.key",

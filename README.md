@@ -43,7 +43,8 @@
 - [十一、v2.2.0 实测诊断与修复记录](#十一v220-实测诊断与修复记录)
 - [十二、v2.3.2 实测诊断与修复记录](#十二v232-实测诊断与修复记录)
 - [十三、v2.3.3 密钥轮换与外置 Hysteria2 修复记录](#十三v233-密钥轮换与外置-hysteria2-修复记录)
-- [十四、免责声明](#十四免责声明)
+- [十四、v2.5.0 握手提速与「全部采用最新特性」](#十四v250-握手提速与全部采用最新特性)
+- [十五、免责声明](#十五免责声明)
 
 ---
 
@@ -995,6 +996,74 @@ systemctl is-active sbbox hysteria-sbbox    # 期望 active active
 
 ---
 
-## 十四、免责声明
+## 十四、v2.5.0 握手提速与「全部采用最新特性」
+
+与同机的 Xray 项目同一轮改动。sbbox 这边的证书链裁剪（`trim_cert_chain`）在 v2.4.x 就已经有了，
+所以本版只剩一处配置改动，但把「为什么不能靠删行来要最新特性」这条坑记下来。
+
+### 1.〔最新特性〕`min_version` 由 1.2 提到 1.3
+
+`sb.json` 里两处 `tls.min_version`（`vless-reality-in` 与 `naive-in`）改为 `"1.3"`。
+
+**注意：不能靠「删掉 `min_version` 这行」来要最新特性**——删掉后 sing-box 会退回它自己的
+默认下限（更低），方向正好相反。要最新就得**显式写死 `"1.3"`**。
+
+**验证命令**：
+
+```bash
+grep -n min_version /root/sbbox/sb.json          # 期望两处都是 "1.3"
+/root/sbbox/sing-box check -c /root/sbbox/sb.json
+systemctl restart sbbox && systemctl is-active sbbox
+```
+
+**实测**：改后 `sing-box check` 通过，13 节点全量回归（含本项目 5 条：tuic / hysteria2 /
+naive-h3 / naive-h2 / vless-reality）**全部 PASS**：
+
+```
+sbbox    tuic          PASS    2.6ms    TUIC v5 + BBR
+sbbox    hysteria2     PASS   19.2ms    Hysteria 2 + Hop + Brutal
+sbbox    naive-h3      PASS    3.4ms    NaiveProxy + QUIC/H3 + BBR
+sbbox    naive-h2      PASS    4.1ms    NaiveProxy + TCP/H2 TLS
+sbbox    vless-reality PASS    8.8ms    VLESS + Reality + Vision
+```
+
+### 2.〔核对无需改动〕证书链已是最短可验证链
+
+`trim_cert_chain` 已经把 `/root/sbbox/cert/fullchain.cer` 裁到 **3 张 / 3243 字节**。
+本轮拿同一域名的原始 4 张链复核，结论一致——**3 张就是下限**，
+只留 `leaf + YE2` 时系统信任库验不过（`Root YE` 尚未进主流信任库）：
+
+```bash
+$ openssl verify -CAfile /etc/ssl/certs/ca-certificates.crt -untrusted YE2.pem leaf.pem
+error 20 at 1 depth lookup: unable to get local issuer certificate
+```
+
+同机 Xray 项目本轮才补上同一套裁剪（4 → 3 张，每次握手少传 1598 字节），
+裁剪结果与 sbbox 这边**逐字节相同**——这也反过来给该链长做了一次交叉验证：
+sbbox 用这条 3 张链稳定服务已久。
+
+### 3.〔核对无需改动〕DNS 已按延迟排好
+
+`dns-secure`（DoT 1.1.1.1）本来就在第一位。本机实测冷域名解析
+1.1.1.1 约 4ms、8.8.8.8 与 9.9.9.9 均约 14ms，顺序无需调整。
+（同机 Xray 项目那边第一位曾是 8.8.8.8，本轮已改。）
+
+### 4.〔实测后不采纳〕把 Reality 握手目标从 `gateway.icloud.com` 改到本机
+
+本项目 `reality.handshake.server` 是远端 `gateway.icloud.com:443`。
+原以为远端目标会给每次握手加一整个 RTT，实测不成立：
+
+```
+$ curl -s -o /dev/null -w "connect=%{time_connect} appconnect=%{time_appconnect}\n" https://gateway.icloud.com/
+connect=0.001609 appconnect=0.013412
+connect=0.001563 appconnect=0.012547
+```
+
+TCP 建连只要 **1.6ms**（Apple 边缘就在同区），换成本机省不出可测差值，
+反而要动客户端 SNI 与订阅。**未改动。**
+
+---
+
+## 十五、免责声明
 
 本项目仅供网络技术研究与学习交流使用。使用者须自行遵守所在国家/地区的法律法规，因使用本脚本产生的一切后果由使用者自行承担。
