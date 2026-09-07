@@ -749,7 +749,11 @@ apply_nic_tuning() {
       warn "网卡 $nic 不支持或不允许修改卸载选项（虚拟网卡常见），跳过"
     fi
     ip link set dev "$nic" txqueuelen 10000 >/dev/null 2>&1 || true
-    ip link set dev "$nic" mtu 1480 >/dev/null 2>&1 || true
+    local cur_mtu
+    cur_mtu=$(cat "/sys/class/net/$nic/mtu" 2>/dev/null || echo 1500)
+    if [ "$cur_mtu" -lt 1480 ] && [ "$cur_mtu" -gt 0 ]; then
+      ip link set dev "$nic" mtu 1480 >/dev/null 2>&1 || true
+    fi
   else
     warn "未安装 ethtool，跳过 GRO/GSO（apt install ethtool 后重跑 sbbox tune on 可启用）"
   fi
@@ -785,19 +789,25 @@ apply_tuning() {
     case "$NIC_SPEED" in ''|*[!0-9]*) NIC_SPEED=0 ;; esac   # 虚拟网卡常返回 -1/空
   fi
 
+  local SOCK_MEM_DEF UDP_MEM_MIN
   if [ "$MEM_MB" -ge 16384 ]; then
-    # 大内存档抬到 128MB：QUIC(Tuic/Hysteria2) 的 UDP socket 不像 TCP 那样自动
-    # 扩缩，quic-go 直接按 rmem_max 上限申请缓冲，上限偏小会打印
-    # "failed to sufficiently increase receive buffer size" 并压低吞吐。
-    TUNE_TIER="large";  SOCK_MEM_MAX=134217728; TCP_MEM_MAX=33554432; NETDEV_BACKLOG=65536; CONNTRACK_MAX=1048576; NETDEV_BUDGET=6000
+    # 大内存档 (>= 16GB)
+    TUNE_TIER="large";  SOCK_MEM_MAX=67108864; TCP_MEM_MAX=33554432; NETDEV_BACKLOG=65536; CONNTRACK_MAX=1048576; NETDEV_BUDGET=6000
+    SOCK_MEM_DEF=2097152; UDP_MEM_MIN=131072
   elif [ "$MEM_MB" -ge 4096 ]; then
+    # 标准档 (4GB - 16GB)
     TUNE_TIER="medium"; SOCK_MEM_MAX=33554432; TCP_MEM_MAX=16777216; NETDEV_BACKLOG=32768; CONNTRACK_MAX=262144; NETDEV_BUDGET=6000
+    SOCK_MEM_DEF=1048576; UDP_MEM_MIN=65536
+  elif [ "$MEM_MB" -ge 1536 ]; then
+    # 入门档 (1.5GB - 4GB)
+    TUNE_TIER="entry";  SOCK_MEM_MAX=16777216; TCP_MEM_MAX=8388608;  NETDEV_BACKLOG=16384; CONNTRACK_MAX=65536; NETDEV_BUDGET=""
+    SOCK_MEM_DEF=524288; UDP_MEM_MIN=32768
   else
-    TUNE_TIER="small";  SOCK_MEM_MAX=16777216; TCP_MEM_MAX=8388608;  NETDEV_BACKLOG=16384; CONNTRACK_MAX=0; NETDEV_BUDGET=""
+    # 极小内存档 (< 1.5GB) - 严防 OOM 熔断模式
+    TUNE_TIER="small";  SOCK_MEM_MAX=4194304;  TCP_MEM_MAX=2097152;  NETDEV_BACKLOG=4096;  CONNTRACK_MAX=0; NETDEV_BUDGET=""
+    SOCK_MEM_DEF=262144; UDP_MEM_MIN=16384
   fi
-  # 千兆以上链路把 socket 缓冲拉到 128MB：4Gbps × 200ms RTT 的 BDP 已接近 100MB，
-  # 缓冲小于 BDP 时单条 TCP/QUIC 连接根本跑不满出口，与内存是否富余无关。
-  # 需要 16GB 以上内存兜底，避免小内存机被一条连接的缓冲吃穿。
+  # 千兆以上链路在 16GB+ 内存机型上可放宽缓冲上限
   if [ "$NIC_SPEED" -ge 1000 ] && [ "$MEM_MB" -ge 16384 ]; then
     SOCK_MEM_MAX=134217728; TCP_MEM_MAX=67108864; NETDEV_BACKLOG=131072; NETDEV_BUDGET=8000
     TUNE_TIER="large+${NIC_SPEED}M"
@@ -827,32 +837,29 @@ apply_tuning() {
   # ---------- 收发缓冲区（过 CDN 高 BDP 链路关键项） ----------
   try_sysctl net.core.rmem_max "$SOCK_MEM_MAX"
   try_sysctl net.core.wmem_max "$SOCK_MEM_MAX"
-  if [ "$MEM_MB" -ge 4096 ]; then
-    try_sysctl net.core.rmem_default 4194304
-    try_sysctl net.core.wmem_default 4194304
-    try_sysctl net.ipv4.udp_rmem_min 131072
-    try_sysctl net.ipv4.udp_wmem_min 131072
-  else
-    try_sysctl net.core.rmem_default 1048576
-    try_sysctl net.core.wmem_default 1048576
-    try_sysctl net.ipv4.udp_rmem_min 16384
-  try_sysctl net.ipv4.udp_wmem_min 16384
-  fi
-  try_sysctl net.ipv4.tcp_rmem "4096 262144 ${TCP_MEM_MAX}"
-  try_sysctl net.ipv4.tcp_wmem "4096 262144 ${TCP_MEM_MAX}"
+  try_sysctl net.core.rmem_default "$SOCK_MEM_DEF"
+  try_sysctl net.core.wmem_default "$SOCK_MEM_DEF"
+  try_sysctl net.ipv4.udp_rmem_min "$UDP_MEM_MIN"
+  try_sysctl net.ipv4.udp_wmem_min "$UDP_MEM_MIN"
+  try_sysctl net.ipv4.tcp_rmem "4096 131072 ${TCP_MEM_MAX}"
+  try_sysctl net.ipv4.tcp_wmem "4096 131072 ${TCP_MEM_MAX}"
   try_sysctl net.ipv4.tcp_adv_win_scale 1
   try_sysctl net.ipv4.tcp_autocorking 1
   try_sysctl net.ipv4.tcp_comp_sack_nr 44
   try_sysctl net.ipv4.tcp_comp_sack_delay_ns 1000000
-  try_sysctl net.ipv4.tcp_mem "$(( MEM_PAGES * 6 / 100 )) $(( MEM_PAGES * 8 / 100 )) $(( MEM_PAGES * 12 / 100 ))"
+  try_sysctl net.ipv4.tcp_mem "$(( MEM_PAGES * 4 / 100 )) $(( MEM_PAGES * 6 / 100 )) $(( MEM_PAGES * 8 / 100 ))"
   # QUIC / HTTP3：Hysteria2 / Tuic 关键
-  try_sysctl net.core.optmem_max 262144
+  try_sysctl net.core.optmem_max 131072
   try_sysctl net.core.rps_sock_flow_entries 32768
-  # udp_mem 是**全局**的 UDP 内存上限（页数）
+  # udp_mem 是**全局**的 UDP 内存上限（页数），全档位动态闭环覆盖
   if [ "$MEM_MB" -ge 16384 ]; then
-    try_sysctl net.ipv4.udp_mem "$(( MEM_PAGES * 4 / 100 )) $(( MEM_PAGES * 8 / 100 )) $(( MEM_PAGES * 16 / 100 ))"
-  elif [ "$MEM_MB" -ge 1024 ]; then
-    try_sysctl net.ipv4.udp_mem "$(( MEM_PAGES * 2 / 100 )) $(( MEM_PAGES * 4 / 100 )) $(( MEM_PAGES * 8 / 100 ))"
+    try_sysctl net.ipv4.udp_mem "$(( MEM_PAGES * 4 / 100 )) $(( MEM_PAGES * 6 / 100 )) $(( MEM_PAGES * 8 / 100 ))"
+  elif [ "$MEM_MB" -ge 4096 ]; then
+    try_sysctl net.ipv4.udp_mem "$(( MEM_PAGES * 2 / 100 )) $(( MEM_PAGES * 4 / 100 )) $(( MEM_PAGES * 6 / 100 ))"
+  elif [ "$MEM_MB" -ge 1536 ]; then
+    try_sysctl net.ipv4.udp_mem "$(( MEM_PAGES * 2 / 100 )) $(( MEM_PAGES * 3 / 100 )) $(( MEM_PAGES * 5 / 100 ))"
+  else
+    try_sysctl net.ipv4.udp_mem "$(( MEM_PAGES * 1 / 100 )) $(( MEM_PAGES * 2 / 100 )) $(( MEM_PAGES * 3 / 100 ))"
   fi
 
   # ---------- 队列与并发 ----------
@@ -1882,14 +1889,17 @@ PYEOF
     cat > /etc/systemd/system/sbbox-sub.service <<EOF
 [Unit]
 Description=sbbox subscription server
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 ExecStart=$runner
-Restart=always
+Restart=on-failure
 RestartSec=3s
 LimitNOFILE=65535
+KillSignal=SIGTERM
+TimeoutStopSec=15
 
 [Install]
 WantedBy=multi-user.target
@@ -1926,12 +1936,10 @@ stop_sub_server() {
     rm -f /etc/systemd/system/sbbox-sub.service
     systemctl daemon-reload >/dev/null 2>&1
   fi
-  [ -f "$SB_HOME/sub.pid" ] && kill "$(cat "$SB_HOME/sub.pid")" 2>/dev/null
-  pkill -f "sub_server.py" >/dev/null 2>&1
-  pkill -f "python3 -m http.server" >/dev/null 2>&1
-  pkill -f "busybox httpd -f -p" >/dev/null 2>&1
+  [ -f "$SB_HOME/sub.pid" ] && kill "$(cat "$SB_HOME/sub.pid")" 2>/dev/null || true
+  pgrep -f "$SB_HOME/sub_server.py" | xargs kill 2>/dev/null || true
   crontab -l > /tmp/sbbox_sub_cron.tmp 2>/dev/null || true
-  sed -i '/sbbox-sub\|sub_server.py\|http.server\|httpd -f/d' /tmp/sbbox_sub_cron.tmp 2>/dev/null || true
+  sed -i '/sbbox-sub\|sub_server.py/d' /tmp/sbbox_sub_cron.tmp 2>/dev/null || true
   crontab /tmp/sbbox_sub_cron.tmp >/dev/null 2>&1
   rm -f /tmp/sbbox_sub_cron.tmp
   rm -f "$SB_HOME/sub.pid"
@@ -2645,6 +2653,17 @@ get_default_brutal_speed_mbps() {
   echo "$target"
 }
 
+try_fallback_bbr() {
+  modprobe tcp_bbr >/dev/null 2>&1 || true
+  local avail_cc
+  avail_cc=$(sysctl_get net.ipv4.tcp_available_congestion_control)
+  if echo "$avail_cc" | grep -qw bbr; then
+    sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1 || true
+    sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1 || true
+    info "已确认拥塞控制算法降级/锁定至 BBR + FQ"
+  fi
+}
+
 ensure_tcp_brutal() {
   local avail
   avail=$(sysctl_get net.ipv4.tcp_available_congestion_control)
@@ -2652,25 +2671,43 @@ ensure_tcp_brutal() {
     return 0
   fi
 
-  info "正在检测并安装 TCP Brutal (tcp-brutal) 内核模块..."
-  if ! command -v dkms >/dev/null 2>&1; then
-    apt-get update -qq && apt-get install -y -qq dkms "linux-headers-$(uname -r)" || true
+  # 前置容灾校验 1：容器环境判定（LXC / Docker 禁止装载内核模块）
+  if [ -f /.dockerenv ] || (command -v systemd-detect-virt >/dev/null 2>&1 && systemd-detect-virt --container >/dev/null 2>&1); then
+    warn "当前处于容器虚拟化环境，跳过 TCP Brutal 编译；自动降级至 BBR+FQ"
+    try_fallback_bbr
+    return 1
   fi
 
+  # 前置容灾校验 2：内核版本 >= 5.8
+  local k_maj k_min
+  k_maj=$(uname -r | cut -d. -f1)
+  k_min=$(uname -r | cut -d. -f2)
+  if [ "$k_maj" -lt 5 ] || { [ "$k_maj" -eq 5 ] && [ "$k_min" -lt 8 ]; }; then
+    warn "当前内核版本 $(uname -r) < 5.8，不支持 TCP Brutal；自动降级至 BBR+FQ"
+    try_fallback_bbr
+    return 1
+  fi
+
+  info "正在检测并安装 TCP Brutal (tcp-brutal) 内核模块..."
   if ! command -v dkms >/dev/null 2>&1; then
-    warn "未安装 dkms，无法编译 tcp-brutal 内核模块"
+    apt-get update -qq && apt-get install -y -qq dkms "linux-headers-$(uname -r)" >/dev/null 2>&1 || true
+  fi
+
+  if ! command -v dkms >/dev/null 2>&1 || [ ! -d "/lib/modules/$(uname -r)/build" ]; then
+    warn "未安装 dkms 或未找到内核头文件 (/lib/modules/$(uname -r)/build)，无法编译 tcp-brutal 内核模块；自动降级至 BBR+FQ"
+    try_fallback_bbr
     return 1
   fi
 
   local tmp_tar
-  tmp_tar=$(mktemp --suffix=.tar.gz)
-  if curl -fsSL https://github.com/HyNetworks/tcp-brutal/releases/latest/download/tcp-brutal.dkms.tar.gz -o "$tmp_tar" 2>/dev/null; then
-    dkms install "$tmp_tar" 2>/dev/null || true
+  tmp_tar=$(mktemp --suffix=.tar.gz 2>/dev/null || mktemp)
+  if curl -fsSL --connect-timeout 8 https://github.com/HyNetworks/tcp-brutal/releases/latest/download/tcp-brutal.dkms.tar.gz -o "$tmp_tar" 2>/dev/null; then
+    dkms install "$tmp_tar" >/dev/null 2>&1 || true
     rm -f "$tmp_tar"
   fi
 
   if ! command -v brutalctl >/dev/null 2>&1; then
-    bash <(curl -fsSL https://tcp.hy2.sh/) install 2>/dev/null || true
+    bash <(curl -fsSL --connect-timeout 8 https://tcp.hy2.sh/) install >/dev/null 2>&1 || true
   fi
 
   modprobe brutal 2>/dev/null || true
@@ -2679,7 +2716,8 @@ ensure_tcp_brutal() {
     info "TCP Brutal 内核模块已加载成功"
     return 0
   else
-    warn "TCP Brutal 模块加载失败，请确认内核头文件匹配"
+    warn "TCP Brutal 模块加载失败，已自动降级至 BBR+FQ"
+    try_fallback_bbr
     return 1
   fi
 }
