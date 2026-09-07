@@ -1038,9 +1038,45 @@ tune_show() {
   fi
 }
 
-# ======================================================
-# sing-box 服务端配置生成（三协议，Naiveproxy 服务端单入站同时支持 H2+H3）
-# ======================================================
+# 判断某 UDP 端口是否被 nat 表里「端口段」类规则劫持（DNAT/REDIRECT 到别处）。
+# 这类规则常由同机共存的其他代理脚本安装，会把落在段内的本机服务端口一并改写。
+port_hijacked_by_nat() {
+  local port="$1" line rng lo hi tgt
+  [ -z "$port" ] && return 1
+  while read -r line; do
+    rng=$(echo "$line" | grep -oE '\-\-dport [0-9]+:[0-9]+' | awk '{print $2}')
+    [ -z "$rng" ] && continue
+    tgt=$(echo "$line" | grep -oE '(to-destination :|--to-ports )[0-9]+' | grep -oE '[0-9]+$')
+    lo=${rng%%:*}; hi=${rng##*:}
+    if [ "$port" -ge "$lo" ] && [ "$port" -le "$hi" ] && [ "$port" != "$tgt" ]; then
+      echo "$lo-$hi=>$tgt"; return 0
+    fi
+  done < <(iptables -t nat -S PREROUTING 2>/dev/null | grep -E '\-\-dport [0-9]+:[0-9]+')
+  return 1
+}
+
+# 在所有端口段规则之前插一条 RETURN，保证直连本服务基础端口的包不被改写。
+# 幂等：已存在则不重复插入。
+guard_base_port() {
+  local port="$1"
+  [ -z "$port" ] && return 0
+  iptables  -t nat -C PREROUTING -p udp --dport "$port" -j RETURN 2>/dev/null || \
+    iptables  -t nat -I PREROUTING 1 -p udp --dport "$port" -j RETURN 2>/dev/null
+  ip6tables -t nat -C PREROUTING -p udp --dport "$port" -j RETURN 2>/dev/null || \
+    ip6tables -t nat -I PREROUTING 1 -p udp --dport "$port" -j RETURN 2>/dev/null
+}
+
+# 探测本机是否具备全局 IPv6 出口。没有却用 prefer_ipv4，sing-box 仍会发 AAAA
+# 并尝试 v6 连接，每次失败都白白多耗一个 RTT（实测日志里大量
+# "network is unreachable" 与 "exchange6: NXDOMAIN"）。无 v6 时直接用 ipv4_only。
+detect_ip_strategy() {
+  if ip -6 addr show scope global 2>/dev/null | grep -q 'inet6'; then
+    echo "prefer_ipv4"
+  else
+    echo "ipv4_only"
+  fi
+}
+
 installsb() {
   echo ""
   echo "========= 启用 Sing-box 内核 ========="
@@ -1093,46 +1129,6 @@ installsb() {
   fi
 
   # ---------- 端口分配 ----------
-
-# 判断某 UDP 端口是否被 nat 表里「端口段」类规则劫持（DNAT/REDIRECT 到别处）。
-# 这类规则常由同机共存的其他代理脚本安装，会把落在段内的本机服务端口一并改写。
-port_hijacked_by_nat() {
-  local port="$1" line rng lo hi tgt
-  [ -z "$port" ] && return 1
-  while read -r line; do
-    rng=$(echo "$line" | grep -oE '\-\-dport [0-9]+:[0-9]+' | awk '{print $2}')
-    [ -z "$rng" ] && continue
-    tgt=$(echo "$line" | grep -oE '(to-destination :|--to-ports )[0-9]+' | grep -oE '[0-9]+$')
-    lo=${rng%%:*}; hi=${rng##*:}
-    if [ "$port" -ge "$lo" ] && [ "$port" -le "$hi" ] && [ "$port" != "$tgt" ]; then
-      echo "$lo-$hi=>$tgt"; return 0
-    fi
-  done < <(iptables -t nat -S PREROUTING 2>/dev/null | grep -E '\-\-dport [0-9]+:[0-9]+')
-  return 1
-}
-
-# 在所有端口段规则之前插一条 RETURN，保证直连本服务基础端口的包不被改写。
-# 幂等：已存在则不重复插入。
-guard_base_port() {
-  local port="$1"
-  [ -z "$port" ] && return 0
-  iptables  -t nat -C PREROUTING -p udp --dport "$port" -j RETURN 2>/dev/null || \
-    iptables  -t nat -I PREROUTING 1 -p udp --dport "$port" -j RETURN 2>/dev/null
-  ip6tables -t nat -C PREROUTING -p udp --dport "$port" -j RETURN 2>/dev/null || \
-    ip6tables -t nat -I PREROUTING 1 -p udp --dport "$port" -j RETURN 2>/dev/null
-}
-
-# 探测本机是否具备全局 IPv6 出口。没有却用 prefer_ipv4，sing-box 仍会发 AAAA
-# 并尝试 v6 连接，每次失败都白白多耗一个 RTT（实测日志里大量
-# "network is unreachable" 与 "exchange6: NXDOMAIN"）。无 v6 时直接用 ipv4_only。
-detect_ip_strategy() {
-  if ip -6 addr show scope global 2>/dev/null | grep -q 'inet6'; then
-    echo "prefer_ipv4"
-  else
-    echo "ipv4_only"
-  fi
-}
-
   assign_port() { # $1=name $2=env_port
     local name=$1 val=${2:-}
     if [ -z "$val" ] && [ ! -e "$SB_HOME/port_$name" ]; then
@@ -2644,8 +2640,8 @@ get_default_brutal_speed_mbps() {
 
   local max_spd
   max_spd=$(get_machine_max_speed_mbps)
-  local target=$(( max_spd * 3 / 4 ))
-  [ "$target" -gt 0 ] || target=750
+  local target=$(( max_spd * 95 / 100 ))
+  [ "$target" -gt 0 ] || target=950
   echo "$target"
 }
 
@@ -2759,7 +2755,7 @@ set_tcp_brutal_speed() {
   local mbps="${1:-}"
   if [ -z "$mbps" ] || [ "$mbps" = "auto" ]; then
     mbps="$(get_default_brutal_speed_mbps)"
-    info "未指定速率，已自动设置为本机最大速度的 3/4: ${mbps} Mbps"
+    info "未指定速率，已自动设置为本机最大速度的 95%: ${mbps} Mbps"
   fi
   init_tcp_brutal_service "$mbps"
 
@@ -2836,7 +2832,7 @@ cmd_speed() {
     fi
     echo ""
     echo "用法: sbbox speed <上行Mbps> <下行Mbps>   例如: sbbox speed 100 1000"
-    echo "      sbbox speed auto                    自适应设为本机最大速率的 3/4"
+    echo "      sbbox speed auto                    自适应设为本机最大速率的 95%"
     echo "      sbbox speed bbr                     清空限额，统一切回 BBR"
     return 0
   fi
@@ -2860,7 +2856,7 @@ cmd_speed() {
           sbrestart
         fi
         gen_client
-        info "Hysteria2 带宽已自动设为本机规格 3/4：客户端上行 ${hyup}Mbps / 客户端下行 ${hydown}Mbps（Brutal CC）"
+        info "Hysteria2 带宽已自动设为本机规格 95%：客户端上行 ${hyup}Mbps / 客户端下行 ${hydown}Mbps（Brutal CC）"
       fi
       cmd_brutal speed "$def_spd"
       return 0
@@ -2929,7 +2925,7 @@ cmd_brutal() {
         echo -e "  内核模块:       ${RED}未加载${NC}"
       fi
       echo -e "  本机最大带宽:   ${GREEN}${max_spd} Mbps${NC}"
-      echo -e "  默认下发速率:   ${GREEN}${default_spd} Mbps (本机最大带宽 3/4)${NC}"
+      echo -e "  默认下发速率:   ${GREEN}${default_spd} Mbps (本机最大带宽 95%)${NC}"
       echo ""
       echo -e "${CYAN}=== 当前 Brutal 规则与实时连接 ===${NC}"
       if command -v brutalctl >/dev/null 2>&1; then
@@ -2974,9 +2970,9 @@ cmd_brutal() {
     *)
       echo "用法: sbbox brutal [show|on|off|speed|add|del]"
       echo "  sbbox brutal show          查看 TCP Brutal 状态与活跃连接"
-      echo "  sbbox brutal on [mbps]     开启 TCP Brutal 极速加速（默认设为本机最大速率的 3/4）"
+      echo "  sbbox brutal on [mbps]     开启 TCP Brutal 极速加速（默认设为本机最大速率的 95%）"
       echo "  sbbox brutal off           关闭 TCP Brutal 规则（回落至 BBR）"
-      echo "  sbbox brutal speed [mbps]  修改全局默认下发速率（不填则自动设为本机 3/4 速率）"
+      echo "  sbbox brutal speed [mbps]  修改全局默认下发速率（不填则自动设为本机 95% 速率）"
       echo "  sbbox brutal add <IP> [M]  为指定客户端 IP 设定独立下发速率"
       echo "  sbbox brutal del <IP>      删除指定客户端 IP 规则"
       ;;
@@ -3295,6 +3291,14 @@ main() {
   fi
 
   apply_tuning
+  # TCP Brutal (HyNetworks/tcp-brutal) 默认安装启用（设为服务器带宽的 95%）
+  if [ "${FEATURE_BRUTAL:-true}" != false ]; then
+    ensure_tcp_brutal >/dev/null 2>&1 || true
+    if lsmod 2>/dev/null | grep -qw brutal || sysctl_get net.ipv4.tcp_available_congestion_control | grep -qw brutal; then
+      init_tcp_brutal_service "auto" >/dev/null 2>&1 || true
+      info "TCP Brutal 已默认安装并应用：默认下发速率 $(get_default_brutal_speed_mbps) Mbps (本机最大带宽 95%)"
+    fi
+  fi
   apply_hy_hop
   install_service
   gen_client

@@ -248,7 +248,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 | `sbbox sub off` | 关闭订阅服务 |
 | `sbbox speed [上行] [下行]` | 配置客户端上/下行并激活 Hysteria2 与 TCP Brutal（如 `100 1000`） |
 | `sbbox speed bbr` | 清空带宽限额，客户端与服务端统一切回 BBR（默认推荐，见第十一节第 2 条） |
-| `sbbox brutal [show\|on\|off\|speed\|add\|del]` | 查看、开启/关闭 TCP Brutal (HyNetworks/tcp-brutal) 及管理限速规则（默认自适应本机最大带宽 3/4） |
+| `sbbox brutal [show\|on\|off\|speed\|add\|del]` | 查看、开启/关闭 TCP Brutal (HyNetworks/tcp-brutal) 及管理限速规则（默认自适应本机最大带宽 95%） |
 | `sbbox port [tu] [hy2] [nv]` | 更换节点端口（无参数自动分配 10000-65535 随机端口并同步配置与订阅） |
 | `sbbox cert status` | 查看证书有效期 |
 
