@@ -47,7 +47,8 @@
 - [十五、v2.5.1 ECN 与 BBR 版本查明](#十五v251-ecn-与-bbr-版本查明)
 - [十六、v2.5.2 tcp-brutal 在内核 7.1+ 上的静默失效修复](#十六v252-tcp-brutal-在内核-71-上的静默失效修复)
 - [十七、v2.5.4 BBRv3 上的 25 样本回归基线](#十七v254-bbrv3-上的-25-样本回归基线)
-- [十八、免责声明](#十八免责声明)
+- [十八、v2.5.5 large 档 tcp_rmem/tcp_wmem 上限补齐到 64MB](#十八v255-large-档-tcp_rmemtcp_wmem-上限补齐到-64mb)
+- [十九、免责声明](#十九免责声明)
 
 ---
 
@@ -1246,6 +1247,44 @@ BBRv3 实际只影响 **naive-h2** 与出站 TCP 直连。上表里 tuic/hysteri
 
 ---
 
-## 十八、免责声明
+## 十八、v2.5.5 large 档 tcp_rmem/tcp_wmem 上限补齐到 64MB
+
+`sbbox tune` 的 large 档（内存 ≥ 16GB）此前 `TCP_MEM_MAX=33554432`（32MB），
+而同档的 `SOCK_MEM_MAX`（即 `net.core.rmem_max`）已经是 64MB —— 单条 TCP 连接
+永远吃不满全局上限。v2.5.5 把 large 档补齐到 `67108864`：
+
+```diff
+-TUNE_TIER="large";  SOCK_MEM_MAX=67108864; TCP_MEM_MAX=33554432; ...
++TUNE_TIER="large";  SOCK_MEM_MAX=67108864; TCP_MEM_MAX=67108864; ...
+```
+
+medium / entry / small 三档**不变**。另外注意 `sbbox.sh` 里那条
+"千兆以上链路 + 16GB 以上内存 → 128M/64M" 的放宽分支（`large+<速率>M` 档）
+**在虚拟机上通常走不到**：virtio 网卡的 `/sys/class/net/*/speed` 返回 `-1` 或空，
+被归零后判断不成立，于是落回 large 档。这也正是本次要改 large 档本身的原因。
+
+验证：
+
+```bash
+sbbox tune on
+sysctl net.ipv4.tcp_rmem net.ipv4.tcp_wmem
+# 期望：4096  131072  67108864
+```
+
+**未采纳的两项**（来自社区流传的 "BBR Blast Smooth" 一键脚本）：
+
+| 该脚本的做法 | 为什么不采纳 |
+| --- | --- |
+| `net.ipv4.tcp_fin_timeout=8` | 本项目用 `15`；8 秒省下的内存在 16GB+ 机器上没有意义，却会让半关连接提前失去 socket。 |
+| 把参数 `>>` 追加进 `/etc/sysctl.conf` | Ubuntu 24.04+ 默认没有该文件；systemd-sysctl 把它排在 `/etc/sysctl.d/*.conf` **之后**应用，会静默盖掉 `sbbox tune` 与 `xh tuning` 的值，而 `sbbox tune off` 只删自己的 `/etc/sysctl.d/99-sbbox.conf`、**回滚不掉**；`>>` 还会在重复执行时堆叠多份。 |
+
+该脚本其余参数（`fq`/`bbr`、`rmem_max`/`wmem_max=64M`、`tcp_tw_reuse`、
+`tcp_no_metrics_save`，以及内核本就默认开启的 `tcp_window_scaling`/`tcp_timestamps`/`tcp_sack`）
+本项目**均已包含**，且本项目另有该脚本完全没有的 UDP 侧参数
+（`udp_rmem_min`/`udp_wmem_min`/`udp_mem`）—— 对 hysteria2 / tuic 这类 QUIC 协议才是关键项。
+
+---
+
+## 十九、免责声明
 
 本项目仅供网络技术研究与学习交流使用。使用者须自行遵守所在国家/地区的法律法规，因使用本脚本产生的一切后果由使用者自行承担。

@@ -395,7 +395,46 @@ naive-h2 3.9 / 7.2, vless-reality 7.3 / 15.9; no-proxy baseline 1.8 / 3.4.
   affect them. BBRv3 only governs **naive-h2** and plain outbound TCP, so do
   not credit those three nodes' numbers to the new kernel.
 
-## 14. Disclaimer
+## 14. v2.5.5 — `tcp_rmem`/`tcp_wmem` ceiling on the `large` tier raised to 64MB
+
+The `large` tier (RAM >= 16GB) shipped `TCP_MEM_MAX=33554432` (32MB) while its
+`SOCK_MEM_MAX` (`net.core.rmem_max`) was already 64MB, so a single TCP connection
+could never reach the global ceiling. It is now `67108864`; **medium / entry /
+small are unchanged**.
+
+Note that the "link >= 1Gb and RAM >= 16GB -> 128M/64M" widening branch in
+`sbbox.sh` (the `large+<speed>M` tier) **usually does not fire on a VM**: virtio
+NICs report `-1` or an empty string in `/sys/class/net/*/speed`, which is
+normalised to `0`, so the check fails and the host falls back to `large`. That is
+precisely why the `large` tier itself needed fixing.
+
+Verify:
+
+```bash
+sbbox tune on
+sysctl net.ipv4.tcp_rmem net.ipv4.tcp_wmem
+# expect: 4096  131072  67108864
+```
+
+**Two things deliberately NOT adopted** from the widely circulated
+"BBR Blast Smooth" one-liner script:
+
+- `net.ipv4.tcp_fin_timeout=8` — this project keeps `15`. The memory an 8s
+  FIN_WAIT2 saves is meaningless on a 16GB+ host, while it drops the socket early
+  on half-closed connections.
+- Appending settings to `/etc/sysctl.conf` — Ubuntu 24.04+ has no such file by
+  default, and systemd-sysctl applies `/etc/sysctl.conf` **after**
+  `/etc/sysctl.d/*.conf`, so it silently overrides both `sbbox tune` and
+  `xh tuning` values while `sbbox tune off` (which only removes its own
+  `/etc/sysctl.d/99-sbbox.conf`) **cannot roll them back**. `>>` also stacks
+  duplicates on re-run.
+
+Everything else in that script is already covered here, and this project also
+sets the UDP-side parameters it omits entirely (`udp_rmem_min`, `udp_wmem_min`,
+`udp_mem`) — the ones that actually matter for QUIC protocols like hysteria2 and
+tuic.
+
+## 15. Disclaimer
 
 This project is provided for network technology research and educational purposes only. Users are responsible for complying with local laws and regulations.
 
