@@ -44,7 +44,8 @@
 - [十二、v2.3.2 实测诊断与修复记录](#十二v232-实测诊断与修复记录)
 - [十三、v2.3.3 密钥轮换与外置 Hysteria2 修复记录](#十三v233-密钥轮换与外置-hysteria2-修复记录)
 - [十四、v2.5.0 握手提速与「全部采用最新特性」](#十四v250-握手提速与全部采用最新特性)
-- [十五、免责声明](#十五免责声明)
+- [十五、v2.5.1 ECN 与 BBR 版本查明](#十五v251-ecn-与-bbr-版本查明)
+- [十六、免责声明](#十六免责声明)
 
 ---
 
@@ -1064,6 +1065,54 @@ TCP 建连只要 **1.6ms**（Apple 边缘就在同区），换成本机省不出
 
 ---
 
-## 十五、免责声明
+## 十五、v2.5.1 ECN 与 BBR 版本查明
+
+与同机 Xray 项目同一轮改动。本项目只有一处配置改动，但把「查明的事实」写下来，
+省得下次再查一遍。
+
+### 1.〔已开启，但当前内核上无提速〕`tcp_ecn` 2 → 1
+
+`try_sysctl net.ipv4.tcp_ecn` 由 `2`（只被动应答）改为 `1`（主动发起协商）。
+
+**为什么两个项目必须一起改**：两者都往 `/etc/sysctl.d/` 写自己的文件
+（`99-sbbox.conf` 与 `99-xray-xhttp.conf`），文件名排序后写者胜。
+只改一边的话，实际生效值取决于文件名而不是任一项目的预期——这正是本机
+既有的踩坑模式。
+
+**验证命令**（关键是**按对端 IP 过滤**，否则会把自己作为服务端回的 SYN-ACK
+误判成「对端接受」）：
+
+```bash
+IP=$(getent ahostsv4 speed.cloudflare.com | awk 'NR==1{print $1}')
+tcpdump -i <网卡> -n "host $IP and tcp port 443 and tcp[tcpflags] & tcp-syn != 0" -w /tmp/e.pcap &
+curl -s -o /dev/null --resolve "speed.cloudflare.com:443:$IP" https://speed.cloudflare.com/
+tcpdump -r /tmp/e.pcap -n | grep 'Flags \[S'
+# 我方 SYN 应为 [SEW]；对端 SYN-ACK 带 E（[S.E]）= 接受
+grep -H 'tcp_ecn =' /etc/sysctl.d/99-sbbox.conf /etc/sysctl.d/99-xray-xhttp.conf
+```
+
+**实测 7 个对端**：Cloudflare / GitHub / Bing / Microsoft / 1.1.1.1 / 9.9.9.9 接受，
+Google 拒绝，**无一例连接失败**。
+
+**但它在当前内核上不提速**：本机 `bbr` 是 **BBRv1**，控制环路不消费 ECN 标记。
+A/B 实测（12 轮交错）首字节 44.8ms vs 47.5ms、吞吐 1212 vs 1373 Mbps，
+差异完全落在 CF 边缘波动里，**无可测差异**。设成 1 只是为将来换 ECN 敏感的
+拥塞控制预留协商能力。
+
+**另外**：本项目 4 条节点里有 3 条是 QUIC（TUIC / Hysteria2 / naive-h3），
+它们的拥塞控制在**用户态**，内核 TCP 的 CC 与 ECN 设置对它们**完全无效**。
+这一项实际只影响 naive-h2 与出站的 TCP 直连。
+
+### 2.〔查明·当前做不到〕内核里的 `bbr` 是 BBRv1，不是 BBRv3
+
+判据与结论同 Xray 项目 README 第九节第 3 条：`bbr_lt_bw_sampling`（v1 专属）、
+`ss` 打印 v1 的 info 字段、`/sys/module/tcp_bbr/parameters/` 为空。
+本机是 **arm64**，archive 里所有内核都带这份 BBRv1，而常见的预编译 BBRv3 内核
+（XanMod 一类）**只出 x86_64**。DKMS 外挂 `tcp_bbr3` 模块是风险最低的一条路
+（`tcp_brutal` 就是这么装的），本版**未执行**。
+
+---
+
+## 十六、免责声明
 
 本项目仅供网络技术研究与学习交流使用。使用者须自行遵守所在国家/地区的法律法规，因使用本脚本产生的一切后果由使用者自行承担。

@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.5.0"
+SBBOX_VERSION="v2.5.1"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -889,7 +889,14 @@ apply_tuning() {
   try_sysctl net.ipv4.tcp_notsent_lowat 262144
   try_sysctl net.ipv4.tcp_syncookies 1
   try_sysctl net.ipv4.tcp_tw_reuse 1
-  try_sysctl net.ipv4.tcp_ecn 2
+  # tcp_ecn = 1（v2.5.1）：主动发起 ECN 协商，而不是只被动应答（旧值 2）。
+  # 实测 7 个对端里 6 个接受（Cloudflare / GitHub / Bing / Microsoft / 1.1.1.1 /
+  # 9.9.9.9），只有 Google 拒绝，无一例连接失败。
+  # 但本机 bbr 是 **BBRv1**，其控制环路不消费 ECN 标记，实测开关两态在首字节
+  # 与吞吐上均无可测差异。设成 1 是为将来换 ECN 敏感的拥塞控制预留协商能力。
+  # 与同机 Xray 项目保持一致（两者都写 /etc/sysctl.d/，文件名排序后写者胜，
+  # 值不一致会导致实际生效值取决于文件名而不是任一项目的预期）。
+  try_sysctl net.ipv4.tcp_ecn 1
   try_sysctl net.ipv4.tcp_ecn_fallback 1
   try_sysctl net.ipv4.tcp_retries2 12
   try_sysctl net.ipv4.tcp_syn_retries 4

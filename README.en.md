@@ -304,7 +304,34 @@ Regression after the change: 13/13 nodes pass, including all five sbbox nodes
 (tuic 2.6 ms, hysteria2 19.2 ms, naive-h3 3.4 ms, naive-h2 4.1 ms,
 vless-reality 8.8 ms).
 
-## 11. Disclaimer
+## 11. What's new in v2.5.1 — ECN, and what the kernel's BBR actually is
+
+- **`net.ipv4.tcp_ecn` 2 → 1.** Both projects on this host must change together:
+  each writes its own file under `/etc/sysctl.d/` (`99-sbbox.conf` and
+  `99-xray-xhttp.conf`) and the later filename wins, so changing only one side
+  makes the effective value depend on filename ordering rather than on either
+  project's intent. Verified with tcpdump on the SYN/SYN-ACK flags, **filtered
+  by peer IP** — without that filter our own server's SYN-ACK to inbound
+  connections is misread as "the peer accepted". 6 of 7 peers accept
+  (Cloudflare, GitHub, Bing, Microsoft, 1.1.1.1, 9.9.9.9); only Google refuses;
+  no connection failures.
+- **It does not speed anything up on this kernel.** The `bbr` here is BBRv1,
+  whose control loop does not consume ECN marks. A 12-round interleaved A/B
+  showed no measurable difference (44.8 ms / 1212 Mbps vs 47.5 ms / 1373 Mbps,
+  the spread being Cloudflare edge variance). It is set to 1 purely as a
+  zero-cost prerequisite for a future ECN-reactive congestion control.
+- **Note on scope:** 3 of this project's 4 nodes are QUIC (TUIC, Hysteria2,
+  naive-h3) and carry their congestion control in **userspace** — the kernel's
+  TCP congestion control and ECN settings do not apply to them at all. This
+  change only touches naive-h2 and plain outbound TCP.
+- **The kernel's `bbr` is BBRv1, not v3**: `bbr_lt_bw_sampling` in kallsyms is
+  v1-only, `ss` prints v1's info layout, `/sys/module/tcp_bbr/parameters/` is
+  empty. This box is **arm64** and every kernel in the archive carries the same
+  BBRv1, while prebuilt BBRv3 kernels (XanMod and similar) ship x86_64 only.
+  A DKMS `tcp_bbr3` module is the low-risk route (it is how `tcp_brutal` is
+  already built here) but was **not taken in this release**.
+
+## 12. Disclaimer
 
 This project is provided for network technology research and educational purposes only. Users are responsible for complying with local laws and regulations.
 
