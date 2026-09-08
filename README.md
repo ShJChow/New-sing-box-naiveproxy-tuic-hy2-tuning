@@ -1170,8 +1170,13 @@ BBR 有 v1 / v3 两代，`sysctl net.ipv4.tcp_congestion_control` **两代都叫
 ```
 
 判据：`/proc/kallsyms` 有 `bbr_start_bw_probe_down` 等 v3 符号 → v3；
-有 v1 专属的 `bbr_lt_bw_sampling` → v1；兜底看 `ss -tin` 的 `cwnd_gain`
-（v1=2.88672，v3=2）。都拿不到就报 `unknown`，不猜。
+有 v1 专属的 `bbr_lt_bw_sampling` → v1。拿不到 kallsyms 才兜底看
+`ss -tin` 的 **`pacing_gain`**（v1 STARTUP=2.88672，v3=2.77344），
+并加 `?` 后缀表示不确定；命中不了就报 `unknown`，不猜。
+
+> **v2.5.3 更正**：v2.5.2 曾把 `cwnd_gain`（v1=2.88672、v3=2）写成版本指纹，
+> **这是错的**。**BBRv1 进入 PROBE_BW 后 `cwnd_gain` 同样是 2** —— 它区分的是
+> 连接状态而不是 BBR 版本，拿它判长连接会给出错误答案。判版本以 kallsyms 符号为准。
 
 ### 3.〔核对〕BBRv3 上线后本项目 5 条节点全通
 

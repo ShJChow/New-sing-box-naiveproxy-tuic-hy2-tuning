@@ -359,6 +359,14 @@ vless-reality 8.8 ms).
   nodes. Note 3 of this project's 4 nodes are QUIC (TUIC, Hysteria2, naive-h3)
   and carry congestion control in **userspace**, so the kernel CC change only
   affects naive-h2 and plain outbound TCP.
+- **Correction to v2.5.2 (in v2.5.3):** v2.5.2 documented `cwnd_gain` as the
+  quick BBRv1-vs-v3 fingerprint (`2.88672` vs `2`). **That is wrong** —
+  BBRv1's `cwnd_gain` is also `2` once a connection leaves STARTUP for
+  PROBE_BW, so the value tracks the connection's *state*, not the BBR version,
+  and misreports long-lived connections. Use the kallsyms symbols as the
+  authority; `detect_bbr_version()` now falls back to `pacing_gain`
+  (v1 STARTUP `2.88672` vs v3 `2.77344`) only when kallsyms is unreadable,
+  marks it with a `?`, and otherwise returns `unknown`.
 - **Correction to v2.5.1:** ECN's lack of benefit was blamed on "BBRv1 does not
   consume ECN marks". True, but not the whole story — BBRv3 does consume them
   and there is still no difference, because **nothing on these paths marks
