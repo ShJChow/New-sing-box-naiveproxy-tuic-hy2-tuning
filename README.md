@@ -45,7 +45,8 @@
 - [十三、v2.3.3 密钥轮换与外置 Hysteria2 修复记录](#十三v233-密钥轮换与外置-hysteria2-修复记录)
 - [十四、v2.5.0 握手提速与「全部采用最新特性」](#十四v250-握手提速与全部采用最新特性)
 - [十五、v2.5.1 ECN 与 BBR 版本查明](#十五v251-ecn-与-bbr-版本查明)
-- [十六、免责声明](#十六免责声明)
+- [十六、v2.5.2 tcp-brutal 在内核 7.1+ 上的静默失效修复](#十六v252-tcp-brutal-在内核-71-上的静默失效修复)
+- [十七、免责声明](#十七免责声明)
 
 ---
 
@@ -1113,6 +1114,94 @@ A/B 实测（12 轮交错）首字节 44.8ms vs 47.5ms、吞吐 1212 vs 1373 Mbp
 
 ---
 
-## 十六、免责声明
+## 十六、v2.5.2 tcp-brutal 在内核 7.1+ 上的静默失效修复
+
+与同机 Xray 项目同一轮。**本条与是否升级 BBRv3 无关——任何人把机器升到 7.1
+以上都会踩到，而且是静默的。**
+
+### 1.〔严重·静默降级〕tcp-brutal 编译失败 → 自动降级到 BBR
+
+**现象**：`dkms` 编译 tcp-brutal 报
+
+```
+error: 'struct tcp_congestion_ops' has no member named 'min_tso_segs'; did you mean 'tso_segs'?
+```
+
+本项目在这种情况下会走 `try_fallback_bbr` **自动降级到 BBR+FQ**——这是设计内的
+容灾，但你不看日志就不会知道 Brutal 根本没启用，只会觉得"限速功能好像没生效"。
+
+**根因**：内核 7.1 起改了拥塞控制回调签名，上游 tcp-brutal 至今未适配：
+
+```c
+旧 (≤7.0): u32 (*min_tso_segs)(struct sock *sk);
+新 (7.1+): u32 (*tso_segs)(struct sock *sk, unsigned int mss_now);
+```
+
+**验证命令**：
+
+```bash
+sysctl -n net.ipv4.tcp_available_congestion_control   # 期望含 brutal
+dkms status | grep tcp-brutal                          # 每个内核各一份 installed
+tail -20 /var/lib/dkms/tcp-brutal/*/build/make.log     # 失败时看这里
+sbbox status                                           # 看是否已降级到 BBR
+```
+
+**修复方式**（v2.5.2 起自动执行）：安装流程改为先 `dkms ldtarball` 把源码摊到
+`/usr/src`，打完补丁再 `dkms install`——原来的 `dkms install <tarball>` 是
+「解包+编译」一步走，中间插不进补丁。补丁的判别式**直接 grep 目标内核的
+`include/net/tcp.h`**，不用 `LINUX_VERSION_CODE` 猜版本边界。
+
+写探测踩的三个坑（注释里都有）：Makefile 会被 kbuild 二次读取（那时只有
+`srctree` 没有 `KERNEL_DIR`，只看后者会静默不定义宏）；`$(shell ...)` 里不能用
+反斜杠续行；**make 匹配 `$(shell ...)` 右括号时不认引号**，grep 模式里不能出现
+`)`，因此改用无括号的 `tso_segs.*mss_now`。
+
+**实测**：补丁后的源码对 `7.2.3-joeyblog-bbrv3` 与 `7.0.0-1010-oracle` **都能编出
+`brutal.ko`**，两个内核下 `brutal` 均在可用 CC 列表里；补丁函数幂等。
+
+### 2.〔适配〕`sbbox` 状态输出新增 BBR 版本识别
+
+BBR 有 v1 / v3 两代，`sysctl net.ipv4.tcp_congestion_control` **两代都叫 `bbr`**，
+只看名字分不出来 —— 这正是 v2.5.1 里误判的起点。状态输出现在多一行：
+
+```
+  net.ipv4.tcp_congestion_control  bbr
+    └─ BBR 版本                     v3
+```
+
+判据：`/proc/kallsyms` 有 `bbr_start_bw_probe_down` 等 v3 符号 → v3；
+有 v1 专属的 `bbr_lt_bw_sampling` → v1；兜底看 `ss -tin` 的 `cwnd_gain`
+（v1=2.88672，v3=2）。都拿不到就报 `unknown`，不猜。
+
+### 3.〔核对〕BBRv3 上线后本项目 5 条节点全通
+
+同机内核已换成 `7.2.3-joeyblog-bbrv3`。13 节点全量回归 13/13 PASS，
+其中本项目 5 条：tuic 2.4ms / hysteria2 2.5ms / naive-h3 3.1ms /
+naive-h2 5.8ms / vless-reality 7.9ms（中位）。
+
+**提醒**：本项目 4 条节点里 3 条是 QUIC（TUIC / Hysteria2 / naive-h3），
+拥塞控制在**用户态**，换内核 CC 对它们无效。BBRv3 实际只影响 naive-h2
+与出站 TCP 直连。
+
+### 4.〔更正 v2.5.1〕ECN 无收益的真正原因
+
+v2.5.1 把 ECN 无收益归因为「BBRv1 不消费 ECN 标记」。**那句没错，但不是全部原因。**
+换上会消费 ECN 的 BBRv3 后仍然没有差异，真正原因是**路径上压根没有标记**：
+
+```bash
+nstat -az | grep -iE 'DeliveredCE|InCEPkts'   # 自开机以来全为 0
+```
+
+**判断 ECN 有没有用，要先量 CE 计数，而不是直接跑吞吐 A/B。**
+`tcp_ecn=1` 保留（零成本，将来路径上出现 L4S/AQM 时能立刻吃到）。
+
+> **测量口径警告**：`speed.cloudflare.com` 会对频繁测速返回 **HTTP 429**，
+> 此时 `%{speed_download}` 变成 0 而 **curl 退出码仍是 0**，极易被误读成
+> 「吞吐掉到 0」。做吞吐基准要用 cachefly 一类不限流的源，并显式检查
+> `http_code` 与 `size_download`。
+
+---
+
+## 十七、免责声明
 
 本项目仅供网络技术研究与学习交流使用。使用者须自行遵守所在国家/地区的法律法规，因使用本脚本产生的一切后果由使用者自行承担。

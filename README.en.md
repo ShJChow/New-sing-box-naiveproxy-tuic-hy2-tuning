@@ -331,7 +331,44 @@ vless-reality 8.8 ms).
   A DKMS `tcp_bbr3` module is the low-risk route (it is how `tcp_brutal` is
   already built here) but was **not taken in this release**.
 
-## 12. Disclaimer
+## 12. What's new in v2.5.2 — tcp-brutal silently breaks on kernels 7.1+
+
+**This is independent of BBRv3 — anyone moving past kernel 7.0 hits it, silently.**
+
+- **`tcp-brutal` no longer builds on 7.1+.** The kernel renamed the callback
+  (`u32 (*min_tso_segs)(struct sock *sk)` → `u32 (*tso_segs)(struct sock *sk,
+  unsigned int mss_now)`) and upstream has not adapted. This project then takes
+  its `try_fallback_bbr` path and **silently degrades to BBR+FQ** — by design,
+  but you will not know Brutal is off unless you read the logs.
+- **Fix (automatic from v2.5.2):** install now runs `dkms ldtarball` first,
+  patches, then `dkms install` — the old `dkms install <tarball>` unpacks and
+  compiles in one step with nowhere to insert a patch. The patch's test
+  **greps the target kernel's `include/net/tcp.h`** instead of guessing a
+  `LINUX_VERSION_CODE` boundary. Three traps are documented in the comments:
+  the Makefile is read twice (kbuild's re-read has only `srctree`, not
+  `KERNEL_DIR`, so testing the latter leaves the macro silently undefined);
+  `$(shell ...)` cannot use backslash continuations; and **make matches the
+  closing paren of `$(shell ...)` without respecting quotes**, so a `)` in the
+  grep pattern closes it early — hence the paren-free `tso_segs.*mss_now`.
+  Verified building `brutal.ko` against both 7.2.3 and 7.0.0-1010-oracle;
+  the patch function is idempotent.
+- **Verify with:** `sysctl -n net.ipv4.tcp_available_congestion_control`,
+  `dkms status | grep tcp-brutal`, and
+  `tail -20 /var/lib/dkms/tcp-brutal/*/build/make.log`.
+- **Regression on the BBRv3 kernel: 13/13 PASS**, including all five sbbox
+  nodes. Note 3 of this project's 4 nodes are QUIC (TUIC, Hysteria2, naive-h3)
+  and carry congestion control in **userspace**, so the kernel CC change only
+  affects naive-h2 and plain outbound TCP.
+- **Correction to v2.5.1:** ECN's lack of benefit was blamed on "BBRv1 does not
+  consume ECN marks". True, but not the whole story — BBRv3 does consume them
+  and there is still no difference, because **nothing on these paths marks
+  packets** (`nstat -az | grep -iE 'DeliveredCE|InCEPkts'` is 0 since boot).
+  Judge ECN by CE counters, not by a throughput A/B.
+- **Measurement warning:** `speed.cloudflare.com` returns HTTP 429 under
+  repeated benchmarking; `%{speed_download}` then reads 0 while curl still
+  exits 0, which is trivially misread as a throughput collapse.
+
+## 13. Disclaimer
 
 This project is provided for network technology research and educational purposes only. Users are responsible for complying with local laws and regulations.
 
