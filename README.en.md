@@ -376,7 +376,26 @@ vless-reality 8.8 ms).
   repeated benchmarking; `%{speed_download}` then reads 0 while curl still
   exits 0, which is trivially misread as a throughput collapse.
 
-## 13. Disclaimer
+## 13. v2.5.4 — 25-sample regression baseline on the BBRv3 kernel
+
+Full run with `SAMPLES=25` on `7.2.3-joeyblog-bbrv3`; this project's five nodes:
+tuic median 2.6 ms / p95 6.6, hysteria2 2.9 / 6.8, naive-h3 2.6 / 6.8,
+naive-h2 3.9 / 7.2, vless-reality 7.3 / 15.9; no-proxy baseline 1.8 / 3.4.
+**13/13 PASS** overall.
+
+- **The jitter column (max ÷ median) necessarily grows with sample count** —
+  more samples, more chances to catch an outlier. Judge stability by **p95**.
+  Going from 9 to 25 samples on the same host: tuic went from p95 447.5 ms /
+  **153.7x** to 6.6 ms / **2.9x** (that 153.7x was one outlier), while
+  naive-h3's ratio *rose* from 12.2x to 16.5x even as its p95 *fell* from
+  40.4 ms to 6.8 ms — ratio up, behaviour steadier. Read the no-proxy baseline
+  row first; anything within it is the path, not the node.
+- **Scope:** 3 of this project's 4 nodes are QUIC (TUIC, Hysteria2, naive-h3)
+  and carry congestion control in **userspace** — the kernel CC swap does not
+  affect them. BBRv3 only governs **naive-h2** and plain outbound TCP, so do
+  not credit those three nodes' numbers to the new kernel.
+
+## 14. Disclaimer
 
 This project is provided for network technology research and educational purposes only. Users are responsible for complying with local laws and regulations.
 
