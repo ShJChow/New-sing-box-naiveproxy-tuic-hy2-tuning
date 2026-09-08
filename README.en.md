@@ -434,7 +434,29 @@ sets the UDP-side parameters it omits entirely (`udp_rmem_min`, `udp_wmem_min`,
 `udp_mem`) — the ones that actually matter for QUIC protocols like hysteria2 and
 tuic.
 
-## 15. Disclaimer
+## 15. v2.5.6 — reverts the 64MB buffer ceiling from v2.5.5
+
+v2.5.5 raised the `large`-tier `tcp_rmem`/`tcp_wmem` ceiling from 32MB to 64MB.
+It **measurably slowed connections down**, so this release returns to the v2.5.4
+behaviour (`TCP_MEM_MAX=33554432`).
+
+**Lesson: the v2.5.5 verification was inadequate.** It only confirmed via a
+`sysctl` read-back that the value had been *written*, and never compared
+throughput or latency before and after. A parameter being set is not the same as
+it being faster.
+
+To roll back if you installed v2.5.5:
+
+```bash
+sbbox tune off && sbbox tune on      # with the v2.5.6 sbbox
+sysctl net.ipv4.tcp_rmem             # expect 4096 131072 33554432
+```
+
+> **Tuning changes in this project will no longer be accepted without
+> before/after measurements** — the bar is a throughput/latency comparison on the
+> same host and config, not whether the parameter was written successfully.
+
+## 16. Disclaimer
 
 This project is provided for network technology research and educational purposes only. Users are responsible for complying with local laws and regulations.
 
