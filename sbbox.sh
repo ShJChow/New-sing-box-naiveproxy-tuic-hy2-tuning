@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.2"
+SBBOX_VERSION="v2.7.3"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -1422,7 +1422,7 @@ EOF
     fi
   fi
 
-  # Naiveproxy
+  # Naiveproxy (HTTP/3 QUIC + HTTP/2 TLS 1.3 极速抗探测)
   if [ -n "$nvp" ] && [ "$CERT_OK" = 1 ]; then
     cat >> "$SB_CONF" <<EOF
         {
@@ -1432,17 +1432,26 @@ EOF
             "listen_port": $port_nv,
             "tcp_fast_open": true,
             "tcp_multi_path": true,
+            "udp_fragment": true,
+            "udp_timeout": "300s",
             "quic_congestion_control": "bbr",
             "users": [
                 { "username": "$nv_user", "password": "$nv_pw" }
             ],
             "tls": {
                 "enabled": true,
+                "server_name": "$ym",
                 "min_version": "1.3",
-                "alpn": [ "h3", "h2", "http/1.1" ],
+                "max_version": "1.3",
+                "cipher_suites": [
+                    "TLS_AES_128_GCM_SHA256",
+                    "TLS_AES_256_GCM_SHA384",
+                    "TLS_CHACHA20_POLY1305_SHA256"
+                ],
+                "alpn": [ "h3", "h2" ],
                 "certificate_path": "$CERT_DIR/fullchain.cer",
                 "key_path": "$CERT_DIR/private.key",
-                "handshake_timeout": "15s"
+                "handshake_timeout": "10s"
             }
         },
 EOF
@@ -2408,7 +2417,11 @@ gen_client_clash() {
     password: $nv_pw
     tls: true
     sni: $sni
-    skip-cert-verify: false"
+    skip-cert-verify: false
+    client-fingerprint: chrome
+    alpn:
+      - h2
+    tfo: true"
     groups="$groups
       - naive-$node_tag"
   fi
