@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.5.6"
+SBBOX_VERSION="v2.6.0"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -66,6 +66,11 @@ tup="${tup:-}" hyp="${hyp:-}" nvp="${nvp:-}"
 reap="${reap:-${vlp:-${rea:-}}}"            # 最新 VLESS-Reality TCP 节点（免域名免证书）
 reap_sni="${reap_sni:-${reality_sni:-}}"    # Reality 伪装目标 SNI（默认 gateway.icloud.com）
 port_rea="${port_rea:-${port_vl:-}}"        # Reality 监听端口（默认随机 10000-65535）
+anyp="${anyp:-}"                            # sing-box 1.14 新特性：AnyTLS + TLS 节点（抗 TLS-in-TLS 指纹）
+port_any="${port_any:-}"                    # AnyTLS 监听端口（默认随机 10000-65535）
+stlp="${stlp:-}"                            # ShadowTLS v3 节点（免证书伪装）
+port_stls="${port_stls:-}"                  # ShadowTLS 监听端口（默认随机 10000-65535）
+stls_sni="${stls_sni:-${reality_sni:-gateway.icloud.com}}"  # ShadowTLS 伪装 SNI
 hyjpt="${hyjpt:-}"                          # Hysteria2 跳跃端口，默认关闭（空）；如 "25000:38000"
 hyobfs="${hyobfs:-1}"                       # Hysteria2 salamander 混淆，默认开启；关闭用 hyobfs=0
 hyobfs_pw="${hyobfs_pw:-}"                  # 混淆密码（默认独立随机值）
@@ -130,10 +135,10 @@ v4v6() {
 # ---------- 帮助信息 ----------
 showmode() {
   echo "==========================================================="
-  echo "sbbox $SBBOX_VERSION — Sing-box-Only 四协议安全加固代理脚本"
-  echo "支持协议：Tuic / Hysteria2 / Naiveproxy(H2+H3) / VLESS-Reality(TCP+Vision)"
+  echo "sbbox $SBBOX_VERSION — Sing-box-Only 协议安全加固代理脚本"
+  echo "支持协议（2026梯队）：Hysteria2 / VLESS-Reality / AnyTLS / Naiveproxy / Tuic / ShadowTLS v3"
   echo "-----------------------------------------------------------"
-  echo "主脚本：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) reap=1 tup=1 hyp=1 nvp=1 alns=1 ym=你的域名"
+  echo "主脚本：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) hyp=1 reap=1 anyp=1 nvp=1 tup=1 stlp=1 alns=1 ym=你的域名"
   echo "显示节点信息：sbbox list 【或】 bash sbbox.sh list"
   echo "服务与流控状态：sbbox status"
   echo "重启 sing-box：sbbox res"
@@ -144,15 +149,19 @@ showmode() {
   echo "端口跳跃：sbbox hop 25000:38000 【默认关闭】 sbbox hop off"
   echo "极速优化：sbbox speed 100 1000（设置客户端上/下行并激活 Hy2 与 TCP Brutal 极速拥塞控制）"
   echo "TCP Brutal：sbbox brutal show | on | off | speed | add | del（TCP Brutal 拥塞控制与限速）"
-  echo "更换端口：sbbox port [tu] [hy2] [nv] [rea]（无参数分配 10000-65535 随机端口并同步）"
+  echo "更换端口：sbbox port [tu] [hy2] [nv] [rea] [any] [stls]（无参数分配 10000-65535 随机端口并同步）"
   echo "自检修复：sbbox doctor"
   echo "卸载：sbbox del"
   echo "-----------------------------------------------------------"
-  echo "环境变量（安装期）：reap=1 tup=1 hyp=1 nvp=1"
-  echo "  reap=1   启用最新 VLESS-Reality TCP 节点（支持 Vision 流控，免域名/免证书，默认开启）"
-  echo "  reap_sni=域名  Reality 伪装 SNI 目标（默认 gateway.icloud.com）"
+  echo "环境变量（安装期）：hyp=1 reap=1 anyp=1 nvp=1 tup=1 stlp=1"
+  echo "  hyp=1    🥇 启用 Hysteria2 + TLS（高速主力，支持端口跳跃与混淆）"
+  echo "  reap=1   🥈 启用 VLESS-Reality TCP 节点（兼容性主力，免域名免证书）"
+  echo "  anyp=1   🥉 启用 AnyTLS + TLS（新一代 TCP 候选，抹除 TLS-in-TLS 特征）"
+  echo "  nvp=1    4 启用 NaiveProxy (H3+H2，Chromium 内核级反探测伪装）"
+  echo "  tup=1    5 启用 TUIC (v5，标准 QUIC 0-RTT，Hysteria2 备选）"
+  echo "  stlp=1   6 启用 ShadowTLS v3（TCP 终极备用，借用真 SNI 证书防探测）"
   echo "  alns=1   启用 acme 证书（需 ym=你的域名）"
-  echo "  ym=域名  acme 证书域名（Hysteria2/Tuic/Naive 使用）"
+  echo "  ym=域名  acme 证书域名（Hysteria2/AnyTLS/Tuic/Naive 使用）"
   echo "  hyjpt=25000:38000  Hysteria2 跳跃端口（默认关闭；同机有其他代理脚本时慎开）"
   echo "  hyup=100 hydown=1000  Hysteria2 Brutal 拥塞控制客户端带宽"
 
@@ -365,6 +374,13 @@ load_secrets() {
   pw_hy=$(_load_sec hy2_pw)
   nv_user=$(_load_sec naive_user)
   nv_pw=$(_load_sec naive_pw)
+  pw_any=$(_load_sec anytls_pw)
+  pw_stls=$(_load_sec shadowtls_pw)
+  if [ ! -s "$SB_SEC_DIR/ss_inner_pw" ]; then
+    openssl rand -base64 16 > "$SB_SEC_DIR/ss_inner_pw"
+    chmod 600 "$SB_SEC_DIR/ss_inner_pw" 2>/dev/null
+  fi
+  pw_ss_inner=$(cat "$SB_SEC_DIR/ss_inner_pw")
 
   # Reality 秘钥对与 short_id（支持 sing-box 原生 reality-keypair / rand）
   local f_priv="$SB_SEC_DIR/reality_priv"
@@ -1167,6 +1183,8 @@ installsb() {
   [ -n "$hyp" ] && { assign_port hy2 "$port_hy2"; echo "Hysteria2 端口：$port_hy2"; open_port "$port_hy2" udp; }
   [ -n "$nvp" ] && { assign_port nv "$port_nv"; echo "Naiveproxy 端口：$port_nv"; open_port "$port_nv" tcp; open_port "$port_nv" udp; }
   [ -n "$reap" ] && { assign_port rea "$port_rea"; echo "VLESS-Reality 端口：$port_rea"; open_port "$port_rea" tcp; }
+  [ -n "$anyp" ] && { assign_port any "${port_any:-28443}"; echo "AnyTLS 端口：$port_any"; open_port "$port_any" tcp; }
+  [ -n "$stlp" ] && { assign_port stls "${port_stls:-39443}"; echo "ShadowTLS 端口：$port_stls"; open_port "$port_stls" tcp; }
 
 
   local sb_strategy; sb_strategy=$(detect_ip_strategy)
@@ -1441,6 +1459,67 @@ EOF
 EOF
   fi
 
+  # AnyTLS (sing-box 1.14: TCP + TLS + Padding Scheme + Multiplex)
+  if [ -n "$anyp" ] && [ "$CERT_OK" = 1 ]; then
+    cat >> "$SB_CONF" <<EOF
+        {
+            "type": "anytls",
+            "tag": "anytls-in",
+            "listen": "::",
+            "listen_port": $port_any,
+            "tcp_fast_open": true,
+            "tcp_multi_path": true,
+            "users": [
+                {
+                    "name": "default",
+                    "password": "$pw_any"
+                }
+            ],
+            "padding_scheme": [
+                "stop=8",
+                "0=30-30",
+                "1=100-400",
+                "2=400-500,c,500-1000"
+            ],
+            "tls": {
+                "enabled": true,
+                "certificate_path": "$cert_path",
+                "key_path": "$key_path",
+                "alpn": [ "h2", "http/1.1" ]
+            }
+        },
+EOF
+  fi
+
+  # ShadowTLS v3 (TCP + Fake SNI Relay + Internal SS-2022)
+  if [ -n "$stlp" ]; then
+    cat >> "$SB_CONF" <<EOF
+        {
+            "type": "shadowtls",
+            "tag": "shadowtls-in",
+            "listen": "::",
+            "listen_port": $port_stls,
+            "version": 3,
+            "users": [
+                { "name": "default", "password": "$pw_stls" }
+            ],
+            "handshake": {
+                "server": "$stls_sni",
+                "server_port": 443
+            },
+            "strict_mode": true,
+            "detour": "ss-inner-in"
+        },
+        {
+            "type": "shadowsocks",
+            "tag": "ss-inner-in",
+            "listen": "127.0.0.1",
+            "method": "2022-blake3-aes-128-gcm",
+            "password": "$pw_ss_inner"
+        },
+EOF
+  fi
+
   # 收尾：outbounds + route + experimental
   # 出站防护：
   #   1) 私网/回环一律拒绝 —— 否则任何持有节点凭据的人都能拿这台机器当跳板，
@@ -1589,28 +1668,10 @@ gen_client() {
   _fp=$(_cert_fp)
   _sha=$(_cert_sha256)
 
-  if [ -n "$tup" ]; then
-    # v2rayN 通用 URL 参数：fp=Fingerprint、pcs=固定证书(HEX SHA-256 指纹)、pinSHA256=证书SHA256、ech=ECH config list。
-    # 指纹与 SHA-256 使用 openssl 动态从当前证书中提取
-    local tuic_fp="" tuic_pin="" tuic_ech=""
-    [ -n "$_fp" ] && tuic_fp="&fp=chrome&pcs=$_fp"
-    [ -n "$_sha" ] && tuic_pin="&pinSHA256=$_sha"
-    case "$tuech" in
-      1|on|yes|true) [ -n "$tuech_config" ] && tuic_ech="&ech=$(printf %s "$tuech_config" | base64 | tr -d '\n')" ;;
-    esac
-    tuic_link="tuic://$uuid:$pw_tu@$add:$port_tu?congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=$sni&insecure=$jhins&allowInsecure=$jhins&allow_insecure=$jhins$tuic_fp$tuic_pin$tuic_ech#tuic-$node_tag"
-    echo "$tuic_link" >> "$SB_LINK"
-    echo "💣【 Tuic 】节点信息如下："
-    echo "$tuic_link"; echo
-  fi
-
+  # 1. 🥇 Hysteria2 (高速主力)
   if [ -n "$hyp" ]; then
     local hyps=""
     if [ -n "$hyjpt" ]; then
-      # 跳跃段直接取自 hyjpt（就是当初用来下发 iptables 规则的那份状态），
-      # 不再回头解析 iptables 输出：nat 表里匹配 $port_hy2 的不止一条
-      # （基础端口的 RETURN、跳跃段的 DNAT、本机回环的 REDIRECT），
-      # 逐行拼接会拼出 "44116,44116,25000-38000,25000-38000" 这种重复 mport。
       local mport_val="${port_hy2},$(echo "$hyjpt" | tr ':' '-')"
       echo "Hysteria2 跳跃端口已开启：$mport_val"
       hyps="&mport=$mport_val"
@@ -1621,57 +1682,80 @@ gen_client() {
     local hy2_pin="" hy2_pcs=""
     [ -n "$_sha" ] && hy2_pin="&pinSHA256=$_sha"
     [ -n "$_fp" ] && hy2_pcs="&pcs=$_fp"
-    # 服务端启用混淆时，客户端必须带相同 obfs 参数，否则握手不上
     local hyobfs_q=""
     if [ -s "$SB_HOME/hyobfs_pw" ]; then
       hyobfs_q="&obfs=$_obfs_t&obfs-password=$(cat "$SB_HOME/hyobfs_pw")"
     fi
     hy2_link="hysteria2://$pw_hy@$add:$port_hy2?security=tls&alpn=h3&insecure=$jhins&allowInsecure=$jhins$hyps$hy_bw_q&sni=$sni$hy2_pin$hy2_pcs$hyobfs_q#hy2-$node_tag"
     echo "$hy2_link" >> "$SB_LINK"
-    echo "💣【 Hysteria2 】节点信息如下："
+    echo "💣【 🥇 Hysteria2 (高速主力) 】节点信息如下："
     echo "$hy2_link"; echo
   fi
 
+  # 2. 🥈 VLESS-Reality (兼容性主力)
   if [ -n "$reap" ]; then
     local rea_add="${server_ip:-$add}"
     [[ "$rea_add" == *:* && "$rea_add" != \[*\] ]] && rea_add="[$rea_add]"
     rea_link="vless://$uuid@$rea_add:$port_rea?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$reality_sni&fp=chrome&pbk=$reality_pub&sid=$reality_sid&type=tcp&headerType=none&packetEncoding=xudp&alpn=h2,http%2F1.1#reality-$node_tag"
     echo "$rea_link" >> "$SB_LINK"
-    echo "💣【 VLESS-Reality 】节点信息如下："
+    echo "💣【 🥈 VLESS-Reality (兼容主力) 】节点信息如下："
     echo "$rea_link"; echo
   fi
 
+  # 3. 🥉 AnyTLS (新一代 TCP 候选)
+  if [ -n "$anyp" ] && [ "$CERT_OK" = 1 ]; then
+    local any_pin="" any_pcs=""
+    [ -n "$_sha" ] && any_pin="&pinSHA256=$_sha"
+    [ -n "$_fp" ] && any_pcs="&pcs=$_fp"
+    any_link="anytls://$pw_any@$add:$port_any?security=tls&sni=$sni$any_pin$any_pcs#anytls-$node_tag"
+    echo "$any_link" >> "$SB_LINK"
+    echo "💣【 🥉 AnyTLS + TLS (新一代 TCP 候选) 】节点信息如下："
+    echo "$any_link"; echo
+  fi
 
+  # 4. NaiveProxy (HTTPS / 流量形态特殊需求)
   if [ -n "$nvp" ] && [ "$CERT_OK" = 1 ]; then
-    # Naiveproxy 同一入站同时服务 H2 与 H3，不同客户端认的 URL scheme 与参数：
-    #   naive+quic://  —— v2rayN、NekoBox 等（客户端根据 scheme 含 quic 自动勾选开启 QUIC 选项）
-    #   naive+https:// —— TCP/H2 回退通道
-    #   http3:// / http2:// —— Shadowrocket（认不出 naive+ 前缀）
-    #
-    # UDP over TCP (UoT)：
-    #   链接直接带 uot=1、udp-over-tcp=true、udp_over_tcp=1 全兼容参数，
-    #   满足新版 v2rayN（已支持 uot=1 参数）、sing-box 以及 NekoBox 等客户端导入时默认勾选开启 UoT。
-    # 固定证书：v2rayN 解析 pcs= 参数填充节点「固定证书」字段（CertSha，证书 SHA-256 指纹）。
     local nv_pcs="" nv_pin=""
     [ -n "$_fp" ] && nv_pcs="&pcs=$_fp"
     [ -n "$_sha" ] && nv_pin="&pinSHA256=$_sha"
     local nv_uot="&uot=1&udp-over-tcp=true&udp_over_tcp=1"
 
-    # Naiveproxy 节点生成：
-    # 保持各客户端节点严格统一（Tuic 1个、Hysteria2 1个、Naive-H3 1个、Naive-H2 1个，各端均统一为 4 个节点）
-    # 1) v2rayN / NekoBox 格式：
     nv1_link="naive+quic://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1$nv_uot$nv_pcs$nv_pin#naive-h3-$node_tag"
     nv2_link="naive+https://$nv_user:$nv_pw@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1$nv_uot$nv_pcs$nv_pin#naive-h2-$node_tag"
-
-    # 2) Shadowrocket 等移动端格式（Scheme 为 http3 与 http2，别名与 v2rayN 100% 统一）：
     nv3_link="http3://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1$nv_uot$nv_pcs$nv_pin#naive-h3-$node_tag"
     nv4_link="http2://$nv_user:$nv_pw@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1$nv_uot$nv_pcs$nv_pin#naive-h2-$node_tag"
 
     for l in "$nv1_link" "$nv2_link" "$nv3_link" "$nv4_link"; do
       echo "$l" >> "$SB_LINK"
     done
-    echo "💣【 Naiveproxy 】节点信息如下（v2rayN 与 Shadowrocket 统一为 H3 与 H2 各一个）："
+    echo "💣【 4 Naiveproxy (流量形态特殊需求) 】节点信息如下："
     echo "$nv1_link"; echo "$nv2_link"; echo "$nv3_link"; echo "$nv4_link"; echo
+  fi
+
+  # 5. TUIC (Hysteria2 的 QUIC 备选)
+  if [ -n "$tup" ]; then
+    local tuic_fp="" tuic_pin="" tuic_ech=""
+    [ -n "$_fp" ] && tuic_fp="&fp=chrome&pcs=$_fp"
+    [ -n "$_sha" ] && tuic_pin="&pinSHA256=$_sha"
+    case "$tuech" in
+      1|on|yes|true) [ -n "$tuech_config" ] && tuic_ech="&ech=$(printf %s "$tuech_config" | base64 | tr -d '\n')" ;;
+    esac
+    tuic_link="tuic://$uuid:$pw_tu@$add:$port_tu?congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=$sni&insecure=$jhins&allowInsecure=$jhins&allow_insecure=$jhins$tuic_fp$tuic_pin$tuic_ech#tuic-$node_tag"
+    echo "$tuic_link" >> "$SB_LINK"
+    echo "💣【 5 Tuic (QUIC 备选) 】节点信息如下："
+    echo "$tuic_link"; echo
+  fi
+
+  # 6. ShadowTLS v3 (TCP 备用防探查)
+  if [ -n "$stlp" ]; then
+    local stls_ss_b64
+    stls_ss_b64=$(printf '%s' "2022-blake3-aes-128-gcm:$pw_ss_inner" | base64 | tr -d '\n=' | tr '+/' '-_')
+    local stls_host="${server_ip:-$add}"
+    [[ "$stls_host" == *:* && "$stls_host" != \[*\] ]] && stls_host="[$stls_host]"
+    stls_link="ss://${stls_ss_b64}@${stls_host}:${port_stls}/?plugin=shadow-tls%3Bhost%3D${stls_sni}%3Bpassword%3D${pw_stls}%3Bversion%3D3#shadowtls-$node_tag"
+    echo "$stls_link" >> "$SB_LINK"
+    echo "💣【 6 ShadowTLS v3 (TCP 备用) 】节点信息如下："
+    echo "$stls_link"; echo
   fi
 
   # ---------- sing-box 客户端聚合配置 ----------
@@ -2017,29 +2101,10 @@ gen_client_sbox() {
     hy2_tls_extra=", \"certificate_public_key_sha256\": [\"$sb64\"]"
   fi
 
-  if [ -n "$tup" ]; then
-    ob+=('{
-        "type": "tuic",
-        "tag": "tuic",
-        "server": "'"$add"'",
-        "server_port": '"$port_tu"',
-        "uuid": "'"$uuid"'",
-        "password": "'"$pw_tu"'",
-        "congestion_control": "bbr",
-        '"$tuic_udp"'
-        "zero_rtt_handshake": true,
-        "heartbeat": "10s",
-        "udp_fragment": true,
-        "bind_address_no_port": true,
-        "tls": { "enabled": true, "server_name": "'"$sni"'", "insecure": '"$msins"', "alpn": ["h3"]'"$tuic_tls_extra"' }
-    }')
-    tags+=("tuic")
-  fi
-
+  # 1. 🥇 Hysteria2 (高速主力)
   if [ -n "$hyp" ]; then
     local hy_ports_json="" hy_client_bw=""
     if [ -n "$hyjpt" ]; then
-      # 支持 sing-box 1.14 端口跳跃与随机化抖动 hop_interval_max（单端口自动补齐为 start:end 格式）
       local formatted_jpt="" item
       for item in $(echo "$hyjpt" | tr ',' ' '); do
         case "$item" in
@@ -2071,6 +2136,7 @@ gen_client_sbox() {
     tags+=("hysteria2")
   fi
 
+  # 2. 🥈 VLESS-Reality (兼容性主力)
   if [ -n "$reap" ]; then
     ob+=('{
         "type": "vless",
@@ -2099,12 +2165,25 @@ gen_client_sbox() {
     tags+=("vless-reality")
   fi
 
+  # 3. 🥉 AnyTLS (新一代 TCP 候选)
+  if [ -n "$anyp" ] && [ "$CERT_OK" = 1 ]; then
+    ob+=('{
+        "type": "anytls",
+        "tag": "anytls",
+        "server": "'"$add"'",
+        "server_port": '"$port_any"',
+        "password": "'"$pw_any"'",
+        "tcp_multi_path": true,
+        "idle_session_check_interval": "30s",
+        "idle_session_timeout": "5m",
+        "min_idle_session": 1,
+        "tls": { "enabled": true, "server_name": "'"$sni"'", "insecure": '"$msins"''"$hy2_tls_extra"' }
+    }')
+    tags+=("anytls")
+  fi
 
-  # naive 出站需要 libcronet.so 与 sing-box 二进制同目录（官方 tarball 已附带，
-  # 本脚本安装时会一并保留）。缺库时该出站会以 "cronet: library not found" 启动失败，
-  # 故客户端若用自行编译/精简版内核，需自行补上该库或删掉这条出站。
+  # 4. NaiveProxy (HTTPS / 流量形态特殊需求)
   if [ -n "$nvp" ] && [ "$CERT_OK" = 1 ]; then
-    # 默认 naive 出站开启 QUIC (H3)+bbr 与多路径 TCP (MPTCP)
     ob+=('{
         "type": "naive",
         "tag": "naive-h3",
@@ -2121,7 +2200,6 @@ gen_client_sbox() {
         "tls": { "enabled": true, "insecure": false, "server_name": "'"$sni"'" }
     }')
     tags+=("naive-h3")
-    # 独立 H2 出站：供需要 TCP / HTTP2 的环境回退使用（标准 TCP TLS + HTTP/2）
     ob+=('{
         "type": "naive",
         "tag": "naive-h2",
@@ -2136,7 +2214,56 @@ gen_client_sbox() {
         "tls": { "enabled": true, "insecure": false, "server_name": "'"$sni"'" }
     }')
     tags+=("naive-h2")
+  fi
 
+  # 5. TUIC (Hysteria2 的 QUIC 备选)
+  if [ -n "$tup" ]; then
+    ob+=('{
+        "type": "tuic",
+        "tag": "tuic",
+        "server": "'"$add"'",
+        "server_port": '"$port_tu"',
+        "uuid": "'"$uuid"'",
+        "password": "'"$pw_tu"'",
+        "congestion_control": "bbr",
+        '"$tuic_udp"'
+        "zero_rtt_handshake": true,
+        "heartbeat": "10s",
+        "udp_fragment": true,
+        "bind_address_no_port": true,
+        "tls": { "enabled": true, "server_name": "'"$sni"'", "insecure": '"$msins"', "alpn": ["h3"]'"$tuic_tls_extra"' }
+    }')
+    tags+=("tuic")
+  fi
+
+  # 6. ShadowTLS v3 (TCP 备用防探查)
+  if [ -n "$stlp" ]; then
+    ob+=('{
+        "type": "shadowsocks",
+        "tag": "shadowtls",
+        "server": "'"${server_ip:-$add}"'",
+        "server_port": '"$port_stls"',
+        "method": "2022-blake3-aes-128-gcm",
+        "password": "'"$pw_ss_inner"'",
+        "detour": "shadowtls-dialer"
+    }')
+    ob+=('{
+        "type": "shadowtls",
+        "tag": "shadowtls-dialer",
+        "server": "'"${server_ip:-$add}"'",
+        "server_port": '"$port_stls"',
+        "version": 3,
+        "password": "'"$pw_stls"'",
+        "tls": {
+            "enabled": true,
+            "server_name": "'"$stls_sni"'",
+            "utls": {
+                "enabled": true,
+                "fingerprint": "chrome"
+            }
+        }
+    }')
+    tags+=("shadowtls")
   fi
 
   if [ "${#tags[@]}" -eq 0 ]; then
@@ -2144,7 +2271,7 @@ gen_client_sbox() {
     return
   fi
 
-  # 组装 outbounds：协议节点 + direct + auto(urltest)
+  # 组装 outbounds：select + auto(urltest) + 协议节点 + direct
   local i taglist="" sel=""
   for i in "${!ob[@]}"; do
     sel="${sel}${ob[$i]}"
@@ -2161,8 +2288,8 @@ gen_client_sbox() {
     "log": { "level": "warn", "timestamp": true },
     "dns": {
         "servers": [
-            { "tag": "remote", "type": "https", "server": "1.1.1.1", "detour": "auto" },
-            { "tag": "local", "type": "udp", "server": "223.5.5.5" }
+            { "tag": "remote", "type": "https", "server": "1.1.1.1", "detour": "select" },
+            { "tag": "local", "type": "udp", "server": "223.5.5.5", "detour": "direct" }
         ],
         "rules": [ { "rule_set": "geosite-cn", "server": "local" } ],
         "strategy": "prefer_ipv4",
@@ -2172,19 +2299,25 @@ gen_client_sbox() {
         "cache_capacity": 4096
     },
     "outbounds": [
-$sel,
         {
-            "type": "direct",
-            "tag": "direct",
-            "bind_address_no_port": true
+            "type": "selector",
+            "tag": "select",
+            "outbounds": ["auto", $taglist, "direct"],
+            "default": "auto"
         },
         {
             "type": "urltest",
             "tag": "auto",
             "outbounds": [$taglist],
             "url": "http://www.gstatic.com/generate_204",
-            "interval": "10m",
+            "interval": "5m",
             "tolerance": 50
+        },
+$sel,
+        {
+            "type": "direct",
+            "tag": "direct",
+            "bind_address_no_port": true
         }
     ],
     "route": {
@@ -2205,7 +2338,7 @@ $sel,
                 "url": "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/geolocation-cn.srs"
             }
         ],
-        "final": "auto"
+        "final": "select"
     }
 }
 EOF
@@ -2223,26 +2356,7 @@ gen_client_clash() {
     node_tag="$clean_host"
   fi
 
-  if [ -n "$tup" ]; then
-    proxies="$proxies
-  - name: tuic-$node_tag
-    server: $add
-    port: $port_tu
-    type: tuic
-    uuid: $uuid
-    password: $pw_tu
-    alpn: [h3]
-    reduce-rtt: true
-    heartbeat-interval: 10000
-    request-timeout: 8000
-    udp-relay-mode: native
-    congestion-controller: bbr
-    sni: $sni
-    skip-cert-verify: $msins"
-
-    groups="$groups
-      - tuic-$node_tag"
-  fi
+  # 1. 🥇 Hysteria2 (高速主力)
   if [ -n "$hyp" ]; then
     local hy_ports_yaml="" hy_clash_bw=""
     if [ -n "$hyjpt" ]; then
@@ -2268,6 +2382,7 @@ gen_client_clash() {
       - hysteria2-$node_tag"
   fi
 
+  # 2. 🥈 VLESS-Reality (兼容性主力)
   if [ -n "$reap" ]; then
     proxies="$proxies
   - name: reality-$node_tag
@@ -2296,15 +2411,23 @@ gen_client_clash() {
       - reality-$node_tag"
   fi
 
+  # 3. 🥉 AnyTLS (新一代 TCP 候选)
+  if [ -n "$anyp" ] && [ "$CERT_OK" = 1 ]; then
+    proxies="$proxies
+  - name: anytls-$node_tag
+    server: $add
+    port: $port_any
+    type: anytls
+    password: $pw_any
+    sni: $sni
+    skip-cert-verify: false"
+
+    groups="$groups
+      - anytls-$node_tag"
+  fi
+
+  # 4. NaiveProxy (HTTPS / 流量形态特殊需求)
   if [ -n "$nvp" ] && [ "$CERT_OK" = 1 ]; then
-    # Clash/Mihomo 侧只出一个 naive 节点，与 nodes.txt 的 4 条链接不同：
-    #   1) Mihomo 的 http 类型是 TCP 上的 HTTPS 代理，不走 QUIC。原先并排生成的
-    #      naive-h3 / naive-h2 两条内容逐字节相同，"h3" 只是名字，url-test 组里
-    #      等于放了两个同一节点，既误导又让测速组失去意义。
-    #   2) http 类型不支持 UDP 中继，udp: true 在 Mihomo 里是空写：真按它分流，
-    #      UDP 流量会静默失败。要在 Mihomo 上走 naive 的 H3，得用 tuic/hy2 节点。
-    # v2rayN / NekoBox / Shadowrocket 走的是 nodes.txt 的 naive+quic:// 等链接，
-    # 那些客户端确实认 QUIC，不受这里影响。
     proxies="$proxies
   - name: naive-$node_tag
     server: $add
@@ -2317,6 +2440,48 @@ gen_client_clash() {
     skip-cert-verify: false"
     groups="$groups
       - naive-$node_tag"
+  fi
+
+  # 5. TUIC (Hysteria2 的 QUIC 备选)
+  if [ -n "$tup" ]; then
+    proxies="$proxies
+  - name: tuic-$node_tag
+    server: $add
+    port: $port_tu
+    type: tuic
+    uuid: $uuid
+    password: $pw_tu
+    alpn: [h3]
+    reduce-rtt: true
+    heartbeat-interval: 10000
+    request-timeout: 8000
+    udp-relay-mode: native
+    congestion-controller: bbr
+    sni: $sni
+    skip-cert-verify: $msins"
+
+    groups="$groups
+      - tuic-$node_tag"
+  fi
+
+  # 6. ShadowTLS v3 (TCP 备用防探查)
+  if [ -n "$stlp" ]; then
+    proxies="$proxies
+  - name: shadowtls-$node_tag
+    server: ${server_ip:-$add}
+    port: $port_stls
+    type: ss
+    cipher: 2022-blake3-aes-128-gcm
+    password: $pw_ss_inner
+    plugin: shadow-tls
+    plugin-opts:
+      host: $stls_sni
+      password: $pw_stls
+      version: 3
+      client-fingerprint: chrome"
+
+    groups="$groups
+      - shadowtls-$node_tag"
   fi
   cat > "$SB_HOME/clmi.yaml" <<EOF
 port: 7890
@@ -3399,20 +3564,20 @@ main() {
     1|yes|on|true|YES|ON|TRUE) reap=1 ;;
     "")
       # 若启用了其他协议但未显式传 reap，默认开启 Reality（保证默认安装链接与默认安装包含 Reality）
-      if [ -n "$tup" ] || [ -n "$hyp" ] || [ -n "$nvp" ]; then
+      if [ -n "$tup" ] || [ -n "$hyp" ] || [ -n "$nvp" ] || [ -n "$anyp" ] || [ -n "$stlp" ]; then
         reap=1
       fi
       ;;
   esac
 
-  if [ -z "$tup" ] && [ -z "$hyp" ] && [ -z "$nvp" ] && [ -z "$reap" ]; then
+  if [ -z "$tup" ] && [ -z "$hyp" ] && [ -z "$nvp" ] && [ -z "$reap" ] && [ -z "$anyp" ] && [ -z "$stlp" ]; then
     if [ -x "$SB_BIN" ]; then
       # 已安装但未指定协议 → 显示帮助
       showmode
       status_show
       exit
     else
-      error "未指定任何协议。请至少设置一个：reap=1 tup=1 hyp=1 nvp=1"
+      error "未指定任何协议。请至少设置一个：hyp=1 reap=1 anyp=1 nvp=1 tup=1 stlp=1"
       echo ""
       showmode
       exit 1
@@ -3494,12 +3659,16 @@ install_cmd() {
 save_state() {
   # 先清空再按本次实际启用写入：重装若减少协议，旧标记必须消失，
   # 否则 list 会生成服务端已不存在的节点链接
-  rm -f "$SB_HOME"/proto_tup "$SB_HOME"/proto_hyp "$SB_HOME"/proto_nvp "$SB_HOME"/proto_rea 2>/dev/null
+  rm -f "$SB_HOME"/proto_tup "$SB_HOME"/proto_hyp "$SB_HOME"/proto_nvp "$SB_HOME"/proto_rea "$SB_HOME"/proto_any "$SB_HOME"/proto_stls 2>/dev/null
   [ -n "$tup" ] && touch "$SB_HOME/proto_tup"
   [ -n "$hyp" ] && touch "$SB_HOME/proto_hyp"
   [ -n "$nvp" ] && touch "$SB_HOME/proto_nvp"
   [ -n "$reap" ] && touch "$SB_HOME/proto_rea"
+  [ -n "$anyp" ] && touch "$SB_HOME/proto_any"
+  [ -n "$stlp" ] && touch "$SB_HOME/proto_stls"
   [ -n "$port_rea" ] && echo "$port_rea" > "$SB_HOME/port_rea"
+  [ -n "$port_any" ] && echo "$port_any" > "$SB_HOME/port_any"
+  [ -n "$port_stls" ] && echo "$port_stls" > "$SB_HOME/port_stls"
   echo "$ym" > "$SB_HOME/ym"
   [ -n "$hyjpt" ] && echo "$hyjpt" > "$SB_HOME/hyjpt"
   # Brutal 带宽必须持久化：否则 rotate / 重新生成配置时静默退回 BBR，
@@ -3791,10 +3960,12 @@ doctor() {
     fi
   }
 
-  [ "$tup" = yes ] && check_one Tuic "$port_tu" udp
   [ "$hyp" = yes ] && check_one Hysteria2 "$port_hy2" udp
-  [ "$nvp" = yes ] && check_one Naiveproxy "$port_nv" tcp
   [ "$reap" = yes ] && check_one "VLESS-Reality" "$port_rea" tcp
+  [ "$anyp" = yes ] && check_one "AnyTLS" "$port_any" tcp
+  [ "$nvp" = yes ] && check_one Naiveproxy "$port_nv" tcp
+  [ "$tup" = yes ] && check_one Tuic "$port_tu" udp
+  [ "$stlp" = yes ] && check_one "ShadowTLS" "$port_stls" tcp
   if [ "$sub" = 1 ] && [ -n "$subport" ]; then
     check_one "订阅服务" "$subport" tcp
   fi
@@ -3838,13 +4009,15 @@ doctor() {
     sbrestart
     sleep 2
     # 重启后复查每个有问题的端口，仍未恢复则重新生成配置
-    for spec in "Tuic:$port_tu:udp" "Hysteria2:$port_hy2:udp" "Naiveproxy:$port_nv:tcp" "VLESS-Reality:$port_rea:tcp"; do
+    for spec in "Hysteria2:$port_hy2:udp" "VLESS-Reality:$port_rea:tcp" "AnyTLS:$port_any:tcp" "Naiveproxy:$port_nv:tcp" "Tuic:$port_tu:udp" "ShadowTLS:$port_stls:tcp"; do
       name=${spec%%:*}; rest=${spec#*:}; p=${rest%%:*}; proto=${rest##*:}
       case "$name" in
-        Tuic)          [ "$tup" = yes ] || continue ;;
         Hysteria2)     [ "$hyp" = yes ] || continue ;;
-        Naiveproxy)    [ "$nvp" = yes ] || continue ;;
         VLESS-Reality) [ "$reap" = yes ] || continue ;;
+        AnyTLS)        [ "$anyp" = yes ] || continue ;;
+        Naiveproxy)    [ "$nvp" = yes ] || continue ;;
+        Tuic)          [ "$tup" = yes ] || continue ;;
+        ShadowTLS)     [ "$stlp" = yes ] || continue ;;
       esac
       if ! port_listening "$p" "$proto"; then
         echo "  ${name} 重启后仍不通，重新生成配置……"
@@ -3876,10 +4049,14 @@ load_state() {
   [ -f "$SB_HOME/proto_hyp" ] && hyp=yes
   [ -f "$SB_HOME/proto_nvp" ] && nvp=yes
   [ -f "$SB_HOME/proto_rea" ] && reap=yes
+  [ -f "$SB_HOME/proto_any" ] && anyp=yes
+  [ -f "$SB_HOME/proto_stls" ] && stlp=yes
   [ -f "$SB_HOME/port_tu" ] && port_tu=$(cat "$SB_HOME/port_tu")
   [ -f "$SB_HOME/port_hy2" ] && port_hy2=$(cat "$SB_HOME/port_hy2")
   [ -f "$SB_HOME/port_nv" ] && port_nv=$(cat "$SB_HOME/port_nv")
   [ -f "$SB_HOME/port_rea" ] && port_rea=$(cat "$SB_HOME/port_rea")
+  [ -f "$SB_HOME/port_any" ] && port_any=$(cat "$SB_HOME/port_any")
+  [ -f "$SB_HOME/port_stls" ] && port_stls=$(cat "$SB_HOME/port_stls")
   [ -f "$SB_HOME/hyjpt" ] && hyjpt=$(cat "$SB_HOME/hyjpt")
   if [ -z "$hyup" ] && [ -z "$hydown" ] && [ -s "$SB_HOME/hybw" ]; then
     hyup=$(awk '{print $1}' "$SB_HOME/hybw"); hydown=$(awk '{print $2}' "$SB_HOME/hybw")
