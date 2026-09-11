@@ -268,7 +268,7 @@ Run `sub=1` to enable the built-in subscription server.
 
 ### 8.1 Certificate Fingerprint & SHA-256 Injection (Enabled by Default)
 During installation and configuration generation, the script automatically uses OpenSSL to extract and inject:
-- **Tuic**: Injects `fp=chrome`, `pcs=HEX_Fingerprint`, and `pinSHA256=DER_Hash`; injects `certificate_public_key_sha256` into sing-box client configs.
+- **Tuic**: Injects `pcs=HEX_Fingerprint` and `pinSHA256=DER_Hash`; injects `certificate_public_key_sha256` into sing-box client configs (Tuic uses QUIC transport, so uTLS `fp=chrome` is strictly excluded to prevent `unsupported usage for uTLS` fatal errors).
 - **Hysteria2**: Injects `pinSHA256=DER_Hash` and `pcs=HEX_Fingerprint`; injects `certificate_public_key_sha256` into sing-box client configs.
 - **Naiveproxy**: Injects `pcs=HEX_Fingerprint` and `pinSHA256=DER_Hash`, supporting both QUIC (H3) and HTTP/2 paths.
 

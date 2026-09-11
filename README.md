@@ -303,7 +303,7 @@ sbrel=pre sbbox up        # 升级/切换到 pre 通道
 
 ### 1. 证书指纹与 SHA-256 自动注入（默认开启）
 脚本在安装与生成配置时，会自动调用 OpenSSL 从活动证书提取以下信息并注入：
-- **Tuic 节点**：注入 `fp=chrome`、`pcs=HEX指纹` 与 `pinSHA256=DER哈希`；Sing-box 客户端注入 `certificate_public_key_sha256`。
+- **Tuic 节点**：注入 `pcs=HEX指纹` 与 `pinSHA256=DER哈希`；Sing-box 客户端注入 `certificate_public_key_sha256`（Tuic 传输层基于 QUIC，严禁注入 uTLS `fp=chrome`，防止触发 `unsupported usage for uTLS` 断连）。
 - **Hysteria2 节点**：注入 `pinSHA256=DER哈希` 与 `pcs=HEX指纹`；Sing-box 客户端注入 `certificate_public_key_sha256`。
 - **Naiveproxy 节点**：注入 `pcs=HEX指纹` 与 `pinSHA256=DER哈希`，默认开启 QUIC (H3) 与 HTTP/2 双轨极速通道。
 

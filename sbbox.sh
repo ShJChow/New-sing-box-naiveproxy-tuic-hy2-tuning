@@ -1306,6 +1306,7 @@ EOF
             "tag": "tuic-in",
             "listen": "::",
             "listen_port": $port_tu,
+            "udp_fragment": true,
             "users": [
                 { "uuid": "$uuid", "password": "$pw_tu" }
             ],
@@ -1699,13 +1700,13 @@ gen_client() {
 
   # 4. 4 TUIC (Hysteria2 的 QUIC 备选)
   if [ -n "$tup" ]; then
-    local tuic_fp="" tuic_pin="" tuic_ech=""
-    [ -n "$_fp" ] && tuic_fp="&fp=chrome&pcs=$_fp"
+    local tuic_pcs="" tuic_pin="" tuic_ech=""
+    [ -n "$_fp" ] && tuic_pcs="&pcs=$_fp"
     [ -n "$_sha" ] && tuic_pin="&pinSHA256=$_sha"
     case "$tuech" in
       1|on|yes|true) [ -n "$tuech_config" ] && tuic_ech="&ech=$(printf %s "$tuech_config" | base64 | tr -d '\n')" ;;
     esac
-    tuic_link="tuic://$uuid:$pw_tu@$add:$port_tu?congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=$sni&insecure=$jhins&allowInsecure=$jhins&allow_insecure=$jhins$tuic_fp$tuic_pin$tuic_ech#tuic-$node_tag"
+    tuic_link="tuic://$uuid:$pw_tu@$add:$port_tu?congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=$sni&insecure=$jhins&allowInsecure=$jhins&allow_insecure=$jhins$tuic_pcs$tuic_pin$tuic_ech#tuic-$node_tag"
     echo "$tuic_link" >> "$SB_LINK"
     echo "💣【 4 Tuic (QUIC 备选) 】节点信息如下："
     echo "$tuic_link"; echo
@@ -2234,6 +2235,7 @@ gen_client_sbox() {
         "bind_address_no_port": true,
         "tls": { "enabled": true, "server_name": "'"$sni"'", "insecure": '"$msins"', "alpn": ["h3"]'"$tuic_tls_extra"' }
     }')
+    tags+=("tuic")
   fi
 
   # 5. (可选) VLESS-Reality (兼容性节点)
