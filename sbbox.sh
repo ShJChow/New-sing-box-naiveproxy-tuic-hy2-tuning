@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.6.2"
+SBBOX_VERSION="v2.7.0"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -68,9 +68,6 @@ reap_sni="${reap_sni:-${reality_sni:-}}"    # Reality 伪装目标 SNI（默认 
 port_rea="${port_rea:-${port_vl:-}}"        # Reality 监听端口（默认随机 10000-65535）
 anyp="${anyp:-}"                            # sing-box 1.14 新特性：AnyTLS + TLS 节点（抗 TLS-in-TLS 指纹）
 port_any="${port_any:-}"                    # AnyTLS 监听端口（默认随机 10000-65535）
-stlp="${stlp:-}"                            # ShadowTLS 节点（v2 兼容模式，免证书伪装）
-port_stls="${port_stls:-}"                  # ShadowTLS 监听端口（默认随机 10000-65535）
-stls_sni="${stls_sni:-captive.apple.com}"                       # ShadowTLS 伪装 SNI（captive.apple.com 苹果 Portal，GFW 无干扰且支持 TLS 1.3）
 hyjpt="${hyjpt:-}"                          # Hysteria2 跳跃端口，默认关闭（空）；如 "25000:38000"
 hyobfs="${hyobfs:-1}"                       # Hysteria2 salamander 混淆，默认开启；关闭用 hyobfs=0
 hyobfs_pw="${hyobfs_pw:-}"                  # 混淆密码（默认独立随机值）
@@ -136,9 +133,9 @@ v4v6() {
 showmode() {
   echo "==========================================================="
   echo "sbbox $SBBOX_VERSION — Sing-box-Only 协议安全加固代理脚本"
-  echo "支持协议（2026梯队）：Hysteria2 / VLESS-Reality / AnyTLS / Naiveproxy / Tuic / ShadowTLS"
+  echo "支持协议（2026梯队）：Hysteria2 / VLESS-Reality / AnyTLS / Naiveproxy / Tuic"
   echo "-----------------------------------------------------------"
-  echo "主脚本：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) hyp=1 reap=1 anyp=1 nvp=1 tup=1 stlp=1 alns=1 ym=你的域名"
+  echo "主脚本：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) hyp=1 reap=1 anyp=1 nvp=1 tup=1 alns=1 ym=你的域名"
   echo "显示节点信息：sbbox list 【或】 bash sbbox.sh list"
   echo "服务与流控状态：sbbox status"
   echo "重启 sing-box：sbbox res"
@@ -149,17 +146,16 @@ showmode() {
   echo "端口跳跃：sbbox hop 25000:38000 【默认关闭】 sbbox hop off"
   echo "极速优化：sbbox speed 100 1000（设置客户端上/下行并激活 Hy2 与 TCP Brutal 极速拥塞控制）"
   echo "TCP Brutal：sbbox brutal show | on | off | speed | add | del（TCP Brutal 拥塞控制与限速）"
-  echo "更换端口：sbbox port [tu] [hy2] [nv] [rea] [any] [stls]（无参数分配 10000-65535 随机端口并同步）"
+  echo "更换端口：sbbox port [tu] [hy2] [nv] [rea] [any]（无参数分配 10000-65535 随机端口并同步）"
   echo "自检修复：sbbox doctor"
   echo "卸载：sbbox del"
   echo "-----------------------------------------------------------"
-  echo "环境变量（安装期）：hyp=1 reap=1 anyp=1 nvp=1 tup=1 stlp=1"
+  echo "环境变量（安装期）：hyp=1 reap=1 anyp=1 nvp=1 tup=1"
   echo "  hyp=1    🥇 启用 Hysteria2 + TLS（高速主力，支持端口跳跃与混淆）"
   echo "  reap=1   🥈 启用 VLESS-Reality TCP 节点（兼容性主力，免域名免证书）"
   echo "  anyp=1   🥉 启用 AnyTLS + TLS（新一代 TCP 候选，抹除 TLS-in-TLS 特征）"
   echo "  nvp=1    4 启用 NaiveProxy (H3+H2，Chromium 内核级反探测伪装）"
   echo "  tup=1    5 启用 TUIC (v5，标准 QUIC 0-RTT，Hysteria2 备选）"
-  echo "  stlp=1   6 启用 ShadowTLS（TCP 终极备用，v2 兼容模式，借用真 SNI 证书防探测）"
   echo "  alns=1   启用 acme 证书（需 ym=你的域名）"
   echo "  ym=域名  acme 证书域名（Hysteria2/AnyTLS/Tuic/Naive 使用）"
   echo "  hyjpt=25000:38000  Hysteria2 跳跃端口（默认关闭；同机有其他代理脚本时慎开）"
@@ -375,12 +371,6 @@ load_secrets() {
   nv_user=$(_load_sec naive_user)
   nv_pw=$(_load_sec naive_pw)
   pw_any=$(_load_sec anytls_pw)
-  pw_stls=$(_load_sec shadowtls_pw)
-  if [ ! -s "$SB_SEC_DIR/ss_inner_pw" ]; then
-    openssl rand -base64 16 > "$SB_SEC_DIR/ss_inner_pw"
-    chmod 600 "$SB_SEC_DIR/ss_inner_pw" 2>/dev/null
-  fi
-  pw_ss_inner=$(cat "$SB_SEC_DIR/ss_inner_pw")
 
   # Reality 秘钥对与 short_id（支持 sing-box 原生 reality-keypair / rand）
   local f_priv="$SB_SEC_DIR/reality_priv"
@@ -1184,7 +1174,6 @@ installsb() {
   [ -n "$nvp" ] && { assign_port nv "$port_nv"; echo "Naiveproxy 端口：$port_nv"; open_port "$port_nv" tcp; open_port "$port_nv" udp; }
   [ -n "$reap" ] && { assign_port rea "$port_rea"; echo "VLESS-Reality 端口：$port_rea"; open_port "$port_rea" tcp; }
   [ -n "$anyp" ] && { assign_port any "${port_any:-28443}"; echo "AnyTLS 端口：$port_any"; open_port "$port_any" tcp; }
-  [ -n "$stlp" ] && { assign_port stls "${port_stls:-39443}"; echo "ShadowTLS 端口：$port_stls"; open_port "$port_stls" tcp; }
 
 
   local sb_strategy; sb_strategy=$(detect_ip_strategy)
@@ -1491,31 +1480,6 @@ EOF
 EOF
   fi
 
-  # ShadowTLS v2 (TCP + Fake SNI Relay + Internal SS-2022)
-  if [ -n "$stlp" ]; then
-    cat >> "$SB_CONF" <<EOF
-        {
-            "type": "shadowtls",
-            "tag": "shadowtls-in",
-            "listen": "::",
-            "listen_port": $port_stls,
-            "version": 2,
-            "password": "$pw_stls",
-            "handshake": {
-                "server": "$stls_sni",
-                "server_port": 443
-            },
-            "detour": "ss-inner-in"
-        },
-        {
-            "type": "shadowsocks",
-            "tag": "ss-inner-in",
-            "listen": "127.0.0.1",
-            "method": "2022-blake3-aes-128-gcm",
-            "password": "$pw_ss_inner"
-        },
-EOF
-  fi
 
   # 收尾：outbounds + route + experimental
   # 出站防护：
@@ -1744,17 +1708,6 @@ gen_client() {
     echo "$tuic_link"; echo
   fi
 
-  # 6. ShadowTLS v2 (TCP 备用防探查)
-  if [ -n "$stlp" ]; then
-    local stls_ss_b64
-    stls_ss_b64=$(printf '%s' "2022-blake3-aes-128-gcm:$pw_ss_inner" | base64 | tr -d '\n=' | tr '+/' '-_')
-    local stls_host="${server_ip:-$add}"
-    [[ "$stls_host" == *:* && "$stls_host" != \[*\] ]] && stls_host="[$stls_host]"
-    stls_link="ss://${stls_ss_b64}@${stls_host}:${port_stls}/?plugin=shadow-tls%3Bhost%3D${stls_sni}%3Bpassword%3D${pw_stls}%3Bversion%3D2#shadowtls-$node_tag"
-    echo "$stls_link" >> "$SB_LINK"
-    echo "💣【 6 ShadowTLS v2 (TCP 备用) 】节点信息如下："
-    echo "$stls_link"; echo
-  fi
 
   # ---------- sing-box 客户端聚合配置 ----------
   gen_client_sbox
@@ -2286,35 +2239,6 @@ gen_client_sbox() {
     tags+=("tuic")
   fi
 
-  # 6. ShadowTLS v3 (TCP 备用防探查)
-  if [ -n "$stlp" ]; then
-    ob+=('{
-        "type": "shadowsocks",
-        "tag": "shadowtls",
-        "server": "'"${server_ip:-$add}"'",
-        "server_port": '"$port_stls"',
-        "method": "2022-blake3-aes-128-gcm",
-        "password": "'"$pw_ss_inner"'",
-        "detour": "shadowtls-dialer"
-    }')
-    ob+=('{
-        "type": "shadowtls",
-        "tag": "shadowtls-dialer",
-        "server": "'"${server_ip:-$add}"'",
-        "server_port": '"$port_stls"',
-        "version": 2,
-        "password": "'"$pw_stls"'",
-        "tls": {
-            "enabled": true,
-            "server_name": "'"$stls_sni"'",
-            "utls": {
-                "enabled": true,
-                "fingerprint": "chrome"
-            }
-        }
-    }')
-    tags+=("shadowtls")
-  fi
 
   if [ "${#tags[@]}" -eq 0 ]; then
     warn "未生成任何客户端协议配置（服务器端可能未启用对应协议）"
@@ -2514,29 +2438,6 @@ gen_client_clash() {
       - tuic-$node_tag"
   fi
 
-  # 6. ShadowTLS v2 (TCP 备用防探查)
-  if [ -n "$stlp" ]; then
-    proxies="$proxies
-  - name: shadowtls-$node_tag
-    server: ${server_ip:-$add}
-    port: $port_stls
-    type: ss
-    cipher: 2022-blake3-aes-128-gcm
-    password: $pw_ss_inner
-    plugin: shadow-tls
-    plugin-opts:
-      host: $stls_sni
-      password: $pw_stls
-      version: 2
-      client-fingerprint: chrome
-    shadow-tls-opts:
-      host: $stls_sni
-      password: $pw_stls
-      version: 2"
-
-    groups="$groups
-      - shadowtls-$node_tag"
-  fi
   cat > "$SB_HOME/clmi.yaml" <<EOF
 port: 7890
 allow-lan: true
@@ -3713,16 +3614,14 @@ install_cmd() {
 save_state() {
   # 先清空再按本次实际启用写入：重装若减少协议，旧标记必须消失，
   # 否则 list 会生成服务端已不存在的节点链接
-  rm -f "$SB_HOME"/proto_tup "$SB_HOME"/proto_hyp "$SB_HOME"/proto_nvp "$SB_HOME"/proto_rea "$SB_HOME"/proto_any "$SB_HOME"/proto_stls 2>/dev/null
+  rm -f "$SB_HOME"/proto_tup "$SB_HOME"/proto_hyp "$SB_HOME"/proto_nvp "$SB_HOME"/proto_rea "$SB_HOME"/proto_any 2>/dev/null
   [ -n "$tup" ] && touch "$SB_HOME/proto_tup"
   [ -n "$hyp" ] && touch "$SB_HOME/proto_hyp"
   [ -n "$nvp" ] && touch "$SB_HOME/proto_nvp"
   [ -n "$reap" ] && touch "$SB_HOME/proto_rea"
   [ -n "$anyp" ] && touch "$SB_HOME/proto_any"
-  [ -n "$stlp" ] && touch "$SB_HOME/proto_stls"
   [ -n "$port_rea" ] && echo "$port_rea" > "$SB_HOME/port_rea"
   [ -n "$port_any" ] && echo "$port_any" > "$SB_HOME/port_any"
-  [ -n "$port_stls" ] && echo "$port_stls" > "$SB_HOME/port_stls"
   echo "$ym" > "$SB_HOME/ym"
   [ -n "$hyjpt" ] && echo "$hyjpt" > "$SB_HOME/hyjpt"
   # Brutal 带宽必须持久化：否则 rotate / 重新生成配置时静默退回 BBR，
@@ -4019,7 +3918,6 @@ doctor() {
   [ "$anyp" = yes ] && check_one "AnyTLS" "$port_any" tcp
   [ "$nvp" = yes ] && check_one Naiveproxy "$port_nv" tcp
   [ "$tup" = yes ] && check_one Tuic "$port_tu" udp
-  [ "$stlp" = yes ] && check_one "ShadowTLS" "$port_stls" tcp
   if [ "$sub" = 1 ] && [ -n "$subport" ]; then
     check_one "订阅服务" "$subport" tcp
   fi
@@ -4063,7 +3961,7 @@ doctor() {
     sbrestart
     sleep 2
     # 重启后复查每个有问题的端口，仍未恢复则重新生成配置
-    for spec in "Hysteria2:$port_hy2:udp" "VLESS-Reality:$port_rea:tcp" "AnyTLS:$port_any:tcp" "Naiveproxy:$port_nv:tcp" "Tuic:$port_tu:udp" "ShadowTLS:$port_stls:tcp"; do
+    for spec in "Hysteria2:$port_hy2:udp" "VLESS-Reality:$port_rea:tcp" "AnyTLS:$port_any:tcp" "Naiveproxy:$port_nv:tcp" "Tuic:$port_tu:udp"; do
       name=${spec%%:*}; rest=${spec#*:}; p=${rest%%:*}; proto=${rest##*:}
       case "$name" in
         Hysteria2)     [ "$hyp" = yes ] || continue ;;
@@ -4071,7 +3969,6 @@ doctor() {
         AnyTLS)        [ "$anyp" = yes ] || continue ;;
         Naiveproxy)    [ "$nvp" = yes ] || continue ;;
         Tuic)          [ "$tup" = yes ] || continue ;;
-        ShadowTLS)     [ "$stlp" = yes ] || continue ;;
       esac
       if ! port_listening "$p" "$proto"; then
         echo "  ${name} 重启后仍不通，重新生成配置……"
@@ -4104,13 +4001,11 @@ load_state() {
   [ -f "$SB_HOME/proto_nvp" ] && nvp=yes
   [ -f "$SB_HOME/proto_rea" ] && reap=yes
   [ -f "$SB_HOME/proto_any" ] && anyp=yes
-  [ -f "$SB_HOME/proto_stls" ] && stlp=yes
   [ -f "$SB_HOME/port_tu" ] && port_tu=$(cat "$SB_HOME/port_tu")
   [ -f "$SB_HOME/port_hy2" ] && port_hy2=$(cat "$SB_HOME/port_hy2")
   [ -f "$SB_HOME/port_nv" ] && port_nv=$(cat "$SB_HOME/port_nv")
   [ -f "$SB_HOME/port_rea" ] && port_rea=$(cat "$SB_HOME/port_rea")
   [ -f "$SB_HOME/port_any" ] && port_any=$(cat "$SB_HOME/port_any")
-  [ -f "$SB_HOME/port_stls" ] && port_stls=$(cat "$SB_HOME/port_stls")
   [ -f "$SB_HOME/hyjpt" ] && hyjpt=$(cat "$SB_HOME/hyjpt")
   if [ -z "$hyup" ] && [ -z "$hydown" ] && [ -s "$SB_HOME/hybw" ]; then
     hyup=$(awk '{print $1}' "$SB_HOME/hybw"); hydown=$(awk '{print $2}' "$SB_HOME/hybw")
