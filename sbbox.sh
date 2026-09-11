@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.1"
+SBBOX_VERSION="v2.7.2"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -133,9 +133,9 @@ v4v6() {
 showmode() {
   echo "==========================================================="
   echo "sbbox $SBBOX_VERSION — Sing-box-Only 协议安全加固代理脚本"
-  echo "支持协议（2026梯队）：Hysteria2 / VLESS-Reality / AnyTLS / Naiveproxy / Tuic"
+  echo "支持协议（2026梯队）：Hysteria2 / AnyTLS / Naiveproxy / Tuic（可选：VLESS-Reality）"
   echo "-----------------------------------------------------------"
-  echo "主脚本：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) hyp=1 reap=1 anyp=1 nvp=1 tup=1 alns=1 ym=你的域名"
+  echo "主脚本：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) hyp=1 anyp=1 nvp=1 tup=1 alns=1 ym=你的域名"
   echo "显示节点信息：sbbox list 【或】 bash sbbox.sh list"
   echo "服务与流控状态：sbbox status"
   echo "重启 sing-box：sbbox res"
@@ -150,12 +150,12 @@ showmode() {
   echo "自检修复：sbbox doctor"
   echo "卸载：sbbox del"
   echo "-----------------------------------------------------------"
-  echo "环境变量（安装期）：hyp=1 reap=1 anyp=1 nvp=1 tup=1"
+  echo "环境变量（安装期）：hyp=1 anyp=1 nvp=1 tup=1 (可选 reap=1)"
   echo "  hyp=1    🥇 启用 Hysteria2 + TLS（高速主力，支持端口跳跃与混淆）"
-  echo "  reap=1   🥈 启用 VLESS-Reality TCP 节点（兼容性主力，免域名免证书）"
-  echo "  anyp=1   🥉 启用 AnyTLS + TLS（新一代 TCP 候选，抹除 TLS-in-TLS 特征）"
-  echo "  nvp=1    4 启用 NaiveProxy (H3+H2，Chromium 内核级反探测伪装）"
-  echo "  tup=1    5 启用 TUIC (v5，标准 QUIC 0-RTT，Hysteria2 备选）"
+  echo "  anyp=1   🥈 启用 AnyTLS + TLS（新一代 TCP 主力，抹除 TLS-in-TLS 特征）"
+  echo "  nvp=1    🥉 启用 NaiveProxy (H3+H2，Chromium 内核级反探测伪装）"
+  echo "  tup=1    4 启用 TUIC (v5，标准 QUIC 0-RTT，Hysteria2 备选）"
+  echo "  reap=1   (可选) 启用 VLESS-Reality TCP 节点（免域名免证书，兼容旧客户端）"
   echo "  alns=1   启用 acme 证书（需 ym=你的域名）"
   echo "  ym=域名  acme 证书域名（Hysteria2/AnyTLS/Tuic/Naive 使用）"
   echo "  hyjpt=25000:38000  Hysteria2 跳跃端口（默认关闭；同机有其他代理脚本时慎开）"
@@ -1469,12 +1469,7 @@ EOF
                 "stop=8",
                 "0=30-30",
                 "1=100-400",
-                "2=400-500,c,500-1000,c,500-1000,c,500-1000,c,500-1000",
-                "3=9-9,500-1000",
-                "4=500-1000",
-                "5=500-1000",
-                "6=500-1000",
-                "7=500-1000"
+                "2=400-500,c,500-1000"
             ],
             "tls": {
                 "enabled": true,
@@ -1662,17 +1657,7 @@ gen_client() {
     echo "$hy2_link"; echo
   fi
 
-  # 2. 🥈 VLESS-Reality (兼容性主力)
-  if [ -n "$reap" ]; then
-    local rea_add="${server_ip:-$add}"
-    [[ "$rea_add" == *:* && "$rea_add" != \[*\] ]] && rea_add="[$rea_add]"
-    rea_link="vless://$uuid@$rea_add:$port_rea?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$reality_sni&fp=chrome&pbk=$reality_pub&sid=$reality_sid&type=tcp&headerType=none&packetEncoding=xudp&alpn=h2,http%2F1.1#reality-$node_tag"
-    echo "$rea_link" >> "$SB_LINK"
-    echo "💣【 🥈 VLESS-Reality (兼容主力) 】节点信息如下："
-    echo "$rea_link"; echo
-  fi
-
-  # 3. 🥉 AnyTLS (新一代 TCP 候选)
+  # 2. 🥈 AnyTLS (新一代 TCP 主力)
   if [ -n "$anyp" ] && [ "$CERT_OK" = 1 ]; then
     local any_pin="" any_pcs="" any_hpkp=""
     [ -n "$_sha" ] && any_pin="&pinSHA256=$_sha"
@@ -1680,11 +1665,11 @@ gen_client() {
     [ -n "$_fp" ] && any_pcs="&pcs=$_fp"
     any_link="anytls://$pw_any@$add:$port_any?peer=$sni&sni=$sni&alpn=h2,http%2F1.1&tfo=1&tls13=1&fp=chrome&udp=1&security=tls&insecure=0&allowInsecure=0$any_hpkp$any_pin$any_pcs#anytls-$node_tag"
     echo "$any_link" >> "$SB_LINK"
-    echo "💣【 🥉 AnyTLS + TLS (新一代 TCP 候选) 】节点信息如下："
+    echo "💣【 🥈 AnyTLS + TLS (新一代 TCP 主力) 】节点信息如下："
     echo "$any_link"; echo
   fi
 
-  # 4. NaiveProxy (HTTPS / 流量形态特殊需求)
+  # 3. 🥉 NaiveProxy (HTTPS / 流量形态特殊需求)
   if [ -n "$nvp" ] && [ "$CERT_OK" = 1 ]; then
     local nv_pcs="" nv_pin=""
     [ -n "$_fp" ] && nv_pcs="&pcs=$_fp"
@@ -1699,11 +1684,11 @@ gen_client() {
     for l in "$nv1_link" "$nv2_link" "$nv3_link" "$nv4_link"; do
       echo "$l" >> "$SB_LINK"
     done
-    echo "💣【 4 Naiveproxy (流量形态特殊需求) 】节点信息如下："
+    echo "💣【 🥉 Naiveproxy (流量形态特殊需求) 】节点信息如下："
     echo "$nv1_link"; echo "$nv2_link"; echo "$nv3_link"; echo "$nv4_link"; echo
   fi
 
-  # 5. TUIC (Hysteria2 的 QUIC 备选)
+  # 4. 4 TUIC (Hysteria2 的 QUIC 备选)
   if [ -n "$tup" ]; then
     local tuic_fp="" tuic_pin="" tuic_ech=""
     [ -n "$_fp" ] && tuic_fp="&fp=chrome&pcs=$_fp"
@@ -1713,8 +1698,18 @@ gen_client() {
     esac
     tuic_link="tuic://$uuid:$pw_tu@$add:$port_tu?congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=$sni&insecure=$jhins&allowInsecure=$jhins&allow_insecure=$jhins$tuic_fp$tuic_pin$tuic_ech#tuic-$node_tag"
     echo "$tuic_link" >> "$SB_LINK"
-    echo "💣【 5 Tuic (QUIC 备选) 】节点信息如下："
+    echo "💣【 4 Tuic (QUIC 备选) 】节点信息如下："
     echo "$tuic_link"; echo
+  fi
+
+  # 5. (可选) VLESS-Reality (兼容性节点)
+  if [ -n "$reap" ]; then
+    local rea_add="${server_ip:-$add}"
+    [[ "$rea_add" == *:* && "$rea_add" != \[*\] ]] && rea_add="[$rea_add]"
+    rea_link="vless://$uuid@$rea_add:$port_rea?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$reality_sni&fp=chrome&pbk=$reality_pub&sid=$reality_sid&type=tcp&headerType=none&packetEncoding=xudp&alpn=h2,http%2F1.1#reality-$node_tag"
+    echo "$rea_link" >> "$SB_LINK"
+    echo "💣【 (可选) VLESS-Reality (兼容性节点) 】节点信息如下："
+    echo "$rea_link"; echo
   fi
 
 
@@ -2148,36 +2143,7 @@ gen_client_sbox() {
     tags+=("hysteria2")
   fi
 
-  # 2. 🥈 VLESS-Reality (兼容性主力)
-  if [ -n "$reap" ]; then
-    ob+=('{
-        "type": "vless",
-        "tag": "vless-reality",
-        "server": "'"${server_ip:-$add}"'",
-        "server_port": '"$port_rea"',
-        "uuid": "'"$uuid"'",
-        "flow": "xtls-rprx-vision",
-        "packet_encoding": "xudp",
-        "tcp_fast_open": true,
-        "tcp_multi_path": true,
-        "tls": {
-            "enabled": true,
-            "server_name": "'"$reality_sni"'",
-            "utls": {
-                "enabled": true,
-                "fingerprint": "chrome"
-            },
-            "reality": {
-                "enabled": true,
-                "public_key": "'"$reality_pub"'",
-                "short_id": "'"$reality_sid"'"
-            }
-        }
-    }')
-    tags+=("vless-reality")
-  fi
-
-  # 3. 🥉 AnyTLS (新一代 TCP 候选)
+  # 2. 🥈 AnyTLS (新一代 TCP 主力)
   if [ -n "$anyp" ] && [ "$CERT_OK" = 1 ]; then
     ob+=('{
         "type": "anytls",
@@ -2259,7 +2225,35 @@ gen_client_sbox() {
         "bind_address_no_port": true,
         "tls": { "enabled": true, "server_name": "'"$sni"'", "insecure": '"$msins"', "alpn": ["h3"]'"$tuic_tls_extra"' }
     }')
-    tags+=("tuic")
+  fi
+
+  # 5. (可选) VLESS-Reality (兼容性节点)
+  if [ -n "$reap" ]; then
+    ob+=('{
+        "type": "vless",
+        "tag": "vless-reality",
+        "server": "'"${server_ip:-$add}"'",
+        "server_port": '"$port_rea"',
+        "uuid": "'"$uuid"'",
+        "flow": "xtls-rprx-vision",
+        "packet_encoding": "xudp",
+        "tcp_fast_open": true,
+        "tcp_multi_path": true,
+        "tls": {
+            "enabled": true,
+            "server_name": "'"$reality_sni"'",
+            "utls": {
+                "enabled": true,
+                "fingerprint": "chrome"
+            },
+            "reality": {
+                "enabled": true,
+                "public_key": "'"$reality_pub"'",
+                "short_id": "'"$reality_sid"'"
+            }
+        }
+    }')
+    tags+=("vless-reality")
   fi
 
 
@@ -2379,36 +2373,7 @@ gen_client_clash() {
       - hysteria2-$node_tag"
   fi
 
-  # 2. 🥈 VLESS-Reality (兼容性主力)
-  if [ -n "$reap" ]; then
-    proxies="$proxies
-  - name: reality-$node_tag
-    server: ${server_ip:-$add}
-    port: $port_rea
-    type: vless
-    uuid: $uuid
-    cipher: auto
-    tls: true
-    flow: xtls-rprx-vision
-    udp: true
-    servername: $reality_sni
-    network: tcp
-    reality-opts:
-      public-key: $reality_pub
-      short-id: $reality_sid
-    client-fingerprint: chrome
-    packet-encoding: xudp
-    tfo: true
-    mptcp: true
-    alpn:
-      - h2
-      - http/1.1"
-
-    groups="$groups
-      - reality-$node_tag"
-  fi
-
-  # 3. 🥉 AnyTLS (新一代 TCP 候选)
+  # 2. 🥈 AnyTLS (新一代 TCP 主力)
   if [ -n "$anyp" ] && [ "$CERT_OK" = 1 ]; then
     proxies="$proxies
   - name: anytls-$node_tag
@@ -2468,6 +2433,35 @@ gen_client_clash() {
 
     groups="$groups
       - tuic-$node_tag"
+  fi
+
+  # 5. (可选) VLESS-Reality (兼容性节点)
+  if [ -n "$reap" ]; then
+    proxies="$proxies
+  - name: reality-$node_tag
+    server: ${server_ip:-$add}
+    port: $port_rea
+    type: vless
+    uuid: $uuid
+    cipher: auto
+    tls: true
+    flow: xtls-rprx-vision
+    udp: true
+    servername: $reality_sni
+    network: tcp
+    reality-opts:
+      public-key: $reality_pub
+      short-id: $reality_sid
+    client-fingerprint: chrome
+    packet-encoding: xudp
+    tfo: true
+    mptcp: true
+    alpn:
+      - h2
+      - http/1.1"
+
+    groups="$groups
+      - reality-$node_tag"
   fi
 
   cat > "$SB_HOME/clmi.yaml" <<EOF
@@ -3550,10 +3544,8 @@ main() {
     0|no|off|false|NO|OFF|FALSE) reap="" ;;
     1|yes|on|true|YES|ON|TRUE) reap=1 ;;
     "")
-      # 若启用了其他协议但未显式传 reap，默认开启 Reality（保证默认安装链接与默认安装包含 Reality）
-      if [ -n "$tup" ] || [ -n "$hyp" ] || [ -n "$nvp" ] || [ -n "$anyp" ] || [ -n "$stlp" ]; then
-        reap=1
-      fi
+      # 默认精简四大核心主力梯队（Hysteria2 / AnyTLS / Naive / TUIC），reap 默认不开启，需显式传 reap=1
+      reap=""
       ;;
   esac
 
@@ -3564,7 +3556,7 @@ main() {
       status_show
       exit
     else
-      error "未指定任何协议。请至少设置一个：hyp=1 reap=1 anyp=1 nvp=1 tup=1 stlp=1"
+      error "未指定任何协议。请至少设置一个：hyp=1 anyp=1 nvp=1 tup=1 (可选 reap=1)"
       echo ""
       showmode
       exit 1
