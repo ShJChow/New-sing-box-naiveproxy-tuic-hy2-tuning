@@ -13,7 +13,7 @@
 | 🥉 **新一代候选** | **AnyTLS** | 彻底消除 TLS-in-TLS 特征，抗深度主动探测 | TCP + TLS + 自适应填充 Padding | 真实证书 / 自签+指纹固定 |
 | 4 **特殊形态** | **NaiveProxy** | Chromium 原生网络栈内核级伪装 | HTTP/3 (QUIC) & HTTP/2 双通道 | **强制真实证书** |
 | 5 **QUIC 备选** | **TUIC v5** | 低延迟 UDP 加速 / 标准 QUIC 0-RTT | QUIC (H3) | 真实证书 / 自签+指纹固定 |
-| 6 **TCP 终极备用** | **ShadowTLS v3** | 借用 Apple 官方真 SNI 证书防主动探测 | TCP + Apple Portal SNI 伪装 + SS-2022 | **免证书（借用 captive.apple.com）** |
+| 6 **TCP 终极备用** | **ShadowTLS** | 借用 Apple 官方真 SNI 证书防主动探测 | TCP + Apple Portal SNI 伪装 + SS-2022 (v2 兼容模式) | **免证书（借用 captive.apple.com）** |
 
 > 默认使用 **官方正式版内核（stable）**，默认开启 **QUIC 与 BBR 拥塞控制**，入站最低兼容 **TLS 1.2 / HTTP 1.1**。
 
@@ -1322,12 +1322,18 @@ sysctl net.ipv4.tcp_rmem             # 期望 4096 131072 33554432
 3. 🥉 **AnyTLS + TLS**（新一代 TCP 候选，端口 28443，彻底消除 TLS-in-TLS 特征）
 4. **NaiveProxy**（HTTPS/流量形态特殊需求，端口 10489，Chromium 原生指纹）
 5. **TUIC v5**（QUIC 备选，端口 18793，标准 0-RTT）
-6. **ShadowTLS v3**（TCP 终极备用，端口 39443，借用苹果真 SNI 证书防探测）
+6. **ShadowTLS**（TCP 终极备用，端口 39443，借用苹果真 SNI 证书防探测）
 
-### 2. ShadowTLS 连通性排查与加固（解决连不上/超时问题）
-- **SNI 伪装域名迁移**：由受 GFW 严重干扰阻断的 `gateway.icloud.com` 切换为苹果官方 Portal 认证域名 **`captive.apple.com`**（全球及大陆各运营商白名单放行，原生 TLS 1.3 支持，本 VPS 握手实测 23ms）。
-- **宽容容错模式**：去除服务端的 `strict_mode: true`，消除客户端乱序或微小时序差异导致的断连。
-- **Mihomo 双轨参数兼容**：`clmi.yaml` 同时注入 `plugin: shadow-tls` 与 Mihomo 原生 `shadow-tls-opts:` 字段，兼容各类新老客户端。
+### 2. AnyTLS 与 ShadowTLS 客户端兼容性加固（v2.6.1 & v2.6.2）
+- **AnyTLS 订阅全客户端适配**：
+  - Shadowrocket 的 AnyTLS 解析器强依赖 `peer=`（指定 SNI）和 `hpkp=`（证书 SHA256 指纹）以及 `udp=1`，单靠 `sni=` 会被直接忽略。现已全面升级为多轨并存参数（`peer=` + `sni=` + `hpkp=` + `pinSHA256=`），Shadowrocket 扫码即通，实测握手时延 < 280ms。
+- **ShadowTLS 协议握手切换为广泛兼容的 v2 模式**：
+  - Shadowrocket 内置的 shadow-tls 插件仅支持 v2 握手协议，无法完成 v3 的 Challenge-Response 双向认证（导致握手超时断开 `read client handshake: unexpected EOF`）。
+  - 服务端与客户端订阅全面调整为成熟稳定的 **`version: 2`** 单密码模式，握手域名使用 **`captive.apple.com`**（苹果全球 Portal 认证白名单），Shadowrocket、sing-box、Mihomo 秒通。
+- **客户端平台兼容性指引（重要）**：
+  - **v2rayN (Windows)**：官方**原生不支持 ShadowTLS**（GitHub Issue #4261 未实现）。v2rayN 导入包含 `?plugin=shadow-tls...` 的 `ss://` 链接时会直接丢弃插件参数，调用 Xray 当作普通 Shadowsocks 裸连服务端，导致服务端因收不到 TLS ClientHello 报错 `first record does not look like a TLS handshake`。**Windows 用户使用 ShadowTLS 节点请使用 [NekoBox](https://github.com/MatsuriDayo/nekoray)、[Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev) 或 sing-box 官方客户端**。
+  - **Shadowrocket (iOS)**：全协议完美支持（Hysteria2 / VLESS-Reality / AnyTLS / Naive / Tuic / ShadowTLS v2）。
+  - **Clash / Mihomo / sing-box**：全平台原生支持所有六大协议。
 
 ### 3. 全客户端智能订阅自适应体系与二维码
 - **终端字符二维码直显**：执行 `sbbox sub` 或 `sbbox list` 终端直接输出 ANSI UTF-8 字符二维码，手机客户端扫码即导。

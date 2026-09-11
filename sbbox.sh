@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.6.0"
+SBBOX_VERSION="v2.6.2"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -68,7 +68,7 @@ reap_sni="${reap_sni:-${reality_sni:-}}"    # Reality 伪装目标 SNI（默认 
 port_rea="${port_rea:-${port_vl:-}}"        # Reality 监听端口（默认随机 10000-65535）
 anyp="${anyp:-}"                            # sing-box 1.14 新特性：AnyTLS + TLS 节点（抗 TLS-in-TLS 指纹）
 port_any="${port_any:-}"                    # AnyTLS 监听端口（默认随机 10000-65535）
-stlp="${stlp:-}"                            # ShadowTLS v3 节点（免证书伪装）
+stlp="${stlp:-}"                            # ShadowTLS 节点（v2 兼容模式，免证书伪装）
 port_stls="${port_stls:-}"                  # ShadowTLS 监听端口（默认随机 10000-65535）
 stls_sni="${stls_sni:-captive.apple.com}"                       # ShadowTLS 伪装 SNI（captive.apple.com 苹果 Portal，GFW 无干扰且支持 TLS 1.3）
 hyjpt="${hyjpt:-}"                          # Hysteria2 跳跃端口，默认关闭（空）；如 "25000:38000"
@@ -136,7 +136,7 @@ v4v6() {
 showmode() {
   echo "==========================================================="
   echo "sbbox $SBBOX_VERSION — Sing-box-Only 协议安全加固代理脚本"
-  echo "支持协议（2026梯队）：Hysteria2 / VLESS-Reality / AnyTLS / Naiveproxy / Tuic / ShadowTLS v3"
+  echo "支持协议（2026梯队）：Hysteria2 / VLESS-Reality / AnyTLS / Naiveproxy / Tuic / ShadowTLS"
   echo "-----------------------------------------------------------"
   echo "主脚本：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) hyp=1 reap=1 anyp=1 nvp=1 tup=1 stlp=1 alns=1 ym=你的域名"
   echo "显示节点信息：sbbox list 【或】 bash sbbox.sh list"
@@ -159,7 +159,7 @@ showmode() {
   echo "  anyp=1   🥉 启用 AnyTLS + TLS（新一代 TCP 候选，抹除 TLS-in-TLS 特征）"
   echo "  nvp=1    4 启用 NaiveProxy (H3+H2，Chromium 内核级反探测伪装）"
   echo "  tup=1    5 启用 TUIC (v5，标准 QUIC 0-RTT，Hysteria2 备选）"
-  echo "  stlp=1   6 启用 ShadowTLS v3（TCP 终极备用，借用真 SNI 证书防探测）"
+  echo "  stlp=1   6 启用 ShadowTLS（TCP 终极备用，v2 兼容模式，借用真 SNI 证书防探测）"
   echo "  alns=1   启用 acme 证书（需 ym=你的域名）"
   echo "  ym=域名  acme 证书域名（Hysteria2/AnyTLS/Tuic/Naive 使用）"
   echo "  hyjpt=25000:38000  Hysteria2 跳跃端口（默认关闭；同机有其他代理脚本时慎开）"
@@ -1491,7 +1491,7 @@ EOF
 EOF
   fi
 
-  # ShadowTLS v3 (TCP + Fake SNI Relay + Internal SS-2022)
+  # ShadowTLS v2 (TCP + Fake SNI Relay + Internal SS-2022)
   if [ -n "$stlp" ]; then
     cat >> "$SB_CONF" <<EOF
         {
@@ -1499,10 +1499,8 @@ EOF
             "tag": "shadowtls-in",
             "listen": "::",
             "listen_port": $port_stls,
-            "version": 3,
-            "users": [
-                { "name": "default", "password": "$pw_stls" }
-            ],
+            "version": 2,
+            "password": "$pw_stls",
             "handshake": {
                 "server": "$stls_sni",
                 "server_port": 443
@@ -1746,15 +1744,15 @@ gen_client() {
     echo "$tuic_link"; echo
   fi
 
-  # 6. ShadowTLS v3 (TCP 备用防探查)
+  # 6. ShadowTLS v2 (TCP 备用防探查)
   if [ -n "$stlp" ]; then
     local stls_ss_b64
     stls_ss_b64=$(printf '%s' "2022-blake3-aes-128-gcm:$pw_ss_inner" | base64 | tr -d '\n=' | tr '+/' '-_')
     local stls_host="${server_ip:-$add}"
     [[ "$stls_host" == *:* && "$stls_host" != \[*\] ]] && stls_host="[$stls_host]"
-    stls_link="ss://${stls_ss_b64}@${stls_host}:${port_stls}/?plugin=shadow-tls%3Bhost%3D${stls_sni}%3Bpassword%3D${pw_stls}%3Bversion%3D3#shadowtls-$node_tag"
+    stls_link="ss://${stls_ss_b64}@${stls_host}:${port_stls}/?plugin=shadow-tls%3Bhost%3D${stls_sni}%3Bpassword%3D${pw_stls}%3Bversion%3D2#shadowtls-$node_tag"
     echo "$stls_link" >> "$SB_LINK"
-    echo "💣【 6 ShadowTLS v3 (TCP 备用) 】节点信息如下："
+    echo "💣【 6 ShadowTLS v2 (TCP 备用) 】节点信息如下："
     echo "$stls_link"; echo
   fi
 
@@ -2304,7 +2302,7 @@ gen_client_sbox() {
         "tag": "shadowtls-dialer",
         "server": "'"${server_ip:-$add}"'",
         "server_port": '"$port_stls"',
-        "version": 3,
+        "version": 2,
         "password": "'"$pw_stls"'",
         "tls": {
             "enabled": true,
@@ -2516,7 +2514,7 @@ gen_client_clash() {
       - tuic-$node_tag"
   fi
 
-  # 6. ShadowTLS v3 (TCP 备用防探查)
+  # 6. ShadowTLS v2 (TCP 备用防探查)
   if [ -n "$stlp" ]; then
     proxies="$proxies
   - name: shadowtls-$node_tag
@@ -2529,12 +2527,12 @@ gen_client_clash() {
     plugin-opts:
       host: $stls_sni
       password: $pw_stls
-      version: 3
+      version: 2
       client-fingerprint: chrome
     shadow-tls-opts:
       host: $stls_sni
       password: $pw_stls
-      version: 3"
+      version: 2"
 
     groups="$groups
       - shadowtls-$node_tag"
