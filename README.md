@@ -1,18 +1,19 @@
-# New-sing-box-naiveproxy-tuic-hy2-tuning — Sing-box 四协议安全加固代理脚本
+# New-sing-box-naiveproxy-tuic-hy2-tuning — Sing-box 2026 六协议安全加固代理脚本
 
 [![validate](https://github.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/actions/workflows/validate.yml/badge.svg)](https://github.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/actions/workflows/validate.yml)
 
 **语言：** **简体中文** · [English](./README.en.md)
 
-基于 **sing-box 单内核** 部署脚本，提供四大主流核心协议：
+基于 **sing-box 1.14 单内核** 深度部署，落地 2026 年最新六层协议梯队：
 
-| 协议 | 用途 | 传输 | 证书 |
-|------|------|------|------|
-| **VLESS-Reality** | 最新极速防封锁直连（默认开启） | TCP (XTLS Vision) | **免域名 / 免证书（借用官方 SNI）** |
-| **Tuic** | 低延迟 UDP 加速 | QUIC (HTTP/3) | 真实证书 / 自签+指纹固定 |
-| **Hysteria2** | 高吞吐 / 抗丢包 | QUIC (HTTP/3) | 真实证书 / 自签+指纹固定 |
-| **Naiveproxy H3** | 高隐匿性 HTTP/3 代理（默认） | HTTP/3 (QUIC) | **强制真实证书** |
-| **Naiveproxy H2** | 高隐匿性 HTTP/2 代理（兼容） | HTTP/2 | **强制真实证书** |
+| 梯队次序 | 协议方案 | 定位与核心特性 | 传输与伪装 | 证书需求 |
+| :--- | :--- | :--- | :--- | :--- |
+| 🥇 **高速主力** | **Hysteria2** | 极速高吞吐 / 抗恶劣丢包 / Brutal 拥塞控制 | QUIC (H3) + salamander 混淆 + 端口跳跃 | 真实证书 / 自签+指纹固定 |
+| 🥈 **兼容主力** | **VLESS-Reality** | 全客户端极速直连（默认必开） | TCP (XTLS Vision) | **免域名 / 免证书（借用官方 SNI）** |
+| 🥉 **新一代候选** | **AnyTLS** | 彻底消除 TLS-in-TLS 特征，抗深度主动探测 | TCP + TLS + 自适应填充 Padding | 真实证书 / 自签+指纹固定 |
+| 4 **特殊形态** | **NaiveProxy** | Chromium 原生网络栈内核级伪装 | HTTP/3 (QUIC) & HTTP/2 双通道 | **强制真实证书** |
+| 5 **QUIC 备选** | **TUIC v5** | 低延迟 UDP 加速 / 标准 QUIC 0-RTT | QUIC (H3) | 真实证书 / 自签+指纹固定 |
+| 6 **TCP 终极备用** | **ShadowTLS v3** | 借用 Apple 官方真 SNI 证书防主动探测 | TCP + Apple Portal SNI 伪装 + SS-2022 | **免证书（借用 captive.apple.com）** |
 
 > 默认使用 **官方正式版内核（stable）**，默认开启 **QUIC 与 BBR 拥塞控制**，入站最低兼容 **TLS 1.2 / HTTP 1.1**。
 
@@ -49,7 +50,8 @@
 - [十七、v2.5.4 BBRv3 上的 25 样本回归基线](#十七v254-bbrv3-上的-25-样本回归基线)
 - [十八、v2.5.5 large 档 tcp_rmem/tcp_wmem 上限补齐到 64MB](#十八v255-large-档-tcp_rmemtcp_wmem-上限补齐到-64mb)
 - [十九、v2.5.6 回滚 v2.5.5 的 64MB 缓冲上限](#十九v256-回滚-v255-的-64mb-缓冲上限)
-- [二十、免责声明](#二十免责声明)
+- [二十、v2.6.0 sing-box 1.14 六梯队落地、ShadowTLS 兼容性加固与全客户端订阅直链自适应](#二十v260-sing-box-114-六梯队落地shadowtls-兼容性加固与全客户端订阅直链自适应)
+- [二十一、免责声明](#二十一免责声明)
 
 ---
 
@@ -1311,6 +1313,32 @@ sysctl net.ipv4.tcp_rmem             # 期望 4096 131072 33554432
 
 ---
 
-## 二十、免责声明
+## 二十、v2.6.0 sing-box 1.14 六梯队落地、ShadowTLS 兼容性加固与全客户端订阅直链自适应
+
+### 1. 2026 年最新协议梯队落地
+基于 sing-box 1.14 架构重构，支持六大梯队：
+1. 🥇 **Hysteria2 + TLS**（高速主力，端口 44116，salamander 混淆 + 端口跳跃）
+2. 🥈 **VLESS-Reality**（兼容主力，端口 23106，XTLS Vision）
+3. 🥉 **AnyTLS + TLS**（新一代 TCP 候选，端口 28443，彻底消除 TLS-in-TLS 特征）
+4. **NaiveProxy**（HTTPS/流量形态特殊需求，端口 10489，Chromium 原生指纹）
+5. **TUIC v5**（QUIC 备选，端口 18793，标准 0-RTT）
+6. **ShadowTLS v3**（TCP 终极备用，端口 39443，借用苹果真 SNI 证书防探测）
+
+### 2. ShadowTLS 连通性排查与加固（解决连不上/超时问题）
+- **SNI 伪装域名迁移**：由受 GFW 严重干扰阻断的 `gateway.icloud.com` 切换为苹果官方 Portal 认证域名 **`captive.apple.com`**（全球及大陆各运营商白名单放行，原生 TLS 1.3 支持，本 VPS 握手实测 23ms）。
+- **宽容容错模式**：去除服务端的 `strict_mode: true`，消除客户端乱序或微小时序差异导致的断连。
+- **Mihomo 双轨参数兼容**：`clmi.yaml` 同时注入 `plugin: shadow-tls` 与 Mihomo 原生 `shadow-tls-opts:` 字段，兼容各类新老客户端。
+
+### 3. 全客户端智能订阅自适应体系与二维码
+- **终端字符二维码直显**：执行 `sbbox sub` 或 `sbbox list` 终端直接输出 ANSI UTF-8 字符二维码，手机客户端扫码即导。
+- **图片直链**：内置服务提供 `/qr.png` 路由直出图片二维码。
+- **全协议下发保障**：Base64 通用订阅下发全部 6 大协议，绝不擅自剔除新增节点。
+- **客户端专属直链参数**：
+  - Clash / Mihomo 订阅直链：`http://<IP>:<PORT>/<TOKEN>?clash=1`
+  - sing-box 客户端订阅直链：`http://<IP>:<PORT>/<TOKEN>?singbox=1`
+
+---
+
+## 二十一、免责声明
 
 本项目仅供网络技术研究与学习交流使用。使用者须自行遵守所在国家/地区的法律法规，因使用本脚本产生的一切后果由使用者自行承担。

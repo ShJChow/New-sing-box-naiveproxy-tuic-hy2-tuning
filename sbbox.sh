@@ -70,7 +70,7 @@ anyp="${anyp:-}"                            # sing-box 1.14 新特性：AnyTLS +
 port_any="${port_any:-}"                    # AnyTLS 监听端口（默认随机 10000-65535）
 stlp="${stlp:-}"                            # ShadowTLS v3 节点（免证书伪装）
 port_stls="${port_stls:-}"                  # ShadowTLS 监听端口（默认随机 10000-65535）
-stls_sni="${stls_sni:-${reality_sni:-gateway.icloud.com}}"  # ShadowTLS 伪装 SNI
+stls_sni="${stls_sni:-captive.apple.com}"                       # ShadowTLS 伪装 SNI（captive.apple.com 苹果 Portal，GFW 无干扰且支持 TLS 1.3）
 hyjpt="${hyjpt:-}"                          # Hysteria2 跳跃端口，默认关闭（空）；如 "25000:38000"
 hyobfs="${hyobfs:-1}"                       # Hysteria2 salamander 混淆，默认开启；关闭用 hyobfs=0
 hyobfs_pw="${hyobfs_pw:-}"                  # 混淆密码（默认独立随机值）
@@ -1507,7 +1507,6 @@ EOF
                 "server": "$stls_sni",
                 "server_port": 443
             },
-            "strict_mode": true,
             "detour": "ss-inner-in"
         },
         {
@@ -1841,8 +1840,9 @@ gen_sub() {
     echo -e "  ${CYAN}[二维码图片]${NC} 网页直链: ${YELLOW}http://$subhost:$subport/qr.png${NC}"
     echo "==========================================================="
   fi
-  echo -e "  ${CYAN}[提示]${NC} Clash/Mihomo 请直接导入配置文件: ${YELLOW}$SB_HOME/clmi.yaml${NC}"
-  echo -e "  ${CYAN}[提示]${NC} sing-box 客户端请导入配置文件: ${YELLOW}$SB_HOME/sbox_client.json${NC}"
+  echo -e "  ${CYAN}[订阅拉取]${NC} Clash/Mihomo 专属订阅直链: ${YELLOW}$sub_url?clash=1${NC}"
+  echo -e "  ${CYAN}[订阅拉取]${NC} sing-box 客户端专属订阅直链: ${YELLOW}$sub_url?singbox=1${NC}"
+  echo -e "  ${CYAN}[本地配置]${NC} Clash/Mihomo: ${YELLOW}$SB_HOME/clmi.yaml${NC} | sing-box: ${YELLOW}$SB_HOME/sbox_client.json${NC}"
   echo "==========================================================="
   warn "订阅经明文 HTTP 提供，令牌即密码，请勿外泄；不用时执行 sbbox sub off"
 }
@@ -1881,14 +1881,17 @@ def resolve_token_file(token_path):
 
 class SubHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
-        sys.stdout.write("%s - - [%s] %s\n" % (self.address_string(), self.log_date_time_string(), format % args))
+        ua = self.headers.get("User-Agent", "-") if hasattr(self, "headers") and self.headers else "-"
+        sys.stdout.write("%s - - [%s] %s (UA: %s)\n" % (self.address_string(), self.log_date_time_string(), format % args, ua))
         sys.stdout.flush()
 
     def do_HEAD(self):
         self.do_GET()
 
     def do_GET(self):
-        token_path = unquote(self.path.split("?")[0].split("#")[0]).lstrip("/")
+        raw_path = self.path.split("#")[0]
+        query = raw_path.split("?", 1)[1] if "?" in raw_path else ""
+        token_path = unquote(raw_path.split("?")[0]).lstrip("/")
         if token_path in ("", "index.html"):
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -1907,13 +1910,27 @@ class SubHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(content)
                 return
+
+        force_format = ""
+        for suffix in ("/clash", "/singbox", "/sb", "/json", "/b64"):
+            if token_path.endswith(suffix):
+                force_format = suffix.lstrip("/")
+                token_path = token_path[:-len(suffix)]
+                break
+
         token_file = resolve_token_file(token_path)
         if token_file is None:
             self.send_response(404)
             self.end_headers()
             return
+
         ua = self.headers.get("User-Agent", "").lower()
-        if any(k in ua for k in ("clash", "mihomo", "stash", "meta", "subconverter")):
+        q_lower = query.lower()
+
+        is_clash = force_format == "clash" or "clash=1" in q_lower or "format=clash" in q_lower or any(k in ua for k in ("clash", "mihomo", "stash", "meta", "subconverter", "verge", "flclash"))
+        is_singbox = force_format in ("singbox", "sb", "json") or "singbox=1" in q_lower or "sb=1" in q_lower or "format=singbox" in q_lower or "format=json" in q_lower or "sing-box" in ua or "sbox" in ua or "nekoray" in ua
+
+        if is_clash and not ("format=b64" in q_lower or "b64=1" in q_lower):
             clash_file = os.path.join(SB_HOME, "clmi.yaml")
             if os.path.isfile(clash_file):
                 with open(clash_file, "rb") as f: content = f.read()
@@ -1925,7 +1942,8 @@ class SubHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(content)
                 return
-        if "sing-box" in ua or "sbox" in ua:
+
+        if is_singbox and not ("format=b64" in q_lower or "b64=1" in q_lower):
             sb_file = os.path.join(SB_HOME, "sbox_client.json")
             if os.path.isfile(sb_file):
                 with open(sb_file, "rb") as f: content = f.read()
@@ -1936,6 +1954,7 @@ class SubHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(content)
                 return
+
         raw_links = []
         nodes_txt = os.path.join(SB_HOME, "nodes.txt")
         if os.path.isfile(nodes_txt):
@@ -1947,26 +1966,18 @@ class SubHandler(BaseHTTPRequestHandler):
                 decoded = base64.b64decode(b64).decode("utf-8", errors="ignore")
                 raw_links = [line.strip() for line in decoded.splitlines() if line.strip() and not line.strip().startswith("#")]
             except Exception: pass
-        selected_links = []
-        if "shadowrocket" in ua:
-            for l in raw_links:
-                if l.startswith(("tuic://", "hysteria2://", "vless://", "http3://", "http2://", "ss://")):
-                    selected_links.append(l)
-        elif any(k in ua for k in ("v2rayn", "nekobox")):
-            for l in raw_links:
-                if l.startswith(("tuic://", "hysteria2://", "vless://", "anytls://", "naive+quic://", "naive+https://", "ss://")):
-                    selected_links.append(l)
-        else:
-            if raw_links:
-                selected_links = raw_links
-            else:
-                with open(token_file, "rb") as f: content = f.read()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/plain; charset=utf-8")
-                self.send_header("Content-Length", str(len(content)))
-                self.end_headers()
-                self.wfile.write(content)
-                return
+
+        # 默认下发全量 6 大协议节点，不擅自剔除任何已启用节点
+        selected_links = list(raw_links)
+        if not selected_links:
+            with open(token_file, "rb") as f: content = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
+            return
+
         body = base64.b64encode("\n".join(selected_links).encode("utf-8"))
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -2101,8 +2112,9 @@ cmd_sub() {
         echo -e "  ${CYAN}[二维码图片]${NC} 网页直链: ${YELLOW}http://$subhost:$port/qr.png${NC}"
         echo "==========================================================="
       fi
-      echo -e "  ${CYAN}[提示]${NC} Clash/Mihomo 请直接导入配置文件: ${YELLOW}$SB_HOME/clmi.yaml${NC}"
-      echo -e "  ${CYAN}[提示]${NC} sing-box 客户端请导入配置文件: ${YELLOW}$SB_HOME/sbox_client.json${NC}"
+      echo -e "  ${CYAN}[订阅拉取]${NC} Clash/Mihomo 专属订阅直链: ${YELLOW}$sub_url?clash=1${NC}"
+      echo -e "  ${CYAN}[订阅拉取]${NC} sing-box 客户端专属订阅直链: ${YELLOW}$sub_url?singbox=1${NC}"
+      echo -e "  ${CYAN}[本地配置]${NC} Clash/Mihomo: ${YELLOW}$SB_HOME/clmi.yaml${NC} | sing-box: ${YELLOW}$SB_HOME/sbox_client.json${NC}"
       echo "==========================================================="
       ;;
     off) stop_sub_server ;;
@@ -2514,7 +2526,11 @@ gen_client_clash() {
       host: $stls_sni
       password: $pw_stls
       version: 3
-      client-fingerprint: chrome"
+      client-fingerprint: chrome
+    shadow-tls-opts:
+      host: $stls_sni
+      password: $pw_stls
+      version: 3"
 
     groups="$groups
       - shadowtls-$node_tag"
