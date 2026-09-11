@@ -185,12 +185,12 @@ install_deps() {
   if [ ! -f "$SB_HOME/deps_done" ]; then
     info "安装系统依赖……"
     if command -v apk >/dev/null 2>&1; then
-      apk update >/dev/null 2>&1 && apk add --no-cache bash coreutils curl wget openssl iptables ip6tables ca-certificates ethtool iproute2 >/dev/null 2>&1
+      apk update >/dev/null 2>&1 && apk add --no-cache bash coreutils curl wget openssl iptables ip6tables ca-certificates ethtool iproute2 qrencode >/dev/null 2>&1
     elif command -v apt >/dev/null 2>&1; then
       export DEBIAN_FRONTEND=noninteractive
-      apt update >/dev/null 2>&1 && apt install -y curl wget openssl ca-certificates iptables iptables-persistent net-tools ethtool iproute2 >/dev/null 2>&1
+      apt update >/dev/null 2>&1 && apt install -y curl wget openssl ca-certificates iptables iptables-persistent net-tools ethtool iproute2 qrencode >/dev/null 2>&1
     elif command -v dnf >/dev/null 2>&1; then
-      dnf install -y curl wget openssl ca-certificates iptables ethtool iproute >/dev/null 2>&1
+      dnf install -y curl wget openssl ca-certificates iptables ethtool iproute qrencode >/dev/null 2>&1
     fi
     touch "$SB_HOME/deps_done"
   fi
@@ -1824,11 +1824,23 @@ gen_sub() {
 
   local subhost="$server_ip"
   case "$subhost" in *:*) subhost="[$subhost]" ;; esac   # IPv6 需方括号
+  local sub_url="http://$subhost:$subport/$token"
+  if command -v qrencode >/dev/null 2>&1; then
+    qrencode -o "$SUB_DIR/sub_qr.png" -s 8 -m 2 "$sub_url" 2>/dev/null || true
+    cp -f "$SUB_DIR/sub_qr.png" "$SB_HOME/sub_qr.png" 2>/dev/null || true
+  fi
   echo ""
   echo "==========================================================="
   info "v2rayN / 通用订阅地址（复制到客户端「订阅设置」）："
-  echo "http://$subhost:$subport/$token"
+  echo "$sub_url"
   echo "==========================================================="
+  if command -v qrencode >/dev/null 2>&1; then
+    echo -e "  ${CYAN}[+] 订阅二维码（手机客户端扫码直接导入）：${NC}"
+    qrencode -t ANSIUTF8 -m 1 "$sub_url"
+    echo "==========================================================="
+    echo -e "  ${CYAN}[二维码图片]${NC} 网页直链: ${YELLOW}http://$subhost:$subport/qr.png${NC}"
+    echo "==========================================================="
+  fi
   echo -e "  ${CYAN}[提示]${NC} Clash/Mihomo 请直接导入配置文件: ${YELLOW}$SB_HOME/clmi.yaml${NC}"
   echo -e "  ${CYAN}[提示]${NC} sing-box 客户端请导入配置文件: ${YELLOW}$SB_HOME/sbox_client.json${NC}"
   echo "==========================================================="
@@ -1883,6 +1895,18 @@ class SubHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b"sbbox subscription server is running.\n")
             return
+        if token_path in ("qr", "qr.png", "sub_qr.png") or token_path.endswith((".png", "/qr")):
+            qr_file = os.path.join(WEB_DIR_REAL, "sub_qr.png")
+            if not os.path.isfile(qr_file):
+                qr_file = os.path.join(SB_HOME, "sub_qr.png")
+            if os.path.isfile(qr_file):
+                with open(qr_file, "rb") as f: content = f.read()
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+                return
         token_file = resolve_token_file(token_path)
         if token_file is None:
             self.send_response(404)
@@ -1926,11 +1950,11 @@ class SubHandler(BaseHTTPRequestHandler):
         selected_links = []
         if "shadowrocket" in ua:
             for l in raw_links:
-                if l.startswith(("tuic://", "hysteria2://", "vless://", "http3://", "http2://")):
+                if l.startswith(("tuic://", "hysteria2://", "vless://", "http3://", "http2://", "ss://")):
                     selected_links.append(l)
         elif any(k in ua for k in ("v2rayn", "nekobox")):
             for l in raw_links:
-                if l.startswith(("tuic://", "hysteria2://", "vless://", "naive+quic://", "naive+https://")):
+                if l.startswith(("tuic://", "hysteria2://", "vless://", "anytls://", "naive+quic://", "naive+https://", "ss://")):
                     selected_links.append(l)
         else:
             if raw_links:
@@ -2060,11 +2084,23 @@ cmd_sub() {
         warn "订阅服务：未运行，正在重新拉起……"
         sub=1 subport="$port" subid="$token" start_sub_server
       fi
+      local sub_url="http://$subhost:$port/$token"
+      if command -v qrencode >/dev/null 2>&1; then
+        qrencode -o "$SUB_DIR/sub_qr.png" -s 8 -m 2 "$sub_url" 2>/dev/null || true
+        cp -f "$SUB_DIR/sub_qr.png" "$SB_HOME/sub_qr.png" 2>/dev/null || true
+      fi
       echo ""
       echo "==========================================================="
       info "v2rayN / 通用订阅地址（复制到客户端「订阅设置」）："
-      echo "http://$subhost:$port/$token"
+      echo "$sub_url"
       echo "==========================================================="
+      if command -v qrencode >/dev/null 2>&1; then
+        echo -e "  ${CYAN}[+] 订阅二维码（手机客户端扫码直接导入）：${NC}"
+        qrencode -t ANSIUTF8 -m 1 "$sub_url"
+        echo "==========================================================="
+        echo -e "  ${CYAN}[二维码图片]${NC} 网页直链: ${YELLOW}http://$subhost:$port/qr.png${NC}"
+        echo "==========================================================="
+      fi
       echo -e "  ${CYAN}[提示]${NC} Clash/Mihomo 请直接导入配置文件: ${YELLOW}$SB_HOME/clmi.yaml${NC}"
       echo -e "  ${CYAN}[提示]${NC} sing-box 客户端请导入配置文件: ${YELLOW}$SB_HOME/sbox_client.json${NC}"
       echo "==========================================================="

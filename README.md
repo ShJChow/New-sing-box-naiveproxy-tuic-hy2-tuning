@@ -302,6 +302,11 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 - sing-box 客户端：`~/sbbox/sbox_client.json`
 - Clash / Mihomo：`~/sbbox/clmi.yaml`
 
+### 3. 订阅二维码与图片直链
+订阅展示命令（`sbbox sub` 或 `sbbox list`）会自动生成与展示订阅二维码：
+- **终端字符二维码**：直接在终端渲染紧凑高对比度 ANSI UTF-8 字符二维码，手机客户端（Shadowrocket、sing-box、v2rayN、NekoBox）打开扫一扫即可秒导全部节点。
+- **网页图片直链**：内置订阅服务器提供 `/qr.png` 路由直出 PNG 二维码图片（如 `http://<IP>:<PORT>/qr.png`），方便通过浏览器保存或扫码。
+
 ---
 
 ## 九、四条节点实测吞吐
