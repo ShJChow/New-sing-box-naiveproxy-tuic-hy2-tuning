@@ -29,14 +29,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: 全部四协议（含 Reality）
-            env: reap=1 tup=1 hyp=1 nvp=1 alns=1 ym=ci.example.com
+          - name: 推荐四大主力（含 AnyTLS）
+            env: hyp=1 anyp=1 nvp=1 tup=1 alns=1 ym=ci.example.com
+          - name: 全五协议（含 Reality）
+            env: hyp=1 anyp=1 nvp=1 tup=1 reap=1 alns=1 ym=ci.example.com
+          - name: 仅 AnyTLS
+            env: anyp=1 alns=1 ym=ci.example.com
           - name: 仅 Reality
             env: reap=1
-          - name: 全部三协议
-            # alns=1 必须配 ym=：脚本要求启用证书功能时提供域名。
-            # 域名与下面预置的自签证书 CN 一致，install_cert 会命中复用分支。
-            env: tup=1 hyp=1 nvp=1 alns=1 ym=ci.example.com
+          - name: 无域名极速组合
+            env: hyp=1 tup=1 reap=1
           - name: 仅 Hysteria2
             env: hyp=1
           - name: 仅 Tuic
@@ -109,6 +111,7 @@ jobs:
               tup=1) jq -e '.inbounds[]|select(.type=="tuic")'      "$CONF" >/dev/null ;;
               hyp=1) jq -e '.inbounds[]|select(.type=="hysteria2")' "$CONF" >/dev/null ;;
               nvp=1) jq -e '.inbounds[]|select(.type=="naive")'     "$CONF" >/dev/null ;;
+              anyp=1) jq -e '.inbounds[]|select(.type=="anytls")'   "$CONF" >/dev/null ;;
               reap=1) jq -e '.inbounds[]|select(.type=="vless")'    "$CONF" >/dev/null ;;
             esac
           done
@@ -127,6 +130,20 @@ jobs:
           grep -q '^vless://' "$HOME/sbbox/nodes.txt" \
             || { echo "nodes.txt 应包含 vless:// 节点链接"; exit 1; }
           echo "OK: VLESS-Reality 配置与节点链接符合预期"
+
+      - name: 断言 AnyTLS 配置正确
+        run: |
+          set -euo pipefail
+          if ! echo '${{ matrix.env }}' | grep -q 'anyp=1'; then exit 0; fi
+          CLIENT="$HOME/sbbox/sbox_client.json"
+          CONF="$HOME/sbbox/sb.json"
+          jq -e '.inbounds[]|select(.type=="anytls")|.tls.min_version=="1.3"' "$CONF" >/dev/null \
+            || { echo "服务端 anytls 入站应锁定 TLS 1.3"; exit 1; }
+          jq -e '.outbounds[]|select(.type=="anytls")|.tls.min_version=="1.3" and .tls.utls.fingerprint=="chrome"' "$CLIENT" >/dev/null \
+            || { echo "客户端 anytls 出站应启用 TLS 1.3 与 uTLS Chrome 指纹"; exit 1; }
+          grep -q '^anytls://' "$HOME/sbbox/nodes.txt" \
+            || { echo "nodes.txt 应包含 anytls:// 节点链接"; exit 1; }
+          echo "OK: AnyTLS 配置与节点链接符合预期"
 
       - name: 断言 Hysteria2 拥塞控制与混淆互斥关系正确
         run: |
@@ -267,12 +284,12 @@ jobs:
             -addext "subjectAltName=DNS:ci.example.com" 2>/dev/null
 
       - name: 生成配置
-        run: env SBBOX_CHECK_ONLY=1 tup=1 hyp=1 nvp=1 alns=1 ym=ci.example.com bash sbbox.sh
+        run: env SBBOX_CHECK_ONLY=1 hyp=1 anyp=1 nvp=1 tup=1 alns=1 ym=ci.example.com bash sbbox.sh
 
       - name: 生成节点与订阅
         run: env sub=1 subport=18080 bash sbbox.sh list
 
-      - name: 断言订阅是合法 base64 且包含全部节点（含 naive）
+      - name: 断言订阅是合法 base64 且包含全部节点（含 naive 与 anytls）
         run: |
           set -euo pipefail
           TOKEN=$(cat "$HOME/sbbox/subtoken")
@@ -291,7 +308,8 @@ jobs:
           grep -q '^http3://'       /tmp/decoded.txt || { echo "缺少 naive H3 节点(Shadowrocket)"; exit 1; }
           grep -q '^hysteria2://'  /tmp/decoded.txt || { echo "缺少 hysteria2 节点"; exit 1; }
           grep -q '^tuic://'       /tmp/decoded.txt || { echo "缺少 tuic 节点"; exit 1; }
-          echo "OK: 订阅含全部节点，naive 双 scheme 齐备"
+          grep -q '^anytls://'     /tmp/decoded.txt || { echo "缺少 anytls 节点"; exit 1; }
+          echo "OK: 订阅含全部主力节点，naive 双 scheme 与 anytls 齐备"
 
       - name: 断言 sub_nonaive=1 时剔除 naive 但仍合法
         run: |

@@ -1,18 +1,18 @@
-# New-sing-box-naiveproxy-tuic-hy2-tuning — Sing-box Four-Protocol Secure Proxy Script
+# New-sing-box-naiveproxy-tuic-hy2-tuning — Sing-box 2026 Secure Proxy Script (Four Major Protocols + Optional Reality)
 
 [![validate](https://github.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/actions/workflows/validate.yml/badge.svg)](https://github.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/actions/workflows/validate.yml)
 
 **Language:** [简体中文](./README.md) · **English**
 
-A **sing-box single-core** deployment script, covering four major protocols:
+A **sing-box 1.14 single-core** deployment script, covering the 2026 protocol tiers (Four Major Protocols + Optional Reality):
 
-| Protocol | Purpose | Transport | Certificate |
-|----------|---------|-----------|-------------|
-| **VLESS-Reality** | Latest anti-censorship direct link (Default) | TCP (XTLS Vision) | **No Domain / No Cert required (SNI Steal)** |
-| **Tuic** | Low-latency UDP acceleration | QUIC (HTTP/3) | Real Cert / Self-signed + Pinning |
-| **Hysteria2** | High throughput / loss resistance | QUIC (HTTP/3) | Real Cert / Self-signed + Pinning |
-| **Naiveproxy H3** | High-disguise HTTP/3 proxy (Default) | HTTP/3 (QUIC) | **Mandatory Real Cert** |
-| **Naiveproxy H2** | High-disguise HTTP/2 proxy (Fallback) | HTTP/2 | **Mandatory Real Cert** |
+| Priority | Protocol | Purpose & Key Features | Transport | Certificate Requirement |
+| :--- | :--- | :--- | :--- | :--- |
+| 🥇 **High-Speed** | **Hysteria2** | Extreme throughput / loss resistance / Brutal congestion control | QUIC (H3) + salamander obfuscation + port hopping | Real Cert / Self-signed + Pinning |
+| 🥈 **Next-Gen TCP** | **AnyTLS** | Eliminates TLS-in-TLS fingerprinting, WAN latency optimized | TCP + TLS 1.3 + Adaptive 8-tier Padding | Real Cert / Self-signed + Pinning |
+| 🥉 **Anti-Censorship** | **NaiveProxy** | Chromium Cronet native network stack camouflage | HTTP/3 (QUIC) & HTTP/2 dual channel | **Mandatory Real Cert** |
+| 4 **QUIC Alternative** | **TUIC v5** | Low-latency UDP acceleration / standard QUIC 0-RTT | QUIC (H3) | Real Cert / Self-signed + Pinning |
+| 5 **Legacy Compat (Optional)** | **VLESS-Reality** | Universal direct link (No domain/cert needed; enable with `reap=1`) | TCP (XTLS Vision) | **No Domain / No Cert required (SNI Steal)** |
 
 > Defaults to the **official stable release core (`stable`)**, with **QUIC and BBR congestion control** enabled by default, and backward compatibility down to **TLS 1.2 / HTTP 1.1**.
 
@@ -39,7 +39,14 @@ Bundled with:
 - [7. Kernel Version Management](#7-kernel-version-management)
 - [8. Subscription & Client Configs](#8-subscription--client-configs)
 - [9. Benchmark Throughput](#9-benchmark-throughput)
-- [10. Disclaimer](#10-disclaimer)
+- [10. What's new in v2.5.0 — handshake latency and "newest settings everywhere"](#10-whats-new-in-v250--handshake-latency-and-newest-settings-everywhere)
+- [11. What's new in v2.5.1 — ECN, and what the kernel's BBR actually is](#11-whats-new-in-v251--ecn-and-what-the-kernels-bbr-actually-is)
+- [12. What's new in v2.5.2 — tcp-brutal silently breaks on kernels 7.1+](#12-whats-new-in-v252--tcp-brutal-silently-breaks-on-kernels-71)
+- [13. v2.5.4 — 25-sample regression baseline on the BBRv3 kernel](#13-v254--25-sample-regression-baseline-on-the-bbrv3-kernel)
+- [14. v2.5.5 — `tcp_rmem`/`tcp_wmem` ceiling on the `large` tier raised to 64MB](#14-v255--tcp_rmemtcp_wmem-ceiling-on-the-large-tier-raised-to-64mb)
+- [15. v2.5.6 — reverts the 64MB buffer ceiling from v2.5.5](#15-v256--reverts-the-64mb-buffer-ceiling-from-v255)
+- [16. v2.7.4 — Canonical Installation Commands & Documentation Alignment](#16-v274--canonical-installation-commands--documentation-alignment)
+- [17. Disclaimer](#17-disclaimer)
 
 ---
 
@@ -164,16 +171,22 @@ Main process exited, code=exited, status=205/LIMITS
 ### 4.2 One-Command Installation
 
 ```bash
-# Recommended All-in-One Installation (includes latest TCP Reality + Tuic + Hysteria2 + Naiveproxy):
+# 1. Recommended Four Major Protocols Installation (High-speed Hysteria2 + AnyTLS + NaiveProxy + Tuic, requires domain):
 bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) \
-  reap=1 tup=1 hyp=1 nvp=1 alns=1 ym=your.domain.com
+  hyp=1 anyp=1 nvp=1 tup=1 alns=1 ym=your.domain.com
 
-# No-Domain Fast Installation (includes latest TCP Reality + Tuic + Hysteria2, no cert application needed):
+# 2. Full Five-Protocol Installation (Four Major Protocols + Legacy Client Compatible VLESS-Reality TCP):
 bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) \
-  reap=1 tup=1 hyp=1
+  hyp=1 anyp=1 nvp=1 tup=1 reap=1 alns=1 ym=your.domain.com
+
+# 3. No-Domain Fast Installation (Hysteria2 + Tuic + Reality, no domain and no cert application needed):
+bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) \
+  hyp=1 tup=1 reap=1
 ```
 
-> `reap=1` (VLESS-Reality TCP node) requires **no domain and no certificate**, using official TLS 1.3 SNI camouflage to resist censorship. Enabled by default during installation.
+> `alns=1` uses acme.sh in standalone mode, requiring **port 80 to be free** and the domain's A record resolved to this host.
+> If `ym=your.domain.com` is omitted, the script prompts interactively (keeps it out of shell history).
+> `reap=1` (VLESS-Reality TCP node) requires **no domain and no certificate**, borrowing official TLS 1.3 SNI camouflage to bypass censorship; enabled on demand via `reap=1` (default is disabled for minimal overhead).
 
 ---
 
@@ -181,9 +194,14 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `reap` | **1 (default)** | enable latest VLESS-Reality TCP + XTLS-Vision node (no domain/cert needed; disable with `reap=0`) |
-| `reap_sni` | `gateway.icloud.com` | Reality target camouflage SNI domain |
-| `tup` / `hyp` / `nvp` | empty | protocol toggles (at least one must be specified) |
+| `hyp` | empty | 🥇 Enable Hysteria2 + TLS node (High-speed主力, supports port hopping and obfuscation, enable with `hyp=1`) |
+| `anyp` | empty | 🥈 Enable AnyTLS + TLS node (Next-gen TCP主力, eliminates TLS-in-TLS fingerprinting and WAN latency optimization, enable with `anyp=1`) |
+| `nvp` | empty | 🥉 Enable NaiveProxy (H3+H2, Chromium Cronet stack anti-probing camouflage, enable with `nvp=1`, requires real cert) |
+| `tup` | empty | 4 Enable TUIC v5 node (Low-latency UDP acceleration / standard QUIC 0-RTT, enable with `tup=1`) |
+| `reap` | empty | 5 Optional: enable VLESS-Reality TCP + XTLS-Vision node (no domain/cert needed; enable with `reap=1`) |
+| `reap_sni` | `gateway.icloud.com` | Reality target camouflage SNI domain (supports any compliant TLS 1.3 domain) |
+| `port_any` | random | Specify AnyTLS listening port (default 28443 or random 10000-65535) |
+| `port_hy2` / `port_nv` / `port_tu` / `port_rea` | random | Fixed port assignments (10000-65535) |
 | `alns` | empty | enable ACME certificate issuance (`alns=1`) |
 | `ym` | empty | ACME certificate domain (required with `alns`) |
 | `hyjpt` | empty | Hysteria2 port hopping, e.g. `hyjpt="20000 20001 20002"` |
@@ -198,7 +216,8 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 | `subid` | independent | subscription token |
 | `sub_nonaive` | empty | omit Naiveproxy nodes from subscription |
 | `uuid` | auto-generated | custom UUID for Tuic and Reality |
-| `port_tu` / `port_hy2` / `port_nv` / `port_rea` | random | fixed port assignment |
+| `name` | empty | node name prefix |
+| `noautoup` | empty | disable weekly automatic kernel update (`noautoup=1`) |
 | `sbrel` | **`stable` (default)** | kernel release channel: default official stable (`stable`); beta/rc with `sbrel=pre` |
 | `tuicuos` | **0 (default native UDP)** | Tuic UDP relay mode: native UDP (default); QUIC stream with `tuicuos=1` |
 | `tuils` | **1 (default)** | Tuic TLS hardening (certificate SHA-256 pinning); disable with `tuils=0` |
@@ -456,7 +475,39 @@ sysctl net.ipv4.tcp_rmem             # expect 4096 131072 33554432
 > before/after measurements** — the bar is a throughput/latency comparison on the
 > same host and config, not whether the parameter was written successfully.
 
-## 16. Disclaimer
+## 16. v2.7.4 — Canonical Installation Commands & Documentation Alignment
+
+In **v2.7.4**, the installation commands and documentation parameters have been comprehensively audited and standardized to resolve inconsistencies accumulated across rapid iterations (from early default Reality to v2.7.2 establishing the Four Major Protocols with Reality becoming optional):
+
+### 1. Phenomenon & Root Cause
+- **Outdated Install Command Missing AnyTLS**: AnyTLS was promoted to the 🥈 Next-Gen TCP protocol in v2.7.2, yet Section 4 in documentation still used the legacy `reap=1 tup=1 hyp=1 nvp=1` one-liner, causing users who copied the command to miss AnyTLS.
+- **Inconsistent Environment Variable Defaults**: Code logic had already switched `reap` to optional/disabled by default (`reap=""`), but the environment variable table still displayed `reap: 1 (default)`, and omitted `anyp` and `port_any` entirely.
+- **Legacy Terminology Inconsistencies**: Since v2.7.0 completely removed ShadowTLS, the script supports Four Major Protocols + Optional Reality (total 5 protocols). Historical references were unified.
+
+### 2. Canonical Installation Commands
+Three standard deployment scenarios strictly 1:1 aligned with script logic:
+1. **Recommended Four Major Protocols (2026 Recommended: High-speed + Anti-blocking + Anti-active-probing)**:
+   ```bash
+   bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) \
+     hyp=1 anyp=1 nvp=1 tup=1 alns=1 ym=your.domain.com
+   ```
+2. **Full Five-Protocol Installation (Four Major Protocols + Legacy Client Compatible VLESS-Reality TCP)**:
+   ```bash
+   bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) \
+     hyp=1 anyp=1 nvp=1 tup=1 reap=1 alns=1 ym=your.domain.com
+   ```
+3. **No-Domain Fast Installation (Zero Cert Application, Self-signed + Cert Pinning)**:
+   ```bash
+   bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) \
+     hyp=1 tup=1 reap=1
+   ```
+
+### 3. CI Automated Validation Matrix Alignment
+- Updated `.github/workflows/validate.yml` to include `anyp=1` and inbound assertions (`select(.type=="anytls")`), ensuring CI covers both the Four Major Protocols and the Full Five-Protocol combinations.
+
+---
+
+## 17. Disclaimer
 
 This project is provided for network technology research and educational purposes only. Users are responsible for complying with local laws and regulations.
 

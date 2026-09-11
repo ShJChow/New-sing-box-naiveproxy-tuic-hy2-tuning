@@ -1,18 +1,18 @@
-# New-sing-box-naiveproxy-tuic-hy2-tuning — Sing-box 2026 六协议安全加固代理脚本
+# New-sing-box-naiveproxy-tuic-hy2-tuning — Sing-box 2026 协议安全加固代理脚本（四大主力 + 可选 Reality）
 
 [![validate](https://github.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/actions/workflows/validate.yml/badge.svg)](https://github.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/actions/workflows/validate.yml)
 
 **语言：** **简体中文** · [English](./README.en.md)
 
-基于 **sing-box 1.14 单内核** 深度部署，落地 2026 年最新六层协议梯队：
+基于 **sing-box 1.14 单内核** 深度部署，落地 2026 年最新协议梯队（四大核心主力 + 可选 Reality 兼容）：
 
 | 梯队次序 | 协议方案 | 定位与核心特性 | 传输与伪装 | 证书需求 |
 | :--- | :--- | :--- | :--- | :--- |
 | 🥇 **高速主力** | **Hysteria2** | 极速高吞吐 / 抗恶劣丢包 / Brutal 拥塞控制 | QUIC (H3) + salamander 混淆 + 端口跳跃 | 真实证书 / 自签+指纹固定 |
-| 🥈 **兼容主力** | **VLESS-Reality** | 全客户端极速直连（默认必开） | TCP (XTLS Vision) | **免域名 / 免证书（借用官方 SNI）** |
-| 🥉 **新一代候选** | **AnyTLS** | 彻底消除 TLS-in-TLS 特征，抗深度主动探测 | TCP + TLS + 自适应填充 Padding | 真实证书 / 自签+指纹固定 |
-| 4 **特殊形态** | **NaiveProxy** | Chromium 原生网络栈内核级伪装 | HTTP/3 (QUIC) & HTTP/2 双通道 | **强制真实证书** |
-| 5 **QUIC 备选** | **TUIC v5** | 低延迟 UDP 加速 / 标准 QUIC 0-RTT | QUIC (H3) | 真实证书 / 自签+指纹固定 |
+| 🥈 **新一代 TCP 主力** | **AnyTLS** | 彻底消除 TLS-in-TLS 特征，抗深度主动探测与跨域延迟优化 | TCP + TLS 1.3 + 自适应 8 级填充 Padding | 真实证书 / 自签+指纹固定 |
+| 🥉 **高伪装主力** | **NaiveProxy** | Chromium 原生网络栈内核级反探测伪装 | HTTP/3 (QUIC) & HTTP/2 双通道 | **强制真实证书** |
+| 4 **QUIC 备选** | **TUIC v5** | 低延迟 UDP 加速 / 标准 QUIC 0-RTT | QUIC (H3) | 真实证书 / 自签+指纹固定 |
+| 5 **兼容老客户端 (可选)** | **VLESS-Reality** | 全客户端直连兼容（免域名免证书；按需显式传 `reap=1` 开启） | TCP (XTLS Vision) | **免域名 / 免证书（借用官方 SNI）** |
 
 > 默认使用 **官方正式版内核（stable）**，默认开启 **QUIC 与 BBR 拥塞控制**，入站最低兼容 **TLS 1.2 / HTTP 1.1**。
 
@@ -54,7 +54,8 @@
 - [二十二、v2.7.1 AnyTLS 深度调优：兼顾极致网速、大带宽吞吐、强安全与 0-RTT/1-RTT 极速握手](#二十二v271-anytls-深度调优兼顾极致网速大带宽吞吐强安全与-0-rtt1-rtt-极速握手)
 - [二十三、v2.7.2 AnyTLS 跨域延迟修复与四大核心主力梯队（Reality 默认下线转可选）](#二十三v272-anytls-跨域延迟修复与四大核心主力梯队reality-默认下线转可选)
 - [二十四、v2.7.3 NaiveProxy 极速吞吐、1-RTT/0-RTT 握手与现代安全参数加固](#二十四v273-naiveproxy-极速吞吐1-rtt0-rtt-握手与现代安全参数加固)
-- [二十五、免责声明](#二十五免责声明)
+- [二十五、v2.7.4 一键安装命令规范化与文档全面对齐](#二十五v274-一键安装命令规范化与文档全面对齐)
+- [二十六、免责声明](#二十六免责声明)
 
 ---
 
@@ -197,18 +198,22 @@ systemctl --failed                             # 有 205/LIMITS 就是踩了这�
 ### 2. 一键安装
 
 ```bash
-# 推荐全协议一键安装（含最新 TCP Reality + Tuic + Hysteria2 + Naiveproxy）：
+# 1. 推荐四大主力梯队一键安装（含高速 Hysteria2 + AnyTLS + NaiveProxy + Tuic，需域名解析）：
 bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) \
-  reap=1 tup=1 hyp=1 nvp=1 alns=1 ym=your.domain.com
+  hyp=1 anyp=1 nvp=1 tup=1 alns=1 ym=your.domain.com
 
-# 无域名极速安装（含最新 TCP Reality + Tuic + Hysteria2，免申请证书）：
+# 2. 全五协议完整安装（四大主力 + 兼容旧客户端的 VLESS-Reality TCP 节点）：
 bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) \
-  reap=1 tup=1 hyp=1
+  hyp=1 anyp=1 nvp=1 tup=1 reap=1 alns=1 ym=your.domain.com
+
+# 3. 无域名极速安装（含 Hysteria2 + Tuic + Reality，免域名、免申请证书）：
+bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) \
+  hyp=1 tup=1 reap=1
 ```
 
 > `alns=1` 时 acme.sh 走 standalone 模式，需要 **80 端口空闲**、域名 A 记录已解析到本机。
 > 若未提供 `ym=域名`，脚本会**交互提示输入**（不写入命令行历史）。
-> `reap=1`（VLESS-Reality TCP 节点）完全**免域名、免证书**，借用官方优质 SNI 伪装抗封锁，默认安装即一并启用。
+> `reap=1`（VLESS-Reality TCP 节点）完全**免域名、免证书**，借用官方优质 SNI 伪装抗封锁，按需显式传 `reap=1` 启用（默认精简关闭）。
 
 ---
 
@@ -216,9 +221,14 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `reap` | **1（默认开启）** | 启用最新 VLESS-Reality TCP + XTLS-Vision 节点（免域名免证书；关闭用 `reap=0`） |
+| `hyp` | 空 | 🥇 启用 Hysteria2 + TLS 节点（高速主力，支持端口跳跃与混淆，启用 `hyp=1`） |
+| `anyp` | 空 | 🥈 启用 AnyTLS + TLS 节点（新一代 TCP 主力，抹除 TLS-in-TLS 特征与跨域延迟优化，启用 `anyp=1`） |
+| `nvp` | 空 | 🥉 启用 NaiveProxy (H3+H2，Chromium 内核级反探测伪装，启用 `nvp=1`，需证书） |
+| `tup` | 空 | 4 启用 TUIC v5 节点（低延迟 UDP 加速 / 标准 QUIC 0-RTT，启用 `tup=1`） |
+| `reap` | 空 | 5 可选启用最新 VLESS-Reality TCP + XTLS-Vision 节点（免域名免证书；按需开启用 `reap=1`） |
 | `reap_sni` | `gateway.icloud.com` | Reality 目标 SNI 伪装域名（支持任意合规 TLS 1.3 域名） |
-| `tup` / `hyp` / `nvp` | 空 | 协议开关，非空即启用（至少显式指定一个协议才会进入安装流程）|
+| `port_any` | 随机 | 指定 AnyTLS 监听端口（默认 28443 或随机 10000-65535） |
+| `port_hy2` / `port_nv` / `port_tu` / `port_rea` | 随机 | 指定各协议固定端口（10000-65535） |
 | `alns` | 空 | 启用 acme 证书申请（`alns=1`） |
 | `ym` | 空 | acme 证书域名（启用 alns 时必需） |
 | `hyjpt` | 空 | Hysteria2 跳跃端口，如 `hyjpt="20000 20001 20002"` |
@@ -233,7 +243,6 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 | `subid` | 独立随机 | 订阅令牌（URL 路径，相当于密码） |
 | `sub_nonaive` | 空 | 剔除 Naiveproxy 节点（客户端不支持 naive+ 链接时用 `sub_nonaive=1`） |
 | `uuid` | 自动生成 | 自定义 UUID（Tuic / Reality 用；各协议密码独立随机，不再复用 UUID） |
-| `port_tu` / `port_hy2` / `port_nv` / `port_rea` | 随机 | 指定各协议固定端口 |
 | `name` | 空 | 节点名称前缀 |
 | `noautoup` | 空 | 关闭每周内核自动升级（`noautoup=1`） |
 | `sbrel` | **`stable`（默认）** | 内核版本通道：默认只取官方最新正式版（`stable`）；跟踪 beta/rc 用 `sbrel=pre` |
@@ -1438,7 +1447,39 @@ AnyTLS 是 sing-box 1.14 引入的划时代 TCP 代理协议，通过单层真�
 
 ---
 
-## 二十五、免责声明
+## 二十五、v2.7.4 一键安装命令规范化与文档全面对齐
+
+在 **v2.7.4** 中，全面排查并彻底规范了因版本快速迭代（从早期 Reality 默认开启，到 v2.7.2 确立四大主力梯队并将 Reality 设为按需可选）导致的安装命令滞后与文档参数遗漏问题：
+
+### 1. 现象与根因 (Root Cause)
+- **文档一键安装命令缺失 AnyTLS**：v2.7.2 已将 AnyTLS 升级为 🥈 新一代 TCP 主力，但文档正文第四节的推荐安装命令依然沿用老旧的 `reap=1 tup=1 hyp=1 nvp=1`，导致用户直接复制命令安装时漏装了 AnyTLS 节点。
+- **环境变量默认值描述不一致**：代码逻辑中 `reap` 已改为精简关闭（必须显式传 `reap=1` 才启用），但环境变量表中仍残留 `reap: 1（默认开启）`，且完全漏掉了 `anyp` 与 `port_any` 变量说明。
+- **梯队标题与协议数遗留矛盾**：自 v2.7.0 彻底移除 ShadowTLS 以后，项目为主力四协议 + 可选 Reality（共五协议），但文档头部仍有历史残留的“六协议 / 四协议”旧称谓。
+
+### 2. 标准化安装命令重构 (Canonical Install Commands)
+现已重构为清晰的三大标准化安装场景，与代码逻辑严格 1:1 对齐：
+1. **推荐四大主力梯队（2026 官方推荐・高速+防封+抗主动探测）**：
+   ```bash
+   bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) \
+     hyp=1 anyp=1 nvp=1 tup=1 alns=1 ym=your.domain.com
+   ```
+2. **全五协议完整安装（四大主力 + 兼容旧版客户端的 VLESS-Reality TCP）**：
+   ```bash
+   bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) \
+     hyp=1 anyp=1 nvp=1 tup=1 reap=1 alns=1 ym=your.domain.com
+   ```
+3. **无域名极速安装（免申请证书・自签+指纹固定）**：
+   ```bash
+   bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) \
+     hyp=1 tup=1 reap=1
+   ```
+
+### 3. CI 自动化校验矩阵同步完善
+- 在 `.github/workflows/validate.yml` 的配置校验矩阵中同步补齐了 `anyp=1` 的入站类型断言（`select(.type=="anytls")`），确保 CI 测试全面覆盖四大主力及全五协议组合。
+
+---
+
+## 二十六、免责声明
 
 本项目仅供网络技术研究与学习交流使用。使用者须自行遵守所在国家/地区的法律法规，因使用本脚本产生的一切后果由使用者自行承担。
 
