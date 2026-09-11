@@ -1703,10 +1703,11 @@ gen_client() {
 
   # 3. 🥉 AnyTLS (新一代 TCP 候选)
   if [ -n "$anyp" ] && [ "$CERT_OK" = 1 ]; then
-    local any_pin="" any_pcs=""
+    local any_pin="" any_pcs="" any_hpkp=""
     [ -n "$_sha" ] && any_pin="&pinSHA256=$_sha"
+    [ -n "$_sha" ] && any_hpkp="&hpkp=$_sha"
     [ -n "$_fp" ] && any_pcs="&pcs=$_fp"
-    any_link="anytls://$pw_any@$add:$port_any?security=tls&sni=$sni$any_pin$any_pcs#anytls-$node_tag"
+    any_link="anytls://$pw_any@$add:$port_any?peer=$sni&sni=$sni&udp=1&security=tls&insecure=0&allowInsecure=0$any_hpkp$any_pin$any_pcs#anytls-$node_tag"
     echo "$any_link" >> "$SB_LINK"
     echo "💣【 🥉 AnyTLS + TLS (新一代 TCP 候选) 】节点信息如下："
     echo "$any_link"; echo
@@ -1981,6 +1982,9 @@ class SubHandler(BaseHTTPRequestHandler):
         body = base64.b64encode("\n".join(selected_links).encode("utf-8"))
         self.send_response(200)
         self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
         self.send_header("Subscription-Userinfo", "upload=0; download=0; total=0")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
