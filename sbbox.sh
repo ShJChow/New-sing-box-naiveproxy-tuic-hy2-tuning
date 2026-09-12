@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.4"
+SBBOX_VERSION="v2.7.5"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -1436,6 +1436,9 @@ EOF
             "udp_fragment": true,
             "udp_timeout": "300s",
             "quic_congestion_control": "bbr",
+            "disable_tcp_keep_alive": false,
+            "tcp_keep_alive": "30s",
+            "tcp_keep_alive_interval": "5s",
             "users": [
                 { "username": "$nv_user", "password": "$nv_pw" }
             ],
@@ -1443,16 +1446,10 @@ EOF
                 "enabled": true,
                 "server_name": "$ym",
                 "min_version": "1.3",
-                "max_version": "1.3",
-                "cipher_suites": [
-                    "TLS_AES_128_GCM_SHA256",
-                    "TLS_AES_256_GCM_SHA384",
-                    "TLS_CHACHA20_POLY1305_SHA256"
-                ],
                 "alpn": [ "h3", "h2" ],
                 "certificate_path": "$CERT_DIR/fullchain.cer",
                 "key_path": "$CERT_DIR/private.key",
-                "handshake_timeout": "10s"
+                "handshake_timeout": "15s"
             }
         },
 EOF
@@ -1469,6 +1466,9 @@ EOF
             "tcp_fast_open": true,
             "tcp_multi_path": true,
             "udp_fragment": true,
+            "disable_tcp_keep_alive": false,
+            "tcp_keep_alive": "30s",
+            "tcp_keep_alive_interval": "5s",
             "users": [
                 {
                     "name": "default",
@@ -1479,7 +1479,12 @@ EOF
                 "stop=8",
                 "0=30-30",
                 "1=100-400",
-                "2=400-500,c,500-1000"
+                "2=400-500,c,500-1000,c,500-1000,c,500-1000,c,500-1000",
+                "3=9-9,500-1000",
+                "4=500-1000",
+                "5=500-1000",
+                "6=500-1000",
+                "7=500-1000"
             ],
             "tls": {
                 "enabled": true,
@@ -2163,8 +2168,11 @@ gen_client_sbox() {
         "password": "'"$pw_any"'",
         "tcp_multi_path": true,
         "udp_fragment": true,
+        "disable_tcp_keep_alive": false,
+        "tcp_keep_alive": "30s",
+        "tcp_keep_alive_interval": "5s",
         "idle_session_check_interval": "30s",
-        "idle_session_timeout": "30s",
+        "idle_session_timeout": "10m",
         "min_idle_session": 2,
         "tls": {
             "enabled": true,
@@ -2193,6 +2201,9 @@ gen_client_sbox() {
         "server_port": '"$port_nv"',
         "username": "'"$nv_user"'",
         "password": "'"$nv_pw"'",
+        "insecure_concurrency": 4,
+        "stream_receive_window": 8388608,
+        "quic_session_receive_window": 16777216,
         "tcp_fast_open": true,
         "tcp_multi_path": true,
         "udp_over_tcp": true,
@@ -2209,6 +2220,8 @@ gen_client_sbox() {
         "server_port": '"$port_nv"',
         "username": "'"$nv_user"'",
         "password": "'"$nv_pw"'",
+        "insecure_concurrency": 4,
+        "stream_receive_window": 8388608,
         "tcp_fast_open": true,
         "tcp_multi_path": true,
         "udp_over_tcp": true,
@@ -2337,7 +2350,8 @@ $sel,
                 "tag": "geosite-cn",
                 "type": "remote",
                 "format": "binary",
-                "url": "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/geolocation-cn.srs"
+                "url": "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/geolocation-cn.srs",
+                "download_detour": "direct"
             }
         ],
         "final": "select"
@@ -2399,10 +2413,9 @@ gen_client_clash() {
       - http/1.1
     client-fingerprint: chrome
     udp: true
-    tfo: true
     idle-session-check-interval: 30s
-    idle-session-timeout: 30s
-    min-idle-session: 0"
+    idle-session-timeout: 10m
+    min-idle-session: 2"
 
     groups="$groups
       - anytls-$node_tag"
