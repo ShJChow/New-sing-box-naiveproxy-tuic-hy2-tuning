@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.5"
+SBBOX_VERSION="v2.7.6"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -1170,7 +1170,7 @@ installsb() {
     eval "port_$name=$(cat "$SB_HOME/port_$name")"
   }
   [ -n "$tup" ] && { assign_port tu "$port_tu"; echo "Tuic 端口：$port_tu"; open_port "$port_tu" udp; }
-  [ -n "$hyp" ] && { assign_port hy2 "$port_hy2"; echo "Hysteria2 端口：$port_hy2"; open_port "$port_hy2" udp; }
+  [ -n "$hyp" ] && { assign_port hy2 "$port_hy2"; echo "Hysteria2 端口：$port_hy2"; open_port "$port_hy2" udp; apply_hy_qdos "$port_hy2"; }
   [ -n "$nvp" ] && { assign_port nv "$port_nv"; echo "Naiveproxy 端口：$port_nv"; open_port "$port_nv" tcp; open_port "$port_nv" udp; }
   [ -n "$reap" ] && { assign_port rea "$port_rea"; echo "VLESS-Reality 端口：$port_rea"; open_port "$port_rea" tcp; }
   [ -n "$anyp" ] && { assign_port any "${port_any:-28443}"; echo "AnyTLS 端口：$port_any"; open_port "$port_any" tcp; }
@@ -1404,15 +1404,20 @@ EOF
             "tag": "hy2-in",
             "listen": "::",
             "listen_port": $port_hy2,
+            "tcp_fast_open": true,
+            "udp_fragment": true,
+            "ignore_client_bandwidth": true,
             "users": [
                 { "password": "$pw_hy" }
             ],
 $hy_bw
 ${hy_obfs:+$hy_obfs}
 $hy_mask
-            "udp_timeout": "300s",
+            "udp_timeout": "60s",
             "tls": {
                 "enabled": true,
+                "min_version": "1.3",
+                "max_version": "1.3",
                 "alpn": [ "h3" ],
                 "certificate_path": "$cert_path",
                 "key_path": "$key_path",
@@ -2666,7 +2671,12 @@ hy2_external_sync_secrets() {
   # 前者两空格缩进（auth 段下），后者四空格缩进（salamander 段下）。
   sed -i -E "s|^(  password: ).*|\1\"$pw\"|" "$f"
   [ -n "$obfs" ] && sed -i -E "s|^(    password: ).*|\1\"$obfs\"|" "$f"
-  info "已同步新密钥到外置 Hysteria2 配置（$f）"
+  # 同步 QDoS 缓冲与流控制防护参数
+  if ! grep -q "initStreamReceiveWindow" "$f" 2>/dev/null; then
+    sed -i '/^tls:/i \quic:\n  initStreamReceiveWindow: 524288\n  maxStreamReceiveWindow: 8388608\n  initConnReceiveWindow: 1048576\n  maxConnReceiveWindow: 20971520\n  maxIdleTimeout: 30s\n  maxIncomingStreams: 512\n  disablePathMTUDiscovery: false\n' "$f" 2>/dev/null || true
+  fi
+  grep -q "ignoreClientBandwidth" "$f" 2>/dev/null || echo "ignoreClientBandwidth: true" >> "$f"
+  info "已同步新密钥与 QDoS 防护参数到外置 Hysteria2 配置（$f）"
 }
 
 # 重启外置 hysteria（若存在）。证书轮换后必须重启才会加载新证书。
@@ -2703,11 +2713,49 @@ cleandel() {
   sed -i '/sbbox\/sing-box/d' /tmp/sbbox_cron.tmp 2>/dev/null || true
   crontab /tmp/sbbox_cron.tmp >/dev/null 2>&1
   rm -f /tmp/sbbox_cron.tmp
+  local old_hyjpt=$(cat "$SB_HOME/hyjpt" 2>/dev/null)
+  if [ -n "$old_hyjpt" ]; then
+    for item in $(echo "$old_hyjpt" | tr ',' ' '); do
+      local ipt_port=$(echo "$item" | tr '-' ':')
+      iptables -D INPUT -p udp --dport "$ipt_port" -j ACCEPT 2>/dev/null || true
+      ip6tables -D INPUT -p udp --dport "$ipt_port" -j ACCEPT 2>/dev/null || true
+    done
+  fi
   iptables -t nat -F PREROUTING >/dev/null 2>&1
   ip6tables -t nat -F PREROUTING >/dev/null 2>&1
   rm -f "$SB_BINDIR/sbbox" "$SB_HOME/deps_done"
   rm -rf "$SB_HOME" 2>/dev/null
   info "sbbox 已完全卸载"
+}
+
+# Hysteria2 QDoS (QUIC Denial of Service / UDP Flooding) 防护
+apply_hy_qdos() {
+  local port="${1:-$port_hy2}"
+  [ -n "$port" ] || return 0
+  if [ "$IS_ROOT" = 1 ]; then
+    if command -v iptables >/dev/null 2>&1; then
+      iptables -C INPUT -p udp --dport "$port" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+        iptables -I INPUT 1 -p udp --dport "$port" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+      iptables -C INPUT -p udp --dport "$port" -m conntrack --ctstate INVALID -j DROP 2>/dev/null || \
+        iptables -I INPUT 2 -p udp --dport "$port" -m conntrack --ctstate INVALID -j DROP 2>/dev/null || true
+      iptables -C INPUT -p udp --dport "$port" -m conntrack --ctstate NEW -m hashlimit --hashlimit-above 50/sec --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name "hy_qdos_${port}" -j DROP 2>/dev/null || \
+        iptables -I INPUT 3 -p udp --dport "$port" -m conntrack --ctstate NEW -m hashlimit --hashlimit-above 50/sec --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name "hy_qdos_${port}" -j DROP 2>/dev/null || true
+    fi
+    if command -v ip6tables >/dev/null 2>&1; then
+      ip6tables -C INPUT -p udp --dport "$port" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+        ip6tables -I INPUT 1 -p udp --dport "$port" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+      ip6tables -C INPUT -p udp --dport "$port" -m conntrack --ctstate INVALID -j DROP 2>/dev/null || \
+        ip6tables -I INPUT 2 -p udp --dport "$port" -m conntrack --ctstate INVALID -j DROP 2>/dev/null || true
+      ip6tables -C INPUT -p udp --dport "$port" -m conntrack --ctstate NEW -m hashlimit --hashlimit-above 50/sec --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name "hy6_qdos_${port}" -j DROP 2>/dev/null || \
+        ip6tables -I INPUT 3 -p udp --dport "$port" -m conntrack --ctstate NEW -m hashlimit --hashlimit-above 50/sec --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name "hy6_qdos_${port}" -j DROP 2>/dev/null || true
+    fi
+    if command -v netfilter-persistent >/dev/null 2>&1; then
+      netfilter-persistent save >/dev/null 2>&1
+    elif [ -x "$(command -v iptables-save 2>/dev/null)" ] && [ -d /etc/iptables ]; then
+      iptables-save > /etc/iptables/rules.v4 2>/dev/null
+      ip6tables-save > /etc/iptables/rules.v6 2>/dev/null
+    fi
+  fi
 }
 
 # Hysteria2 跳跃端口（iptables DNAT + 防火墙放行）
@@ -2746,16 +2794,29 @@ cmd_hop() {
   case "$action" in
     off|stop|disable)
       info "正在关闭 Hysteria2 端口跳跃……"
+      local old_hyjpt=""
+      [ -s "$SB_HOME/hyjpt" ] && old_hyjpt=$(cat "$SB_HOME/hyjpt" 2>/dev/null)
+      [ -z "$old_hyjpt" ] && old_hyjpt="$hyjpt"
+      if [ -n "$old_hyjpt" ]; then
+        for item in $(echo "$old_hyjpt" | tr ',' ' '); do
+          local ipt_port=$(echo "$item" | tr '-' ':')
+          iptables -D INPUT -p udp --dport "$ipt_port" -j ACCEPT 2>/dev/null || true
+          ip6tables -D INPUT -p udp --dport "$ipt_port" -j ACCEPT 2>/dev/null || true
+        done
+      fi
       if [ -n "$port_hy2" ]; then
         iptables -t nat -S PREROUTING 2>/dev/null | grep -w "$port_hy2" | sed 's/^-A/iptables -t nat -D/' | bash 2>/dev/null || true
         ip6tables -t nat -S PREROUTING 2>/dev/null | grep -w "$port_hy2" | sed 's/^-A/ip6tables -t nat -D/' | bash 2>/dev/null || true
+        iptables -t nat -S OUTPUT 2>/dev/null | grep -w "$port_hy2" | sed 's/^-A/iptables -t nat -D/' | bash 2>/dev/null || true
+        ip6tables -t nat -S OUTPUT 2>/dev/null | grep -w "$port_hy2" | sed 's/^-A/ip6tables -t nat -D/' | bash 2>/dev/null || true
       fi
       rm -f "$SB_HOME/hyjpt"
       hyjpt=""
       netfilter-persistent save >/dev/null 2>&1
       [ -x "$(command -v iptables-save 2>/dev/null)" ] && iptables-save > /etc/iptables/rules.v4 2>/dev/null
+      [ -x "$(command -v ip6tables-save 2>/dev/null)" ] && ip6tables-save > /etc/iptables/rules.v6 2>/dev/null
       gen_client
-      info "Hysteria2 端口跳跃已关闭"
+      info "Hysteria2 端口跳跃已关闭并清理防火墙规则"
       ;;
     "")
       if [ -s "$SB_HOME/hyjpt" ]; then
