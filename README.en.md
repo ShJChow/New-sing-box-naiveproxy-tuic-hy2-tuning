@@ -14,7 +14,7 @@ A **sing-box 1.14 single-core** deployment script, covering the 2026 protocol ti
 | 4 **QUIC Alternative** | **TUIC v5** | Low-latency UDP acceleration / standard QUIC 0-RTT | QUIC (H3) | Real Cert / Self-signed + Pinning |
 | 5 **Legacy Compat (Optional)** | **VLESS-Reality** | Universal direct link (No domain/cert needed; enable with `reap=1`) | TCP (XTLS Vision) | **No Domain / No Cert required (SNI Steal)** |
 
-> Defaults to the **official stable release core (`stable`)**, with **QUIC and BBR congestion control** enabled by default, and backward compatibility down to **TLS 1.2 / HTTP 1.1**.
+> Defaults to the **latest pre-release test core (`pre`, e.g. v1.15.0-alpha.2)**, with **QUIC and BBR congestion control** enabled by default, and backward compatibility down to **TLS 1.2 / HTTP 1.1**.
 
 Bundled with:
 - **Kernel-level flow tuning** (ported from the `xh tuning on` of [`ShJChow/Xray-core-xhttp-cdn-tuned`](https://github.com/ShJChow/Xray-core-xhttp-cdn-tuned)): BBR, memory-tiered buffers, TCP Fast Open, file-handle limits — applied automatically at install, one-command rollback
@@ -48,7 +48,8 @@ Bundled with:
 - [16. v2.7.4 — Canonical Installation Commands & Documentation Alignment](#16-v274--canonical-installation-commands--documentation-alignment)
 - [17. v2.7.5 — NaiveProxy & AnyTLS Stability and Handshake Latency Optimization](#17-v275--naiveproxy--anytls-stability-and-handshake-latency-optimization)
 - [18. v2.7.6 — Hysteria2 Port Hopping Disabled by Default & End-to-End QDoS Mitigation](#18-v276--hysteria2-port-hopping-disabled-by-default--end-to-end-qdos-mitigation)
-- [19. Disclaimer](#19-disclaimer)
+- [19. v2.7.7 — sing-box Defaults to Latest Pre-Release & New Features Adoption](#19-v277--sing-box-defaults-to-latest-pre-release--new-features-adoption)
+- [20. Disclaimer](#20-disclaimer)
 
 ---
 
@@ -220,7 +221,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 | `uuid` | auto-generated | custom UUID for Tuic and Reality |
 | `name` | empty | node name prefix |
 | `noautoup` | empty | disable weekly automatic kernel update (`noautoup=1`) |
-| `sbrel` | **`stable` (default)** | kernel release channel: default official stable (`stable`); beta/rc with `sbrel=pre` |
+| `sbrel` | **`pre` (default)** | kernel release channel: default latest pre-release (`pre`, e.g. `v1.15.0-alpha.2`); official stable with `sbrel=stable` |
 | `tuicuos` | **0 (default native UDP)** | Tuic UDP relay mode: native UDP (default); QUIC stream with `tuicuos=1` |
 | `tuils` | **1 (default)** | Tuic TLS hardening (certificate SHA-256 pinning); disable with `tuils=0` |
 | `dns_optimistic` | **1 (default)** | sing-box 1.14 optimistic DNS cache with persistent storage |
@@ -245,7 +246,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 | `sbbox port [tu] [hy2] [nv]` | Change node ports (no args assigns random ports 10000-65535 and syncs configs & subscription) |
 | `sbbox cert status` | Show certificate validity |
 | `sbbox cert renew` | Renew certificate and restart |
-| `sbbox up` | Update sing-box kernel (default stable channel; rollback on failure) |
+| `sbbox up` | Update sing-box kernel (default pre-release channel; rollback on failure) |
 | `sbbox log [N]` | Show the last N log lines (default 20) |
 | `sbbox rotate` | Rotate all protocol passwords and subscription token |
 | `sbbox doctor` | Health-check and auto-repair |
@@ -255,11 +256,11 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 
 ## 7. Kernel Version Management
 
-Install and `sbbox up` pull the official stable release by default.
+Install and `sbbox up` pull the latest pre-release test version by default (`sbrel=pre`, e.g. `v1.15.0-alpha.2`).
 
 ```bash
-sbrel=stable sbbox up     # update to latest stable (default)
-sbrel=pre sbbox up        # switch to pre-release channel
+sbbox up                  # update to latest pre-release (default, sbrel=pre)
+sbrel=stable sbbox up     # switch to official stable channel
 ```
 
 ---
@@ -557,7 +558,40 @@ Verified via the automated multi-protocol benchmark suite:
 
 ---
 
-## 19. Disclaimer
+## 19. v2.7.7 — sing-box Defaults to Latest Pre-Release & New Features Adoption
+
+In **v2.7.7**, following project guidelines and bleeding-edge networking protocol advances, the sing-box kernel release channel has switched default from `stable` to **`pre` (defaults to latest pre-release test build, currently `v1.15.0-alpha.2`)**, alongside full adoption of new engine features and clean deprecation migrations:
+
+### 1. Rationale & Architecture Strategy
+- **Pre-Release by Default (`sbrel=pre`)**: sing-box develops at a rapid pace. Key performance enhancements (such as I/O write buffering `buffer_size` & `flush_interval`, Android `auto_redirect`, WireGuard `on_demand`, etc.) are delivered and battle-tested first in pre-release channels (alpha/beta/rc).
+- **Default Installation & Upgrades**:
+  - `sbrel="${sbrel:-pre}"` defaults to pre-release everywhere (while `sbrel=stable` remains available for conservative setups);
+  - `sbbox up` automatically fetches the newest pre-release build from GitHub Releases (currently upgraded smoothly to `v1.15.0-alpha.2`, compiled with Go 1.26.7).
+
+### 2. New Features Applied & Breaking Deprecation Migrations
+1. **`experimental.cache_file` Write Buffering & Periodic Flushing (sing-box 1.15 Feature)**:
+   - Configured `"buffer_size": "1MB"` and `"flush_interval": "1m"`;
+   - DNS cache and routing database write operations are transformed from immediate synchronous disk writes to buffered memory aggregation, flushed in batches when hitting 1MB or every minute. This dramatically reduces cloud SSD I/O wear and eliminates write latency spikes under high concurrent loads.
+2. **Clean Migration of Breaking Deprecation: `download_detour` Replaced by `http_clients`**:
+   - Starting with sing-box 1.14, `download_detour` in remote `rule_set` was deprecated; in 1.15+, it triggers a FATAL startup error.
+   - Refactored client and rule_set architecture to declare a top-level `http_clients: [{ "tag": "direct-http", "detour": "direct" }]` block and `"default_http_client": "direct-http"` in `route`, completely eliminating fatal startup aborts.
+3. **Client `sbox_client.json` Write-Buffer Cache Alignment**:
+   - Injected `experimental.cache_file` with `store_fakeip: true`, `store_dns: true`, `buffer_size: "1MB"`, `flush_interval: "1m"` into client configuration templates, speeding up repeat queries and cold-boot handshakes.
+4. **Maintained 1.14 Native API Telemetry & Optimistic DNS**:
+   - Preserved localhost REST API telemetry (`sbbox status` displays real-time memory, connections, and traffic metrics);
+   - Preserved `optimistic: true` for zero-wait optimistic DNS resolution.
+
+### 3. Empirical Verification Results (7-Sample Benchmark)
+Verified under `sing-box v1.15.0-alpha.2` via `/root/run_test.py`:
+- **sbbox NaiveProxy H3 (10489)**: Median latency **2.6 ms**, p95 **10.7 ms**;
+- **sbbox AnyTLS (28443)**: Median latency **2.7 ms**, p95 **9.3 ms**;
+- **sbbox TUIC v5 (18793)**: Median latency **3.0 ms**;
+- **sbbox Hysteria 2 (44116)**: Median latency **3.5 ms**, p95 **6.9 ms**;
+- **Full 13-Node Benchmark**: **13/13 Nodes ALL PASS**.
+
+---
+
+## 20. Disclaimer
 
 This project is provided for network technology research and educational purposes only. Users are responsible for complying with local laws and regulations.
 

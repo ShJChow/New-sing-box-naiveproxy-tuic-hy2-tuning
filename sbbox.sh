@@ -4,7 +4,7 @@
 #
 # 基于 yonggekkk/argosbx 架构，剥离为 sing-box 单内核，
 # 支持 VLESS-Reality / Tuic / Hysteria2 / Naiveproxy(H2+H3) 四协议。
-# 默认使用官方正式版内核（sbrel=stable），默认开启 QUIC 与 BBR 拥塞控制。
+# 默认使用最新测试版内核（sbrel=pre，跟踪 alpha/beta/rc 最新预发布与新特性），默认开启 QUIC 与 BBR 拥塞控制。
 #
 # 集成内核级流控调优 (xh tuning on) + acme.sh 证书申请。
 #
@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.6"
+SBBOX_VERSION="v2.7.7"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -79,11 +79,11 @@ hydown="${hydown:-}"                        # Hysteria2 下行 Mbps
 ippz="${ippz:-}"                            # 4 / 6 / 双栈
 name="${name:-}"
 noautoup="${noautoup:-}"                    # 关闭每周内核自动升级：noautoup=1
-# 内核版本通道：默认 stable，只跟踪官方正式版；若需跟踪 pre-release（beta/rc）用 sbrel=pre。
-# 先记下用户是否显式指定，再套默认值 —— 否则「没传」与「传了 stable」无法区分，
+# 内核版本通道：默认 pre，跟踪最新测试版（beta/rc/alpha）并应用最新特性；若需只跟踪稳定正式版用 sbrel=stable。
+# 先记下用户是否显式指定，再套默认值 —— 否则「没传」与「传了 pre」无法区分，
 # 已持久化的通道选择会被默认值静默覆盖。
 sbrel_explicit="${sbrel:+1}"
-sbrel="${sbrel:-stable}"
+sbrel="${sbrel:-pre}"
 tuicuos="${tuicuos:-0}"                     # Tuic UDP 中继模式：默认原生 UDP(native，防队头阻塞断流)；QUIC流用 tuicuos=1
 tuils="${tuils:-1}"                         # Tuic TLS 加固（证书公钥 SHA-256 固定），关闭用 tuils=0
 
@@ -94,10 +94,12 @@ subport="${subport:-}"                      # 订阅端口（默认随机）
 subid="${subid:-}"                          # 订阅令牌（默认用 uuid）
 sub_nonaive="${sub_nonaive:-}"              # 剔除 Naiveproxy 节点（客户端不支持时用）
 
-# sing-box 1.14+ 新特性选项
+# sing-box 1.14+ / 1.15+ 新特性选项
 dns_optimistic="${dns_optimistic:-1}"       # 乐观 DNS 缓存 (sing-box 1.14 新特性)：默认开启；关闭用 dns_optimistic=0
 api="${api:-1}"                             # sing-box 原生 API 服务 (sing-box 1.14 新特性)：默认 127.0.0.1 开启；关闭用 api=0
 api_port="${api_port:-}"                    # sing-box 原生 API 端口（默认 10000-65535 随机端口）
+cache_buffer="${cache_buffer:-1MB}"         # cache_file 写缓冲 (sing-box 1.15 新特性)：默认 1MB，批量落盘提速 I/O
+cache_flush="${cache_flush:-1m}"            # cache_file 刷盘间隔 (sing-box 1.15 新特性)：默认 1m 定时刷盘
 
 # ---------- 架构 / 系统探测 ----------
 detect_env() {
@@ -162,7 +164,9 @@ showmode() {
   echo "  hyup=100 hydown=1000  Hysteria2 Brutal 拥塞控制客户端带宽"
 
   echo "  sub=1    启用 v2rayN 订阅服务（subport=端口 subid=令牌 可选）"
-  echo "  sbrel=stable  内核只跟踪正式版（默认 stable；跟踪 beta/rc 用 sbrel=pre）"
+  echo "  sbrel=pre     内核跟踪最新测试版与新特性（默认 pre；只跟踪稳定正式版用 sbrel=stable）"
+  echo "  cache_buffer=1MB  cache_file 写缓冲（默认 1MB，sing-box 1.15 新特性）"
+  echo "  cache_flush=1m   cache_file 刷盘间隔（默认 1m，sing-box 1.15 新特性）"
   echo "  uuid=自定义 UUID（Tuic 用；各协议密码独立随机，不再复用）"
   echo "  hymask=URL  Hysteria2 伪装反代目标（默认 https://www.bing.com，none=静态 404）"
   echo "  hyobfs=salamander|gecko  Hysteria2 混淆协议（默认 salamander，1.14 新增 gecko，0 关闭）"
@@ -1540,7 +1544,9 @@ $route_rules
         "cache_file": {
             "enabled": true,
             "path": "$SB_HOME/cache.db",
-            "store_dns": true
+            "store_dns": true,
+            "buffer_size": "$cache_buffer",
+            "flush_interval": "$cache_flush"
         }
     }
 }
@@ -2318,6 +2324,21 @@ gen_client_sbox() {
         "timeout": "5s",
         "cache_capacity": 4096
     },
+    "http_clients": [
+        {
+            "tag": "direct-http",
+            "detour": "direct"
+        }
+    ],
+    "experimental": {
+        "cache_file": {
+            "enabled": true,
+            "store_fakeip": true,
+            "store_dns": true,
+            "buffer_size": "1MB",
+            "flush_interval": "1m"
+        }
+    },
     "outbounds": [
         {
             "type": "selector",
@@ -2343,6 +2364,7 @@ $sel,
     "route": {
         "auto_detect_interface": true,
         "default_domain_resolver": { "server": "local" },
+        "default_http_client": "direct-http",
         "rules": [
             {
                 "action": "sniff",
@@ -2355,8 +2377,7 @@ $sel,
                 "tag": "geosite-cn",
                 "type": "remote",
                 "format": "binary",
-                "url": "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/geolocation-cn.srs",
-                "download_detour": "direct"
+                "url": "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/geolocation-cn.srs"
             }
         ],
         "final": "select"

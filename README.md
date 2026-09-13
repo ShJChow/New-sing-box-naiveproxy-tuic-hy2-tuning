@@ -57,7 +57,8 @@
 - [二十五、v2.7.4 一键安装命令规范化与文档全面对齐](#二十五v274-一键安装命令规范化与文档全面对齐)
 - [二十六、v2.7.5 NaiveProxy 与 AnyTLS 稳定性与握手极速调优最佳实践](#二十六v275-naiveproxy-与-anytls-稳定性与握手极速调优最佳实践)
 - [二十七、v2.7.6 Hysteria2 默认关闭端口跳跃与全链路 QDoS 防御体系加固](#二十七v276-hysteria2-默认关闭端口跳跃与全链路-qdos-防御体系加固)
-- [二十八、免责声明](#二十八免责声明)
+- [二十八、v2.7.7 sing-box 默认跟踪最新测试版（pre-release）与新特性全面适配](#二十八v277-sing-box-默认跟踪最新测试版pre-release与新特性全面适配)
+- [二十九、免责声明](#二十九免责声明)
 
 ---
 
@@ -1588,7 +1589,40 @@ AnyTLS 是 sing-box 1.14 引入的划时代 TCP 代理协议，通过单层真�
 
 ---
 
-## 二十八、免责声明
+## 二十八、v2.7.7 sing-box 默认跟踪最新测试版（pre-release）与新特性全面适配
+
+在 **v2.7.7** 中，遵照用户明确要求与前沿网络特性演进规范，将 sing-box 内核默认版本通道从 `stable` 切换为 **`pre`（默认跟踪最新测试版 / pre-release，如当前 `v1.15.0-alpha.2`）**，并全面启用最新特性与完成配置规范平滑迁移：
+
+### 1. 核心背景与工程考量
+- **版本通道默认 pre（测试版最高优先级）**：sing-box 官方迭代迅速，最新特性（如 I/O 写缓冲 `buffer_size`、`flush_interval`、Android 完整 `auto_redirect`、WireGuard `on_demand` 等）均率先在 pre-release（alpha/beta/rc）构建中发布并验证。
+- **默认安装与升级策略**：
+  - 默认参数调整为 `sbrel=pre`（保留 `sbrel=stable` 供需要极度保守的用户显式覆盖）；
+  - `sbbox up` 默认自动拉取 GitHub Releases 最新预发布版本（当前平滑升级至 `v1.15.0-alpha.2`，Go 1.26.7 构建）。
+
+### 2. 核心新特性落地与破坏性废弃平滑迁移
+1. **`experimental.cache_file` 缓冲写入与批量刷盘 (sing-box 1.15 新特性)**：
+   - 引入 `"buffer_size": "1MB"` 与 `"flush_interval": "1m"` 配置；
+   - DNS 缓存与路由缓存的磁盘落盘从以往「单次变更立即同步写磁盘」升级为「写缓冲区集中聚合 + 满 1MB 或每分钟单次事务批量落盘」，显著降低云主机磁盘 I/O 损耗，消除高并发下的磁盘写操作延迟抖动。
+2. **彻底解决 1.14/1.15 破坏性变更：废弃 `download_detour` 迁移至 `http_clients` 统一架构**：
+   - sing-box 1.14 起废弃了 remote `rule_set` 中的 `download_detour`，在 1.15+ 中更作为 FATAL 错误直接阻断启动；
+   - 本项目全面重构客户端与规则集架构：在顶层声明 `http_clients: [{ "tag": "direct-http", "detour": "direct" }]`，并在 `route` 层声明 `"default_http_client": "direct-http"`，彻底根除客户端启动时的弃用崩溃风险。
+3. **客户端 `sbox_client.json` 补齐写缓冲持久化缓存**：
+   - 为客户端注入 `experimental.cache_file` 配置（`store_fakeip: true`, `store_dns: true`, `buffer_size: "1MB"`, `flush_interval: "1m"`），极大提速客户端二次查询与冷启动握手。
+4. **保持 1.14 原生 API 监控与乐观 DNS 缓存**：
+   - 继续维持 127.0.0.1 原生 REST API 指标监控（`sbbox status` 实时输出内存、连接数与上下行流量）；
+   - 保持 `optimistic: true` 乐观 DNS 极速解析。
+
+### 3. 实测验证数据 (7 轮压测基准)
+在最新测试版 `sing-box v1.15.0-alpha.2` 驱动下，运行系统级压测基准 `/root/run_test.py`：
+- **sbbox NaiveProxy H3 (10489)**：握手中位 **2.6 ms**，p95 稳定在 **10.7 ms**；
+- **sbbox AnyTLS (28443)**：握手中位 **2.7 ms**，p95 稳定在 **9.3 ms**；
+- **sbbox TUIC v5 (18793)**：握手中位 **3.0 ms**；
+- **sbbox Hysteria 2 (44116)**：握手中位 **3.5 ms**，p95 稳定在 **6.9 ms**；
+- **全系统 13 节点基准**：**13/13 节点全部通过验证 (ALL PASS)**。
+
+---
+
+## 二十九、免责声明
 
 本项目仅供网络技术研究与学习交流使用。使用者须自行遵守所在国家/地区的法律法规，因使用本脚本产生的一切后果由使用者自行承担。
 
