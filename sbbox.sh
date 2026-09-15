@@ -959,11 +959,13 @@ LIMITSEOF
     local dropin="10-sbbox.conf"
     local dir="/etc/systemd/system/${SB_SERVICE}.service.d"
     install -d -m 755 "$dir" 2>/dev/null || true
-    cat > "${dir}/${dropin}" <<'DROPINEOF' 2>/dev/null || warn "写入 ${SB_SERVICE} drop-in 失败"
+    cat > "${dir}/${dropin}" <<DROPINEOF 2>/dev/null || warn "写入 ${SB_SERVICE} drop-in 失败"
 [Service]
 LimitNOFILE=1048576
 LimitNPROC=infinity
 Environment="GOGC=200"
+Environment="GOMAXPROCS=${CPU_CORES}"
+Environment="GODEBUG=madvdontneed=1"
 DROPINEOF
     local legacy="${dir}/override.conf"
     if [ -f "$legacy" ]; then
