@@ -49,7 +49,8 @@ Bundled with:
 - [17. v2.7.5 — NaiveProxy & AnyTLS Stability and Handshake Latency Optimization](#17-v275--naiveproxy--anytls-stability-and-handshake-latency-optimization)
 - [18. v2.7.6 — Hysteria2 Port Hopping Disabled by Default & End-to-End QDoS Mitigation](#18-v276--hysteria2-port-hopping-disabled-by-default--end-to-end-qdos-mitigation)
 - [19. v2.7.7 — sing-box Defaults to Latest Pre-Release & New Features Adoption](#19-v277--sing-box-defaults-to-latest-pre-release--new-features-adoption)
-- [20. Disclaimer](#20-disclaimer)
+- [20. v2.7.8 — Kernel Upgrade to 1.15.0-alpha.5 with Before/After Measurements](#20-v278--kernel-upgrade-to-1150-alpha5-with-beforeafter-measurements)
+- [21. Disclaimer](#21-disclaimer)
 
 ---
 
@@ -591,7 +592,42 @@ Verified under `sing-box v1.15.0-alpha.2` via `/root/run_test.py`:
 
 ---
 
-## 20. Disclaimer
+## 20. v2.7.8 — Kernel Upgrade to 1.15.0-alpha.5 with Before/After Measurements
+
+- **Upgrade path.** `v1.15.0-alpha.5` was the newest build on the pre-release
+  channel. Before swapping, the new binary was dry-run with `sing-box check`
+  against both the live server config and the client template shipped to
+  users — both passed with no deprecation warnings — then `sbbox up` (which
+  rolls back on a failed check or a failed start) took it from alpha.2 to alpha.5.
+- **What the "new features" actually are.** Of the 50 commits between alpha.2
+  and alpha.5, the ones that touch this project's nodes are: **AnyTLS migrated
+  to sing-box's own library** (the biggest behavioural change, watched most
+  closely), a cronet-go fix (NaiveProxy H2/H3), DNS deduplication after a failed
+  exchange, no crash on a corrupted cache file, idle-connection management, and
+  Go 1.26.8. **No new server-side option needs enabling**, so `sb.json` is
+  unchanged and the improvements arrive with the kernel. The new TUN TCP/IP
+  stack (alpha.3) is client-side: this project's client template never set
+  `stack`, so clients on 1.15 pick it up automatically (`stack` is removed in
+  1.17 — delete it if you set it by hand). Tailcat (alpha.5) is a WireGuard +
+  DERP peer-to-peer mesh, not a proxy protocol, and is **not** added to subscriptions.
+- **Before → after, same host and method** (latency `SAMPLES=25`, median/p95 ms;
+  throughput 6 × 50 MB, median Mbps): tuic 2.3/3.1 → 2.5/3.4, 649 → 736;
+  hysteria2 3.5/4.2 → 3.6/4.9, 265 → 307; naive-h3 2.9/10.0 → 2.9/10.6,
+  470 → 477; naive-h2 4.2/13.5 → 4.1/11.3, 1055 → 1175; **anytls 2.4/6.9 →
+  2.5/3.5**, 1326 → 1273. After the library swap AnyTLS's p95 halved with
+  throughput flat (ranges overlap). The other +10–16% throughput shifts sit
+  inside 6-sample noise, so no speed-up is claimed — only no regression.
+  Full regression 12/12 PASS. UDP nodes' absolute numbers are depressed by the
+  loopback hairpin path; the comparison is like-for-like, not real client speed.
+- **Benchmark trap: cachefly returns HTTP 200 with 24 bytes when it throttles**
+  (`I just served you 10mb`). Status and curl exit code look healthy, and on
+  the first throughput pass 4 of 5 nodes came back "all invalid" because of it —
+  nearly misread as node failures. The earlier advice to use cachefly is
+  withdrawn. Alternate near-VPS sources with ample direct throughput
+  (`speedtest.fremont.linode.com`, `sjo-ca-us-ping.vultr.com` from SJC), fetch a
+  fixed byte range, and discard any sample whose `size_download` is short.
+
+## 21. Disclaimer
 
 This project is provided for network technology research and educational purposes only. Users are responsible for complying with local laws and regulations.
 

@@ -58,7 +58,8 @@
 - [二十六、v2.7.5 NaiveProxy 与 AnyTLS 稳定性与握手极速调优最佳实践](#二十六v275-naiveproxy-与-anytls-稳定性与握手极速调优最佳实践)
 - [二十七、v2.7.6 Hysteria2 默认关闭端口跳跃与全链路 QDoS 防御体系加固](#二十七v276-hysteria2-默认关闭端口跳跃与全链路-qdos-防御体系加固)
 - [二十八、v2.7.7 sing-box 默认跟踪最新测试版（pre-release）与新特性全面适配](#二十八v277-sing-box-默认跟踪最新测试版pre-release与新特性全面适配)
-- [二十九、免责声明](#二十九免责声明)
+- [二十九、v2.7.8 内核升级 1.15.0-alpha.5 与前后实测](#二十九v278-内核升级-1150-alpha5-与前后实测)
+- [三十、免责声明](#三十免责声明)
 
 ---
 
@@ -1227,8 +1228,8 @@ nstat -az | grep -iE 'DeliveredCE|InCEPkts'   # 自开机以来全为 0
 
 > **测量口径警告**：`speed.cloudflare.com` 会对频繁测速返回 **HTTP 429**，
 > 此时 `%{speed_download}` 变成 0 而 **curl 退出码仍是 0**，极易被误读成
-> 「吞吐掉到 0」。做吞吐基准要用 cachefly 一类不限流的源，并显式检查
-> `http_code` 与 `size_download`。
+> 「吞吐掉到 0」。做吞吐基准必须显式检查
+> `http_code` 与 `size_download`。**cachefly 也不行**（见第二十九节：限流时返回 HTTP 200 + 24 字节）。
 
 ---
 
@@ -1622,7 +1623,70 @@ AnyTLS 是 sing-box 1.14 引入的划时代 TCP 代理协议，通过单层真�
 
 ---
 
-## 二十九、免责声明
+## 二十九、v2.7.8 内核升级 1.15.0-alpha.5 与前后实测
+
+### 1.〔升级〕alpha.2 → alpha.5
+
+预发布通道（`sbrel=pre`）当天最新为 `v1.15.0-alpha.5`。先用新内核**干跑校验**现网
+服务端配置与下发给用户的客户端模板，两份都通过、无弃用告警，再走 `sbbox up`
+（自带「校验失败或起不来即回滚」）：
+
+```bash
+./sing-box-1.15.0-alpha.5/sing-box check -c /root/sbbox/sb.json           # 替换前干跑
+./sing-box-1.15.0-alpha.5/sing-box check -c /root/sbbox/sbox_client.json
+sbbox up                                                                  # 1.15.0-alpha.2 → 1.15.0-alpha.5
+```
+
+### 2.〔范围〕这次的「新特性」落在哪
+
+逐个看了 alpha.2 → alpha.5 的 50 个提交，与本项目 5 条节点直接相关的：
+
+| 提交 | 影响节点 |
+|---|---|
+| **Migrate anytls into our own library** | **AnyTLS**：实现整体换库，本次最大的行为变更，重点盯 |
+| Fix cronet-go | NaiveProxy H2 / H3 |
+| Fix duplicate DNS queries bypassing deduplication after failed exchange | 服务端 DNS |
+| Fix crash on corrupted cache file | `cache_file` |
+| Close idle connections of unreferenced outbounds / Improve idle connection management | 全部 |
+| Update Go to 1.26.8 | 全部 |
+
+**服务端没有需要新开的配置项**，所以本版不改 `sb.json` 结构，特性随内核生效。另外两项不是节点特性：
+
+- **新 TCP/IP TUN 栈**（alpha.3）：客户端侧。本项目客户端模板从未写 `stack` 字段，
+  所以用户客户端升级到 1.15 后**自动**用上新栈，无需迁移。`stack` 将在 1.17 移除，
+  自行在客户端配置里写了 `stack` 的要删掉。
+- **Tailcat**（alpha.5）：WireGuard + DERP 的点对点组网，不是代理协议，**不加入订阅**。
+
+### 3.〔实测〕前后对照，无回归
+
+同机同口径。延迟为 `SAMPLES=25 run_test.py`；吞吐为每条 6 次 × 50MB。
+（本机回环经公网路径，UDP 类节点绝对值受发夹路径压低，前后同口径可比，不代表真实客户端速度。）
+
+| 节点 | 延迟 中位/p95 前 | 后 | 吞吐中位 Mbps 前 | 后 |
+|---|---|---|---|---|
+| tuic | 2.3 / 3.1 | 2.5 / 3.4 | 649 | 736 |
+| hysteria2 | 3.5 / 4.2 | 3.6 / 4.9 | 265 | 307 |
+| naive-h3 | 2.9 / 10.0 | 2.9 / 10.6 | 470 | 477 |
+| naive-h2 | 4.2 / 13.5 | 4.1 / 11.3 | 1055 | 1175 |
+| **anytls** | 2.4 / **6.9** | 2.5 / **3.5** | 1326 | 1273 |
+
+AnyTLS 换库后 p95 从 6.9ms 降到 3.5ms、吞吐持平（范围 1150–1750 与 1170–1736 重叠）。
+其余吞吐的 +10~16% 在 6 样本的波动范围内，**不宣称提速**，只确认无回归。12 节点全量回归 12/12 PASS。
+
+### 4.〔测速陷阱〕cachefly 限流时返回 HTTP 200 + 24 字节
+
+此前建议用 cachefly 替代会 429 的 `speed.cloudflare.com`，**已失效**。反复下载后它返回
+`HTTP/2 200` + 正文 `I just served you 10mb`（24 字节）+ 头 `x-cf-quota-max-delivery-conns`。
+**状态码与 curl 退出码都正常**，本次首轮吞吐测试 5 条里 4 条因此被判「全部无效」，
+差点误读成节点故障。
+
+替代做法：选离 VPS 近、直连带宽远高于代理吞吐的源两两交替，`-r` 取固定字节数，
+**`size_download` 不满就不计入**。本机（SJC）实测 `speedtest.fremont.linode.com` 与
+`sjo-ca-us-ping.vultr.com` 直连 2~3.5 Gbps 可用；远端源（如 `proof.ovh.net` 直连 42Mbps）会先成瓶颈。
+
+---
+
+## 三十、免责声明
 
 本项目仅供网络技术研究与学习交流使用。使用者须自行遵守所在国家/地区的法律法规，因使用本脚本产生的一切后果由使用者自行承担。
 
