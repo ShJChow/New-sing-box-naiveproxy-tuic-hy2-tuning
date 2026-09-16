@@ -1,0 +1,4 @@
+[ {"name":"h2 线上模板",        "base":"naive-h2"},
+  {"name":"h2 窗口8MB(旧值)",   "base":"naive-h2", "set":{"stream_receive_window":8388608}},
+  {"name":"h3 线上模板",        "base":"naive-h3"},
+  {"name":"h3 8/16MB(旧值)",    "base":"naive-h3", "set":{"stream_receive_window":8388608,"quic_session_receive_window":16777216}} ]

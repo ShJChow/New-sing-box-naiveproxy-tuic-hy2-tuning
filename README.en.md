@@ -50,7 +50,8 @@ Bundled with:
 - [18. v2.7.6 — Hysteria2 Port Hopping Disabled by Default & End-to-End QDoS Mitigation](#18-v276--hysteria2-port-hopping-disabled-by-default--end-to-end-qdos-mitigation)
 - [19. v2.7.7 — sing-box Defaults to Latest Pre-Release & New Features Adoption](#19-v277--sing-box-defaults-to-latest-pre-release--new-features-adoption)
 - [20. v2.7.8 — Kernel Upgrade to 1.15.0-alpha.5 with Before/After Measurements](#20-v278--kernel-upgrade-to-1150-alpha5-with-beforeafter-measurements)
-- [21. Disclaimer](#21-disclaimer)
+- [21. v2.7.9 — NaiveProxy Flow-Control Windows: h2 Was Hard-Capped at ~90 Mbps](#21-v279--naiveproxy-flow-control-windows-h2-was-hard-capped-at-90-mbps)
+- [22. Disclaimer](#22-disclaimer)
 
 ---
 
@@ -627,7 +628,44 @@ Verified under `sing-box v1.15.0-alpha.2` via `/root/run_test.py`:
   (`speedtest.fremont.linode.com`, `sjo-ca-us-ping.vultr.com` from SJC), fetch a
   fixed byte range, and discard any sample whose `size_download` is short.
 
-## 21. Disclaimer
+## 21. v2.7.9 — NaiveProxy Flow-Control Windows: h2 Was Hard-Capped at ~90 Mbps
+
+- **The bug, invisible on loopback.** The client template pinned
+  `"stream_receive_window": 8388608` on both naive outbounds. Per the sing-box
+  docs, **in HTTP/2 mode this is the session window, each stream gets half, and
+  the upstream default is 128 MB** — so each stream had 4 MB, 32x below default.
+  At a realistic 160 ms RTT naive-h2 topped out at **~90 Mbps with a 88–100
+  range across 5 runs**; a range that narrow is a hard ceiling, not network
+  noise. Loopback benchmarks never showed it: at sub-millisecond RTT a 4 MB
+  window drains instantly. **Window parameters must be validated under RTT.**
+- **Method.** `tools/naive_rtt_bench.py` runs the client in a separate network
+  namespace connected over veth to the local server, adds half the delay on
+  each side with netem and loss on the download direction only — no public
+  path (no hairpin), no production traffic, cleaned up afterwards. Downloads
+  are 100 MB each (50 MB at 160 ms is mostly slow start); the namespace
+  inherits the host's 32 MB `tcp_rmem` on this kernel, so client TCP buffers are
+  not the limit; sources are linode-fremont / vultr-sjc, short downloads discarded.
+- **A/B at 160 ms RTT, median Mbps of 5×100 MB (clean / 1% download loss):**
+  h2 8 MB 90 / 81; **h2 field removed (default 128 MB) 308 / 221**; h2 32 MB 235.
+  h3 8/16 MB 157 / 133; h3 upstream default 6/15 MB 127; **h3 32/64 MB 284 / 251**;
+  h3 64/128 MB 277 / 260. So: **h2 drops the field** (a custom 32 MB was worse
+  than default); **h3 uses 32 MB / 64 MB** (here upstream default is worse than
+  the old value, and 64/128 MB buys nothing extra).
+- **Tested and rejected: server QUIC congestion control `cubic`.** The server's
+  `quic_congestion_control` governs h3 download (`bbr2` exists only on the
+  outbound, i.e. upload). With client 32/64 MB: bbr 284 / 251 vs **cubic 121 and
+  all five 100 MB downloads timing out at 1% loss**. bbr stays.
+- **Unchanged: `insecure_concurrency` (4).** Upstream warns that concurrent
+  tunnel connections make traffic analysis easier, defeating NaiveProxy's
+  purpose; it only affects parallel streams, not single-stream downloads.
+- **Verified after rollout** with the live template as-is: RTT 0 h2 1467 → 1456,
+  h3 792 → 801 (within noise — larger windows do not hurt low latency);
+  160 ms h2 90 → **306**, h3 157 → **284**; 160 ms + 1% loss h2 81 → **259**,
+  h3 133 → **251**. `SAMPLES=25 run_test.py` 12/12 PASS. The windows live on the
+  client — **users must re-pull the sing-box subscription** (`sbox_client.json`).
+  Clash/Mihomo have no naive type and receive a plain HTTPS proxy, so they are unaffected.
+
+## 22. Disclaimer
 
 This project is provided for network technology research and educational purposes only. Users are responsible for complying with local laws and regulations.
 

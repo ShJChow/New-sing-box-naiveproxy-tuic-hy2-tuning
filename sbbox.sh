@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.8"
+SBBOX_VERSION="v2.7.9"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -2207,6 +2207,15 @@ gen_client_sbox() {
   fi
 
   # 4. NaiveProxy (HTTPS / 流量形态特殊需求)
+  #
+  # 流控窗口（v2.7.9，netns + netem 模拟 160ms RTT 实测，每项 5×100MB 中位）：
+  #   h2：不写 stream_receive_window，用上游默认。H2 下该字段是会话窗口、单流取其一半，
+  #       上游默认 128MB；此前写死 8MB 等于单流只有 4MB，在 160ms RTT 下把吞吐硬卡在 ~90Mbps
+  #       （范围 88~100，极窄 = 流控天花板）。删掉后 308Mbps；1% 下行丢包时 81 → 221。
+  #   h3：32MB / 64MB。上游默认 6MB/15MB 反而更差（127），此前 8/16MB 为 157，32/64MB 为 284；
+  #       再加到 64/128MB 无额外收益（277），不为此多占客户端内存。1% 丢包时 133 → 251。
+  # 本机回环测不出这个问题：RTT 不到 1ms 时 4MB 窗口也够用。
+  # 服务端 quic_congestion_control 保持 bbr：同条件下 cubic 仅 121，1% 丢包时 100MB 全部超时。
   if [ -n "$nvp" ] && [ "$CERT_OK" = 1 ]; then
     ob+=('{
         "type": "naive",
@@ -2216,8 +2225,8 @@ gen_client_sbox() {
         "username": "'"$nv_user"'",
         "password": "'"$nv_pw"'",
         "insecure_concurrency": 4,
-        "stream_receive_window": 8388608,
-        "quic_session_receive_window": 16777216,
+        "stream_receive_window": 33554432,
+        "quic_session_receive_window": 67108864,
         "tcp_fast_open": true,
         "tcp_multi_path": true,
         "udp_over_tcp": true,
@@ -2235,7 +2244,6 @@ gen_client_sbox() {
         "username": "'"$nv_user"'",
         "password": "'"$nv_pw"'",
         "insecure_concurrency": 4,
-        "stream_receive_window": 8388608,
         "tcp_fast_open": true,
         "tcp_multi_path": true,
         "udp_over_tcp": true,
