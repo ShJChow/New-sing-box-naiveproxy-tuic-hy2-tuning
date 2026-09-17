@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.9"
+SBBOX_VERSION="v2.7.10"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -2703,10 +2703,23 @@ hy2_external_sync_secrets() {
   # 前者两空格缩进（auth 段下），后者四空格缩进（salamander 段下）。
   sed -i -E "s|^(  password: ).*|\1\"$pw\"|" "$f"
   [ -n "$obfs" ] && sed -i -E "s|^(    password: ).*|\1\"$obfs\"|" "$f"
-  # 同步 QDoS 缓冲与流控制防护参数
+  # QUIC 流控参数（v2.7.10 调整初始窗口，见 README）。
+  #
+  # v2.7.6 为防 QDoS 把初始窗口收紧到 512KB / 1MB。实测（netns，160ms RTT，线路 1000↓/300↑，上传 Mbps，
+  # 每项 5 次中位，sing-box / Xray 客户端）：
+  #   初始 512K/1M  + 上限 16M/64M（旧）   5MB 上传 34 / 31    40MB 上传 109 / 129
+  #   初始 8M/20M   + 上限 16M/64M（新）   5MB 上传 50 / 63    40MB 上传 152 / 161
+  # 从 512KB 起步在高 RTT 下爬坡太慢，长上传也追不回来；慢上行线路（50↑）下 5MB 上传甚至只有 3 Mbps。
+  #
+  # 为什么放大不削弱 QDoS 防护：窗口是 QUIC 层流控额度，能按初始窗口灌数据占内存的前提是完成
+  # QUIC 握手；本节点强制 salamander 混淆，实测**混淆密码错误或不带混淆时连接根本建不起来**，
+  # 未认证攻击者到不了这一层。每源 IP 50/s 的 hashlimit、maxIncomingStreams 512、maxIdleTimeout 30s 均保留。
   if ! grep -q "initStreamReceiveWindow" "$f" 2>/dev/null; then
-    sed -i '/^tls:/i \quic:\n  initStreamReceiveWindow: 524288\n  maxStreamReceiveWindow: 8388608\n  initConnReceiveWindow: 1048576\n  maxConnReceiveWindow: 20971520\n  maxIdleTimeout: 30s\n  maxIncomingStreams: 512\n  disablePathMTUDiscovery: false\n' "$f" 2>/dev/null || true
+    sed -i '/^tls:/i \quic:\n  initStreamReceiveWindow: 8388608\n  maxStreamReceiveWindow: 16777216\n  initConnReceiveWindow: 20971520\n  maxConnReceiveWindow: 67108864\n  maxIdleTimeout: 30s\n  maxIncomingStreams: 512\n  disablePathMTUDiscovery: false\n' "$f" 2>/dev/null || true
   fi
+  # 老安装迁移：只把 v2.7.6 写入的旧收紧值改成新值，用户自己改过的值原样保留。
+  sed -i -E 's/^(  initStreamReceiveWindow: )524288$/\18388608/; s/^(  initConnReceiveWindow: )1048576$/\120971520/' "$f" 2>/dev/null || true
+  sed -i -E 's/^(  maxStreamReceiveWindow: )8388608$/\116777216/; s/^(  maxConnReceiveWindow: )20971520$/\167108864/' "$f" 2>/dev/null || true
   grep -q "ignoreClientBandwidth" "$f" 2>/dev/null || echo "ignoreClientBandwidth: true" >> "$f"
   info "已同步新密钥与 QDoS 防护参数到外置 Hysteria2 配置（$f）"
 }

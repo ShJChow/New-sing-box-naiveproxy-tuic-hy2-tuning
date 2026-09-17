@@ -51,7 +51,8 @@ Bundled with:
 - [19. v2.7.7 — sing-box Defaults to Latest Pre-Release & New Features Adoption](#19-v277--sing-box-defaults-to-latest-pre-release--new-features-adoption)
 - [20. v2.7.8 — Kernel Upgrade to 1.15.0-alpha.5 with Before/After Measurements](#20-v278--kernel-upgrade-to-1150-alpha5-with-beforeafter-measurements)
 - [21. v2.7.9 — NaiveProxy Flow-Control Windows: h2 Was Hard-Capped at ~90 Mbps](#21-v279--naiveproxy-flow-control-windows-h2-was-hard-capped-at-90-mbps)
-- [22. Disclaimer](#22-disclaimer)
+- [22. v2.7.10 — External Hysteria2 Initial Windows Raised: Upload 109→141, Slow Line 3→30](#22-v2710--external-hysteria2-initial-windows-raised-upload-109141-slow-line-330)
+- [23. Disclaimer](#23-disclaimer)
 
 ---
 
@@ -665,7 +666,17 @@ Verified under `sing-box v1.15.0-alpha.2` via `/root/run_test.py`:
   client — **users must re-pull the sing-box subscription** (`sbox_client.json`).
   Clash/Mihomo have no naive type and receive a plain HTTPS proxy, so they are unaffected.
 
-## 22. Disclaimer
+## 22. v2.7.10 — External Hysteria2 Initial Windows Raised: Upload 109→141, Slow Line 3→30
+
+Applies to the **external** Hysteria2 deployment (official hysteria binary + `hysteria-sbbox.service` + `/etc/hysteria/sbbox.yaml`); sing-box's built-in `hy2-in` does not expose these options.
+
+- **Problem.** v2.7.6's QDoS hardening shrank the QUIC initial receive windows to 512 KB (stream) / 1 MB (connection). **Server receive windows govern upload.** In a network namespace at 160 ms RTT on a 1000↓/300↑ line (median of 5, sing-box / Xray client, Mbps): old 512K,1M init with 16M,64M max → 5 MB upload 34 / 31, 40 MB upload 109 / 129; hysteria defaults 8M,20M / 8M,20M → 61 / 58, 161 / 177; **new 8M,20M init with 16M,64M max → 50 / 63, 152 / 161**. Starting from 512 KB climbs too slowly at high RTT and even long uploads never catch up; on a 300↓/50↑ line a 5 MB upload managed only **3 Mbps** with the old windows.
+- **Why this does not weaken QDoS protection.** Windows are QUIC flow-control credit; filling them to exhaust server memory first requires completing a QUIC handshake. This node enforces salamander, and a negative control confirmed that with a wrong obfs password, or none, **the connection cannot be established at all**. The per-source 50/s hashlimit, `maxIncomingStreams: 512` and `maxIdleTimeout: 30s` all stay.
+- **Tested and rejected: `ignoreClientBandwidth: false`.** Current subscription links declare no bandwidth, so the switch has no effect for existing users anyway. With client declarations of none / 300 / 1000 on a 300↓/50↑ line (download Mbps, clean / 1% loss): `true` 198/115, 189/112, 149/127; `false` 178/108, 184/123, 174/115. No measurable gain, and `true` stops a password holder from forcing the server to blast at a forged rate. **Stays `true`.**
+- **Applied live** to `/etc/hysteria/sbbox.yaml` (max windows unchanged at 16 MB / 64 MB) and re-verified: fast-line 5 MB upload 34/31 → 61/55, 40 MB 109/129 → 141/194, slow-line 5 MB 3 → 30, unshaped RTT 0 645↓/406↑ with no regression; `SAMPLES=25 run_test.py` 12/12 PASS. **Script:** `hy2_external_sync_secrets` (run by `sbbox rotate`) writes the new values into a fresh quic block and migrates the old hardened values by exact match, leaving user-customised values alone. Other external deployments can apply it by hand: `sed -i -E 's/^(  initStreamReceiveWindow: )524288$/\18388608/; s/^(  initConnReceiveWindow: )1048576$/\120971520/' /etc/hysteria/sbbox.yaml && systemctl restart hysteria-sbbox`.
+- **Benchmark caveat: shaping queues must be bounded.** An outer tbf with an inner netem whose queue limit is huge emulates a ~1 s buffer (ping during uploads ~1000 ms), where Brutal fills the buffer and BBR is misled into wrong conclusions. All numbers here come from the corrected harness (netem `rate` with a bounded `limit`).
+
+## 23. Disclaimer
 
 This project is provided for network technology research and educational purposes only. Users are responsible for complying with local laws and regulations.
 
