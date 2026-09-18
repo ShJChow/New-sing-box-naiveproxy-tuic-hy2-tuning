@@ -217,7 +217,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 | `sblevel` | `error` | server log level (`off` disables disk logs) |
 | `blkport` | **1 (default)** | block outbound SMTP/SMB ports |
 | `hyup` / `hydown` | empty | Hysteria2 up/down Mbps (set both for Brutal CC) |
-| `sub` | empty | enable v2rayN subscription server (`sub=1`) |
+| `sub` | **1 (default)** | enable v2rayN / universal subscription server (enabled by default; disable with `sub=0` or `sbbox sub off`) |
 | `subport` | random | subscription server port |
 | `subid` | independent | subscription token |
 | `sub_nonaive` | empty | omit Naiveproxy nodes from subscription |
@@ -270,7 +270,7 @@ sbrel=stable sbbox up     # switch to official stable channel
 
 ## 8. Subscription & Client Configs
 
-Run `sub=1` to enable the built-in subscription server.
+The built-in subscription server is enabled by default (`sub=1`); disable with `sub=0` or `sbbox sub off`.
 
 ### 8.1 Certificate Fingerprint & SHA-256 Injection (Enabled by Default)
 During installation and configuration generation, the script automatically uses OpenSSL to extract and inject:

@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.10"
+SBBOX_VERSION="v2.7.11"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -89,7 +89,12 @@ tuils="${tuils:-1}"                         # Tuic TLS 加固（证书公钥 SHA
 
 tuech="${tuech:-}"                          # Tuic ECH：tuech=1 且 tuech_config=<base64> 时启用（需服务端支持）
 tuech_config="${tuech_config:-}"            # ECH config list（base64）
-sub="${sub:-}"                              # 启用订阅服务：sub=1
+sub_explicit="${sub:+1}"
+sub="${sub:-1}"                              # 启用订阅服务：默认开启 1，关闭用 sub=0
+case "$sub" in
+  0|no|off|false|NO|OFF|FALSE) sub=0 ;;
+  *) sub=1 ;;
+esac
 subport="${subport:-}"                      # 订阅端口（默认随机）
 subid="${subid:-}"                          # 订阅令牌（默认用 uuid）
 sub_nonaive="${sub_nonaive:-}"              # 剔除 Naiveproxy 节点（客户端不支持时用）
@@ -144,7 +149,7 @@ showmode() {
   echo "更新内核：sbbox up"
   echo "流控调优：sbbox tune show | sbbox tune off"
   echo "证书管理：sbbox cert status | renew | sync | hook"
-  echo "订阅地址：sbbox sub 【关闭】 sbbox sub off"
+  echo "订阅地址：sbbox sub 【开启】 sbbox sub on 【关闭】 sbbox sub off"
   echo "端口跳跃：sbbox hop 25000:38000 【默认关闭】 sbbox hop off"
   echo "极速优化：sbbox speed 100 1000（设置客户端上/下行并激活 Hy2 与 TCP Brutal 极速拥塞控制）"
   echo "TCP Brutal：sbbox brutal show | on | off | speed | add | del（TCP Brutal 拥塞控制与限速）"
@@ -163,7 +168,7 @@ showmode() {
   echo "  hyjpt=25000:38000  Hysteria2 跳跃端口（默认关闭；同机有其他代理脚本时慎开）"
   echo "  hyup=100 hydown=1000  Hysteria2 Brutal 拥塞控制客户端带宽"
 
-  echo "  sub=1    启用 v2rayN 订阅服务（subport=端口 subid=令牌 可选）"
+  echo "  sub=1    启用 v2rayN / 通用订阅服务（默认开启 1；关闭用 sub=0；subport=端口 subid=令牌 可选）"
   echo "  sbrel=pre     内核跟踪最新测试版与新特性（默认 pre；只跟踪稳定正式版用 sbrel=stable）"
   echo "  cache_buffer=1MB  cache_file 写缓冲（默认 1MB，sing-box 1.15 新特性）"
   echo "  cache_flush=1m   cache_file 刷盘间隔（默认 1m，sing-box 1.15 新特性）"
@@ -1758,9 +1763,13 @@ gen_client() {
 # 订阅：base64 节点列表 + 本机 HTTP 托管（v2rayN 可直接导入）
 # ======================================================
 gen_sub() {
-  [ -z "$sub" ] && [ -f "$SB_HOME/subtoken" ] && sub=1
-  [ -n "$sub" ] || return 0
+  case "$sub" in
+    0|no|off|false|NO|OFF|FALSE) return 0 ;;
+    *) sub=1 ;;
+  esac
+  [ -f "$SB_HOME/sub_disabled" ] && [ -z "$sub_explicit" ] && return 0
   [ -s "$SB_LINK" ] || { warn "无节点可生成订阅"; return 0; }
+  rm -f "$SB_HOME/sub_disabled" 2>/dev/null
 
   # 订阅令牌：独立随机值，**不复用 uuid**。
   # uuid 同时是各协议的连接密码，若拿它当令牌，订阅 URL（明文 HTTP）一旦泄露
@@ -1772,15 +1781,28 @@ gen_sub() {
     token=$(cat "$SB_HOME/subtoken")
   else
     token=$("$SB_BIN" generate rand --hex 16 2>/dev/null || openssl rand -hex 16 2>/dev/null)
-    [ -n "$token" ] || token=$(head -c32 /dev/urandom | od -An -tx1 | tr -d ' 
-')
+    [ -n "$token" ] || token=$(head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n')
   fi
   echo "$token" > "$SB_HOME/subtoken"
   chmod 600 "$SB_HOME/subtoken" 2>/dev/null
 
   # 订阅端口：默认随机高位端口，可用 subport= 固定
   if [ -z "$subport" ]; then
-    subport=$(cat "$SB_HOME/subport" 2>/dev/null || shuf -i 10000-65535 -n 1)
+    subport=$(cat "$SB_HOME/subport" 2>/dev/null || true)
+    if [ -z "$subport" ]; then
+      local _try=0 used
+      used=$(ss -tuln 2>/dev/null | awk 'NR>1 {print $5}' | awk -F: '{print $NF}' | tr -d '%' | sort -u)
+      while :; do
+        subport=$(shuf -i 10000-65535 -n 1)
+        if echo "$used" | grep -qx "$subport"; then
+          _try=$((_try+1)); [ $_try -ge 50 ] && break; continue
+        fi
+        port_hijacked_by_nat "$subport" >/dev/null 2>&1 && {
+          _try=$((_try+1)); [ $_try -ge 50 ] && break; continue
+        }
+        break
+      done
+    fi
   fi
   echo "$subport" > "$SB_HOME/subport"
 
@@ -1804,7 +1826,7 @@ gen_sub() {
   base64 < "$SB_HOME/.sub.plain" | tr -d '\n' > "$SUB_DIR/$token"
   rm -f "$SB_HOME/.sub.plain"
 
-  start_sub_server
+  [ -z "$SBBOX_CHECK_ONLY" ] && start_sub_server
 
   local subhost="$server_ip"
   case "$subhost" in *:*) subhost="[$subhost]" ;; esac   # IPv6 需方括号
@@ -1897,7 +1919,7 @@ class SubHandler(BaseHTTPRequestHandler):
                 return
 
         force_format = ""
-        for suffix in ("/clash", "/singbox", "/sb", "/json", "/b64"):
+        for suffix in ("/clash", "/singbox", "/sb", "/json", "/b64", "/v2rayn", "/v2ray"):
             if token_path.endswith(suffix):
                 force_format = suffix.lstrip("/")
                 token_path = token_path[:-len(suffix)]
@@ -1912,10 +1934,11 @@ class SubHandler(BaseHTTPRequestHandler):
         ua = self.headers.get("User-Agent", "").lower()
         q_lower = query.lower()
 
-        is_clash = force_format == "clash" or "clash=1" in q_lower or "format=clash" in q_lower or any(k in ua for k in ("clash", "mihomo", "stash", "meta", "subconverter", "verge", "flclash"))
-        is_singbox = force_format in ("singbox", "sb", "json") or "singbox=1" in q_lower or "sb=1" in q_lower or "format=singbox" in q_lower or "format=json" in q_lower or "sing-box" in ua or "sbox" in ua or "nekoray" in ua
+        is_b64 = force_format in ("b64", "v2rayn", "v2ray") or "format=b64" in q_lower or "b64=1" in q_lower or "v2rayn=1" in q_lower or "v2ray=1" in q_lower
+        is_clash = not is_b64 and (force_format == "clash" or "clash=1" in q_lower or "format=clash" in q_lower or any(k in ua for k in ("clash", "mihomo", "stash", "meta", "subconverter", "verge", "flclash")))
+        is_singbox = not is_b64 and (force_format in ("singbox", "sb", "json") or "singbox=1" in q_lower or "sb=1" in q_lower or "format=singbox" in q_lower or "format=json" in q_lower or "sing-box" in ua or "sbox" in ua or "nekoray" in ua)
 
-        if is_clash and not ("format=b64" in q_lower or "b64=1" in q_lower):
+        if is_clash:
             clash_file = os.path.join(SB_HOME, "clmi.yaml")
             if os.path.isfile(clash_file):
                 with open(clash_file, "rb") as f: content = f.read()
@@ -1928,7 +1951,7 @@ class SubHandler(BaseHTTPRequestHandler):
                 self.wfile.write(content)
                 return
 
-        if is_singbox and not ("format=b64" in q_lower or "b64=1" in q_lower):
+        if is_singbox:
             sb_file = os.path.join(SB_HOME, "sbox_client.json")
             if os.path.isfile(sb_file):
                 with open(sb_file, "rb") as f: content = f.read()
@@ -2047,6 +2070,7 @@ EOF
 }
 
 stop_sub_server() {
+  touch "$SB_HOME/sub_disabled" 2>/dev/null
   if [ "$SERVICE_TYPE" = "systemd" ] && [ "$IS_ROOT" = 1 ]; then
     systemctl stop sbbox-sub >/dev/null 2>&1
     systemctl disable sbbox-sub >/dev/null 2>&1
@@ -2063,16 +2087,23 @@ stop_sub_server() {
   info "订阅服务已停止"
 }
 
-# sbbox sub [show|off]
+# sbbox sub [show|on|off]
 cmd_sub() {
   case "${1:-show}" in
-    show)
+    show|on)
+      rm -f "$SB_HOME/sub_disabled" 2>/dev/null
+      sub=1
       local token port subhost
       token=$(cat "$SB_HOME/subtoken" 2>/dev/null)
       port=$(cat "$SB_HOME/subport" 2>/dev/null)
       subhost=$(cat "$SB_HOME/server_ip.log" 2>/dev/null)
+      if [ -z "$subhost" ]; then
+        v4v6
+        subhost=$(cat "$SB_HOME/server_ip.log" 2>/dev/null || echo "$server_ip")
+      fi
       if [ -z "$token" ] || [ -z "$port" ]; then
-        warn "未启用订阅。安装时加 sub=1，或执行：sub=1 sbbox list"
+        info "正在初始化并生成订阅链接……"
+        gen_sub
         return 0
       fi
       open_port "$port" tcp
@@ -2105,8 +2136,12 @@ cmd_sub() {
       echo -e "  ${CYAN}[本地配置]${NC} Clash/Mihomo: ${YELLOW}$SB_HOME/clmi.yaml${NC} | sing-box: ${YELLOW}$SB_HOME/sbox_client.json${NC}"
       echo "==========================================================="
       ;;
-    off) stop_sub_server ;;
-    *) echo "用法: sbbox sub [show|off]" ;;
+    off)
+      touch "$SB_HOME/sub_disabled" 2>/dev/null
+      sub=0
+      stop_sub_server
+      ;;
+    *) echo "用法: sbbox sub [show|on|off]" ;;
   esac
 }
 
@@ -3790,6 +3825,11 @@ save_state() {
     rm -f "$SB_HOME/hybw"
   fi
   [ -n "$sbrel" ] && echo "$sbrel" > "$SB_HOME/sbrel"
+  if [ "$sub" = 0 ]; then
+    touch "$SB_HOME/sub_disabled"
+  elif [ "$sub" = 1 ]; then
+    rm -f "$SB_HOME/sub_disabled"
+  fi
 }
 
 # 内核升级：备份 → 升级 → 用新内核校验配置 → 重启；任一步失败即回滚旧内核。
@@ -4172,11 +4212,22 @@ load_state() {
   [ -s "$SB_HOME/hyobfs_type" ] && hyobfs_type=$(cat "$SB_HOME/hyobfs_type")
   [ -s "$SB_HOME/api_port" ] && api_port=$(cat "$SB_HOME/api_port")
   [ -z "$sbrel_explicit" ] && [ -f "$SB_HOME/sbrel" ] && sbrel=$(cat "$SB_HOME/sbrel")
-  # 订阅曾启用过就保持启用，令牌/端口沿用，避免 list 后订阅地址变化
-  if [ -f "$SB_HOME/subtoken" ]; then
-    sub=1
-    subid=$(cat "$SB_HOME/subtoken")
-    subport=$(cat "$SB_HOME/subport" 2>/dev/null)
+  # 订阅服务：默认开启；若用户曾显式执行 sbbox sub off 则保持关闭（除非环境变量显式指定 sub=1）
+  if [ -z "$sub_explicit" ]; then
+    if [ -f "$SB_HOME/sub_disabled" ]; then
+      sub=0
+    else
+      sub=1
+    fi
+  else
+    case "$sub" in
+      0|no|off|false|NO|OFF|FALSE) sub=0 ;;
+      *) sub=1 ;;
+    esac
+  fi
+  if [ "$sub" = 1 ]; then
+    [ -f "$SB_HOME/subtoken" ] && subid=$(cat "$SB_HOME/subtoken" 2>/dev/null)
+    [ -f "$SB_HOME/subport" ] && subport=$(cat "$SB_HOME/subport" 2>/dev/null)
   fi
   server_ip=$(cat "$SB_HOME/server_ip.log" 2>/dev/null || echo "")
   get_cert_paths

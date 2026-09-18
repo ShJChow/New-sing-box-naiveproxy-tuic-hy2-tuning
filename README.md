@@ -244,7 +244,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 | `sblevel` | `error` | 服务端日志级别，`off` 完全不落盘（日志会记录访问过的域名） |
 | `blkport` | **1（默认开启）** | 阻断出站 25/465/587/SMB 端口，防凭据外泄后被拿去发垃圾邮件；关闭用 `blkport=0` |
 | `hyup` / `hydown` | 空 | Hysteria2 上/下行 Mbps，**两个都设**才启用 Brutal 拥塞控制 |
-| `sub` | 空 | 启用 v2rayN 订阅服务（`sub=1`） |
+| `sub` | **1（默认开启）** | 启用 v2rayN / 通用订阅服务（默认开启 1；关闭用 `sub=0` 或 `sbbox sub off`） |
 | `subport` | 随机 | 订阅服务端口 |
 | `subid` | 独立随机 | 订阅令牌（URL 路径，相当于密码） |
 | `sub_nonaive` | 空 | 剔除 Naiveproxy 节点（客户端不支持 naive+ 链接时用 `sub_nonaive=1`） |
@@ -305,7 +305,7 @@ sbrel=pre sbbox up        # 升级/切换到 pre 通道
 
 ## 八、v2rayN 订阅与客户端配置
 
-安装时加 `sub=1`，脚本会生成 base64 订阅并在本机启动 HTTP 静态托管服务。
+脚本默认开启订阅服务（`sub=1`），自动生成 base64 订阅并在本机启动 HTTP 静态托管服务；如需关闭可传 `sub=0` 或执行 `sbbox sub off`。
 
 ### 1. 证书指纹与 SHA-256 自动注入（默认开启）
 脚本在安装与生成配置时，会自动调用 OpenSSL 从活动证书提取以下信息并注入：
