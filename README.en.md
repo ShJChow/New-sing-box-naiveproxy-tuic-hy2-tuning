@@ -52,7 +52,8 @@ Bundled with:
 - [20. v2.7.8 — Kernel Upgrade to 1.15.0-alpha.5 with Before/After Measurements](#20-v278--kernel-upgrade-to-1150-alpha5-with-beforeafter-measurements)
 - [21. v2.7.9 — NaiveProxy Flow-Control Windows: h2 Was Hard-Capped at ~90 Mbps](#21-v279--naiveproxy-flow-control-windows-h2-was-hard-capped-at-90-mbps)
 - [22. v2.7.10 — External Hysteria2 Initial Windows Raised: Upload 109→141, Slow Line 3→30](#22-v2710--external-hysteria2-initial-windows-raised-upload-109141-slow-line-330)
-- [23. Disclaimer](#23-disclaimer)
+- [23. v2.7.11 / v2.7.12 — Subscription Service On by Default; AnyTLS Port No Longer Reserved](#23-v2711--v2712--subscription-service-on-by-default-anytls-port-no-longer-reserved)
+- [24. Disclaimer](#24-disclaimer)
 
 ---
 
@@ -676,7 +677,12 @@ Applies to the **external** Hysteria2 deployment (official hysteria binary + `hy
 - **Applied live** to `/etc/hysteria/sbbox.yaml` (max windows unchanged at 16 MB / 64 MB) and re-verified: fast-line 5 MB upload 34/31 → 61/55, 40 MB 109/129 → 141/194, slow-line 5 MB 3 → 30, unshaped RTT 0 645↓/406↑ with no regression; `SAMPLES=25 run_test.py` 12/12 PASS. **Script:** `hy2_external_sync_secrets` (run by `sbbox rotate`) writes the new values into a fresh quic block and migrates the old hardened values by exact match, leaving user-customised values alone. Other external deployments can apply it by hand: `sed -i -E 's/^(  initStreamReceiveWindow: )524288$/\18388608/; s/^(  initConnReceiveWindow: )1048576$/\120971520/' /etc/hysteria/sbbox.yaml && systemctl restart hysteria-sbbox`.
 - **Benchmark caveat: shaping queues must be bounded.** An outer tbf with an inner netem whose queue limit is huge emulates a ~1 s buffer (ping during uploads ~1000 ms), where Brutal fills the buffer and BBR is misled into wrong conclusions. All numbers here come from the corrected harness (netem `rate` with a bounded `limit`).
 
-## 23. Disclaimer
+## 23. v2.7.11 / v2.7.12 — Subscription Service On by Default; AnyTLS Port No Longer Reserved
+
+- **v2.7.11:** the HTTP subscription service is enabled by default (`sub=1`): installing or running `sbbox list` allocates a port, generates a token and starts the service. Disable with `sub=0` or `sbbox sub off` (persisted as a `sub_disabled` marker); `sbbox sub [on]` re-enables it. Port allocation avoids ports already in use and NAT port-range hijacks.
+- **v2.7.12:** this host no longer runs the AnyTLS node (still supported; re-enable with `anyp=1`), so the tuning no longer adds 28443 to `net.ipv4.ip_local_reserved_ports`, returning it to the ephemeral pool. Verify with `sysctl -n net.ipv4.ip_local_reserved_ports`. If you still run AnyTLS, the only effect is that an outbound short-lived connection could in theory briefly take the port; a server that binds first is unaffected, and you can add 28443 back by hand if you ever hit a conflict.
+
+## 24. Disclaimer
 
 This project is provided for network technology research and educational purposes only. Users are responsible for complying with local laws and regulations.
 
