@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.13"
+SBBOX_VERSION="v2.7.14"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -66,7 +66,7 @@ tup="${tup:-}" hyp="${hyp:-}" nvp="${nvp:-}"
 reap="${reap:-${vlp:-${rea:-}}}"            # 最新 VLESS-Reality TCP 节点（免域名免证书）
 reap_sni="${reap_sni:-${reality_sni:-}}"    # Reality 伪装目标 SNI（默认 gateway.icloud.com）
 port_rea="${port_rea:-${port_vl:-}}"        # Reality 监听端口（默认随机 10000-65535）
-anyp="${anyp:-}"                            # sing-box 1.14 新特性：AnyTLS + TLS 节点（抗 TLS-in-TLS 指纹）
+anyp="${anyp:-${any:-}}"                    # sing-box 1.14 新特性：AnyTLS + TLS 节点（抗 TLS-in-TLS 指纹）
 port_any="${port_any:-}"                    # AnyTLS 监听端口（默认随机 10000-65535）
 hyjpt="${hyjpt:-}"                          # Hysteria2 跳跃端口，默认关闭（空）；如 "25000:38000"
 hyobfs="${hyobfs:-1}"                       # Hysteria2 salamander 混淆，默认开启；关闭用 hyobfs=0
@@ -887,7 +887,7 @@ apply_tuning() {
   try_sysctl net.ipv4.tcp_max_syn_backlog "$NETDEV_BACKLOG"
   try_sysctl net.ipv4.tcp_max_tw_buckets 65536
   try_sysctl net.ipv4.ip_local_port_range "1024 65535"
-  try_sysctl net.ipv4.ip_local_reserved_ports "8001,8003,8443,8445,8446,10489,10800-10809,11801-11805,18793,23106,44116"
+  try_sysctl net.ipv4.ip_local_reserved_ports "8001,8003,8443,8445,8446,10489,10800-10809,11801-11805,18793,23106,28443,44116"
 
   # conntrack 仅在模块已加载时调整
   if [ "$CONNTRACK_MAX" -gt 0 ] && [ -r /proc/sys/net/netfilter/nf_conntrack_max ]; then
@@ -1505,7 +1505,7 @@ EOF
             ],
             "tls": {
                 "enabled": true,
-                "server_name": "$sni",
+                "server_name": "$ym",
                 "min_version": "1.3",
                 "alpn": [ "h2", "http/1.1" ],
                 "certificate_path": "$cert_path",
@@ -1697,7 +1697,7 @@ gen_client() {
     [ -n "$_sha" ] && any_pin="&pinSHA256=$_sha"
     [ -n "$_sha" ] && any_hpkp="&hpkp=$_sha"
     [ -n "$_fp" ] && any_pcs="&pcs=$_fp"
-    any_link="anytls://$pw_any@$add:$port_any?peer=$sni&sni=$sni&alpn=h2,http%2F1.1&tfo=1&tls13=1&fp=chrome&udp=1&security=tls&insecure=0&allowInsecure=0$any_hpkp$any_pin$any_pcs#anytls-$node_tag"
+    any_link="anytls://$pw_any@$add:$port_any?peer=$sni&sni=$sni&alpn=h2,http%2F1.1&tls13=1&fp=chrome&udp=1&security=tls&insecure=0&allowInsecure=0$any_hpkp$any_pin$any_pcs#anytls-$node_tag"
     echo "$any_link" >> "$SB_LINK"
     echo "💣【 🥈 AnyTLS + TLS (新一代 TCP 主力) 】节点信息如下："
     echo "$any_link"; echo
@@ -3445,8 +3445,8 @@ cmd_brutal() {
 cmd_port() {
   [ -x "$SB_BIN" ] || { error "未安装 sbbox，无法更改端口"; exit 1; }
   load_state
-  local in_tu="${1:-}" in_hy2="${2:-}" in_nv="${3:-}" in_rea="${4:-}" in_sub="${5:-}"
-  local old_tu="$port_tu" old_hy2="$port_hy2" old_nv="$port_nv" old_rea="$port_rea" old_sub="$subport"
+  local in_tu="${1:-}" in_hy2="${2:-}" in_nv="${3:-}" in_rea="${4:-}" in_any="${5:-}" in_sub="${6:-}"
+  local old_tu="$port_tu" old_hy2="$port_hy2" old_nv="$port_nv" old_rea="$port_rea" old_any="$port_any" old_sub="$subport"
 
   if [ "$in_tu" = "show" ]; then
     echo "当前 sbbox 监听端口："
@@ -3454,6 +3454,7 @@ cmd_port() {
     [ -n "$old_hy2" ] && echo "  Hysteria2:     $old_hy2 (UDP)"
     [ -n "$old_nv" ] && echo "  Naiveproxy:    $old_nv (TCP/UDP)"
     [ -n "$old_rea" ] && echo "  VLESS-Reality: $old_rea (TCP)"
+    [ -n "$old_any" ] && echo "  AnyTLS:        $old_any (TCP)"
     [ -n "$old_sub" ] && echo "  订阅服务:      $old_sub (TCP)"
     return 0
   fi
@@ -3464,14 +3465,14 @@ cmd_port() {
   local used
   used=$(ss -tuln 2>/dev/null | awk 'NR>1 {print $5}' | awk -F: '{print $NF}' | tr -d '%' | sort -u)
 
-  local new_tu="" new_hy2="" new_nv="" new_rea="" new_sub=""
+  local new_tu="" new_hy2="" new_nv="" new_rea="" new_any="" new_sub=""
 
   _gen_rand_port() {
     local p
     while :; do
       p=$(shuf -i 10000-65535 -n 1)
       if echo "$used" | grep -qx "$p"; then continue; fi
-      if [ "$p" = "$new_tu" ] || [ "$p" = "$new_hy2" ] || [ "$p" = "$new_nv" ] || [ "$p" = "$new_rea" ] || [ "$p" = "$new_sub" ]; then continue; fi
+      if [ "$p" = "$new_tu" ] || [ "$p" = "$new_hy2" ] || [ "$p" = "$new_nv" ] || [ "$p" = "$new_rea" ] || [ "$p" = "$new_any" ] || [ "$p" = "$new_sub" ]; then continue; fi
       if [ -n "$old_sub" ] && [ -z "$new_sub" ] && [ "$p" = "$old_sub" ]; then continue; fi
       if [ -n "$hyjpt" ]; then
         local hop_start hop_end
@@ -3506,6 +3507,12 @@ cmd_port() {
     new_rea="$in_rea"
   elif [ "$reap" = yes ]; then
     new_rea=$(_gen_rand_port)
+  fi
+
+  if [ -n "$in_any" ] && [ "$in_any" != "rand" ] && [ "$in_any" != "random" ]; then
+    new_any="$in_any"
+  elif [ "$anyp" = yes ]; then
+    new_any=$(_gen_rand_port)
   fi
 
   if [ -n "$in_sub" ]; then
@@ -3550,6 +3557,7 @@ cmd_port() {
   [ -n "$old_hy2" ] && _clean_old_port "$old_hy2" udp
   [ -n "$old_nv" ] && { _clean_old_port "$old_nv" tcp; _clean_old_port "$old_nv" udp; }
   [ -n "$old_rea" ] && _clean_old_port "$old_rea" tcp
+  [ -n "$old_any" ] && _clean_old_port "$old_any" tcp
   [ -n "$new_sub" ] && [ -n "$old_sub" ] && _clean_old_port "$old_sub" tcp
 
   # 清理旧 Hysteria2 DNAT 规则
@@ -3563,6 +3571,7 @@ cmd_port() {
   [ -n "$new_hy2" ] && { echo "$new_hy2" > "$SB_HOME/port_hy2"; port_hy2="$new_hy2"; }
   [ -n "$new_nv" ] && { echo "$new_nv" > "$SB_HOME/port_nv"; port_nv="$new_nv"; }
   [ -n "$new_rea" ] && { echo "$new_rea" > "$SB_HOME/port_rea"; port_rea="$new_rea"; }
+  [ -n "$new_any" ] && { echo "$new_any" > "$SB_HOME/port_any"; port_any="$new_any"; }
   [ -n "$new_sub" ] && { echo "$new_sub" > "$SB_HOME/subport"; subport="$new_sub"; }
 
   v4v6
@@ -3589,6 +3598,7 @@ cmd_port() {
   [ -n "$new_hy2" ] && echo -e "${GREEN}Hysteria2 端口:   ${new_hy2} (UDP)${NC}"
   [ -n "$new_nv" ] && echo -e "${GREEN}Naiveproxy 端口:  ${new_nv} (TCP/UDP)${NC}"
   [ -n "$new_rea" ] && echo -e "${GREEN}VLESS-Reality 端口: ${new_rea} (TCP)${NC}"
+  [ -n "$new_any" ] && echo -e "${GREEN}AnyTLS 端口:        ${new_any} (TCP)${NC}"
   [ -n "$subport" ] && echo -e "${GREEN}订阅服务端口:     ${subport} (TCP)${NC}"
   local live_api
   live_api=$(cat "$SB_HOME/api_port" 2>/dev/null)
