@@ -1506,8 +1506,8 @@ EOF
             "tls": {
                 "enabled": true,
                 "server_name": "$ym",
-                "min_version": "1.3",
-                "alpn": [ "h2", "http/1.1" ],
+                "min_version": "1.2",
+                "alpn": [ "h3", "h2", "http/1.1", "http/1.2" ],
                 "certificate_path": "$cert_path",
                 "key_path": "$key_path",
                 "handshake_timeout": "15s"
@@ -1693,7 +1693,7 @@ gen_client() {
 
   # 2. 🥈 AnyTLS (新一代 TCP 主力)
   if [ -n "$anyp" ] && [ "$CERT_OK" = 1 ]; then
-    any_link="anytls://$pw_any@$add:$port_any?peer=$sni&sni=$sni&alpn=h2%2Chttp%2F1.1&insecure=0&allowInsecure=0#anytls-$node_tag"
+    any_link="anytls://$pw_any@$add:$port_any?peer=$sni&sni=$sni&alpn=h3%2Ch2%2Chttp%2F1.1%2Chttp%2F1.2&tls12=1&insecure=0&allowInsecure=0#anytls-$node_tag"
     echo "$any_link" >> "$SB_LINK"
     echo "💣【 🥈 AnyTLS + TLS (新一代 TCP 主力) 】节点信息如下："
     echo "$any_link"; echo
@@ -2222,10 +2222,12 @@ gen_client_sbox() {
         "tls": {
             "enabled": true,
             "server_name": "'"$sni"'",
-            "min_version": "1.3",
+            "min_version": "1.2",
             "alpn": [
+                "h3",
                 "h2",
-                "http/1.1"
+                "http/1.1",
+                "http/1.2"
             ],
             "insecure": '"$msins"',
             "utls": {
@@ -2477,8 +2479,10 @@ gen_client_clash() {
     sni: $sni
     skip-cert-verify: false
     alpn:
+      - h3
       - h2
       - http/1.1
+      - http/1.2
     client-fingerprint: chrome
     udp: true
     idle-session-check-interval: 30s
