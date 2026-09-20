@@ -1693,11 +1693,7 @@ gen_client() {
 
   # 2. 🥈 AnyTLS (新一代 TCP 主力)
   if [ -n "$anyp" ] && [ "$CERT_OK" = 1 ]; then
-    local any_pin="" any_pcs="" any_hpkp=""
-    [ -n "$_sha" ] && any_pin="&pinSHA256=$_sha"
-    [ -n "$_sha" ] && any_hpkp="&hpkp=$_sha"
-    [ -n "$_fp" ] && any_pcs="&pcs=$_fp"
-    any_link="anytls://$pw_any@$add:$port_any?peer=$sni&sni=$sni&alpn=h2,http%2F1.1&tls13=1&fp=chrome&udp=1&security=tls&insecure=0&allowInsecure=0$any_hpkp$any_pin$any_pcs#anytls-$node_tag"
+    any_link="anytls://$pw_any@$add:$port_any?peer=$sni&sni=$sni&alpn=h2%2Chttp%2F1.1&insecure=0&allowInsecure=0#anytls-$node_tag"
     echo "$any_link" >> "$SB_LINK"
     echo "💣【 🥈 AnyTLS + TLS (新一代 TCP 主力) 】节点信息如下："
     echo "$any_link"; echo
