@@ -126,16 +126,9 @@ bash <(curl -Ls https://raw.githubusercontent.com/yonggekkk/acme-yg/main/acme.sh
    - **推荐方式 B（Cloudflare API 模式）**：输入 `2`（无需停用 80 端口，输入 CF Global API Key 或 Token 即可全自动签发）；
 3. **输入主域名与次域名（双域名 SAN 证书）**：
    - **主域名**：输入你的直连域名（如 `reality.example.com` 或 `naive.example.com`）
-   - **泛域名 / 附加域名**：输入你的 CDN 域名（如 `cdn.example.com`）
 4. **安装并输出证书路径**： 申请成功后，证书会自动保存在 `/root/ygkkkca/` 目录下。
 
-#### 步骤 4：将证书部署到标准路径（一键复制）
-```bash
-mkdir -p /etc/ssl/private
-cp -f /root/ygkkkca/reality.example.com/fullchain.cer /etc/ssl/private/fullchain.cer 2>/dev/null || cp -f /root/ygkkkca/cert.crt /etc/ssl/private/fullchain.cer 2>/dev/null || true
-cp -f /root/ygkkkca/reality.example.com/private.key /etc/ssl/private/private.key 2>/dev/null || cp -f /root/ygkkkca/private.key /etc/ssl/private/private.key 2>/dev/null || true
-chmod 600 /etc/ssl/private/*.key /etc/ssl/private/*.cer 2>/dev/null || true
-```
+
 
 >  **提示**：部署脚本在安装时会自动优先复用 `/etc/ssl/private/`、`/root/ygkkkca/` 或 `~/.acme.sh/` 目录下已存在的匹配有效证书，无需重复申请。
 
