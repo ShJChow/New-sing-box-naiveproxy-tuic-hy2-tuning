@@ -807,19 +807,19 @@ apply_tuning() {
   local SOCK_MEM_DEF UDP_MEM_MIN
   if [ "$MEM_MB" -ge 16384 ]; then
     # 大内存档 (>= 16GB)
-    TUNE_TIER="large";  SOCK_MEM_MAX=67108864; TCP_MEM_MAX=33554432; NETDEV_BACKLOG=65536; CONNTRACK_MAX=1048576; NETDEV_BUDGET=6000
+    TUNE_TIER="large";  SOCK_MEM_MAX=134217728; TCP_MEM_MAX=67108864; NETDEV_BACKLOG=65536; CONNTRACK_MAX=1048576; NETDEV_BUDGET=6000
     SOCK_MEM_DEF=2097152; UDP_MEM_MIN=131072
   elif [ "$MEM_MB" -ge 4096 ]; then
     # 标准档 (4GB - 16GB)
-    TUNE_TIER="medium"; SOCK_MEM_MAX=33554432; TCP_MEM_MAX=16777216; NETDEV_BACKLOG=32768; CONNTRACK_MAX=262144; NETDEV_BUDGET=6000
+    TUNE_TIER="medium"; SOCK_MEM_MAX=67108864; TCP_MEM_MAX=33554432; NETDEV_BACKLOG=32768; CONNTRACK_MAX=262144; NETDEV_BUDGET=6000
     SOCK_MEM_DEF=1048576; UDP_MEM_MIN=65536
   elif [ "$MEM_MB" -ge 1536 ]; then
     # 入门档 (1.5GB - 4GB)
-    TUNE_TIER="entry";  SOCK_MEM_MAX=16777216; TCP_MEM_MAX=8388608;  NETDEV_BACKLOG=16384; CONNTRACK_MAX=65536; NETDEV_BUDGET=""
+    TUNE_TIER="entry";  SOCK_MEM_MAX=33554432; TCP_MEM_MAX=16777216;  NETDEV_BACKLOG=16384; CONNTRACK_MAX=65536; NETDEV_BUDGET=""
     SOCK_MEM_DEF=524288; UDP_MEM_MIN=32768
   else
     # 极小内存档 (< 1.5GB) - 严防 OOM 熔断模式
-    TUNE_TIER="small";  SOCK_MEM_MAX=4194304;  TCP_MEM_MAX=2097152;  NETDEV_BACKLOG=4096;  CONNTRACK_MAX=0; NETDEV_BUDGET=""
+    TUNE_TIER="small";  SOCK_MEM_MAX=8388608;  TCP_MEM_MAX=4194304;  NETDEV_BACKLOG=4096;  CONNTRACK_MAX=0; NETDEV_BUDGET=""
     SOCK_MEM_DEF=262144; UDP_MEM_MIN=16384
   fi
   # 千兆以上链路在 16GB+ 内存机型上可放宽缓冲上限
@@ -856,8 +856,9 @@ apply_tuning() {
   try_sysctl net.core.wmem_default "$SOCK_MEM_DEF"
   try_sysctl net.ipv4.udp_rmem_min "$UDP_MEM_MIN"
   try_sysctl net.ipv4.udp_wmem_min "$UDP_MEM_MIN"
-  try_sysctl net.ipv4.tcp_rmem "4096 131072 ${TCP_MEM_MAX}"
-  try_sysctl net.ipv4.tcp_wmem "4096 131072 ${TCP_MEM_MAX}"
+  try_sysctl net.ipv4.tcp_rmem "4096 87380 ${TCP_MEM_MAX}"
+  try_sysctl net.ipv4.tcp_wmem "4096 65536 ${TCP_MEM_MAX}"
+  try_sysctl net.ipv4.tcp_limit_output_bytes 4194304
   try_sysctl net.ipv4.tcp_adv_win_scale 1
   try_sysctl net.ipv4.tcp_autocorking 1
   try_sysctl net.ipv4.tcp_comp_sack_nr 44
@@ -931,7 +932,15 @@ apply_tuning() {
   try_sysctl fs.nr_open 1048576
   align_default_nofile
 
-  # ---------- 落盘（只写成功项，避免重启后 sysctl --system 报错） ----------
+  # ---------- 落盘（清理冲突并只写成功项，避免重启后 sysctl --system 报错） ----------
+  local _conflicts=(/etc/sysctl.d/99-joeyblog.conf /etc/sysctl.d/99-sysctl.conf)
+  for _cf in "${_conflicts[@]}"; do
+    if [ -f "$_cf" ]; then
+      rm -f "$_cf"
+      info "已清理冲突的第三方配置: $_cf"
+    fi
+  done
+
   if [ "${#SYSCTL_APPLIED[@]}" -gt 0 ]; then
     {
       echo "# sbbox 流控调优，由 sbbox tune on 生成"
@@ -995,7 +1004,21 @@ DROPINEOF
 
   # ---------- Before / After ----------
   echo ""
+  local _buf_mb _cap_mb
+  if [ "$MEM_MB" -ge 16384 ]; then _buf_mb=128; _cap_mb=128;
+  elif [ "$MEM_MB" -ge 4096 ]; then _buf_mb=64; _cap_mb=64;
+  elif [ "$MEM_MB" -ge 1536 ]; then _buf_mb=32; _cap_mb=32;
+  else _buf_mb=16; _cap_mb=16; fi
+
   echo -e "${CYAN}[+] 流控调优 Before / After${NC}"
+  echo -e "  推荐缓冲区：             ${GREEN}${_buf_mb}MB${NC}"
+  echo -e "  内存保护上限：           ${GREEN}${_cap_mb}MB${NC}"
+  echo -e "  队列算法：               ${GREEN}$(sysctl_get net.core.default_qdisc)${NC}"
+  echo -e "  拥塞控制：               ${GREEN}$(sysctl_get net.ipv4.tcp_congestion_control) (BBR $(detect_bbr_version))${NC}"
+  echo -e "  tcp_wmem:                 ${GREEN}$(sysctl_get net.ipv4.tcp_wmem)${NC}"
+  echo -e "  tcp_rmem:                 ${GREEN}$(sysctl_get net.ipv4.tcp_rmem)${NC}"
+  echo -e "  tcp_limit_output_bytes:   ${GREEN}$(sysctl_get net.ipv4.tcp_limit_output_bytes)${NC}"
+  echo -e "  tcp_slow_start_after_idle: ${GREEN}$(sysctl_get net.ipv4.tcp_slow_start_after_idle)${NC}"
   printf '  %-28s %-18s -> %s\n' "net.core.default_qdisc"          "${BEFORE_QDISC:--}" "$(sysctl_get net.core.default_qdisc)"
   printf '  %-28s %-18s -> %s\n' "net.ipv4.tcp_congestion_control" "${BEFORE_CC:--}"    "$(sysctl_get net.ipv4.tcp_congestion_control)"
   printf '  %-28s %-18s -> %s\n' "net.core.rmem_max"               "${BEFORE_RMEM:--}"  "$(sysctl_get net.core.rmem_max)"
@@ -1040,19 +1063,27 @@ tune_off() {
 }
 
 tune_show() {
-  local MEM_MB CPU_CORES ARCH TUNE_TIER
+  local MEM_MB CPU_CORES ARCH TUNE_TIER buf_mb cap_mb
   MEM_MB=$(awk '/^MemTotal:/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
   CPU_CORES=$(nproc 2>/dev/null || echo 1)
   ARCH=$(uname -m 2>/dev/null || echo unknown)
-  if [ "$MEM_MB" -ge 16384 ]; then TUNE_TIER="large";
-  elif [ "$MEM_MB" -ge 4096 ]; then TUNE_TIER="medium";
-  else TUNE_TIER="small"; fi
+  if [ "$MEM_MB" -ge 16384 ]; then TUNE_TIER="large"; buf_mb=128; cap_mb=128;
+  elif [ "$MEM_MB" -ge 4096 ]; then TUNE_TIER="medium"; buf_mb=64; cap_mb=64;
+  elif [ "$MEM_MB" -ge 1536 ]; then TUNE_TIER="entry"; buf_mb=32; cap_mb=32;
+  else TUNE_TIER="small"; buf_mb=16; cap_mb=16; fi
+
   echo -e "${CYAN}[+] 流控状态${NC}"
-  printf '  %-32s %s\n' "net.core.default_qdisc"          "$(sysctl_get net.core.default_qdisc)"
-  printf '  %-32s %s\n' "net.ipv4.tcp_congestion_control" "$(sysctl_get net.ipv4.tcp_congestion_control)"
+  echo -e "  推荐缓冲区：             ${GREEN}${buf_mb}MB${NC}"
+  echo -e "  内存保护上限：           ${GREEN}${cap_mb}MB${NC}"
+  echo -e "  队列算法：               ${GREEN}$(sysctl_get net.core.default_qdisc)${NC}"
+  echo -e "  拥塞控制：               ${GREEN}$(sysctl_get net.ipv4.tcp_congestion_control)${NC}"
   # BBR 有 v1 / v3 两代，sysctl 里都叫 "bbr"，只看名字分不出来。
   # v3 把 ECN 与丢包率纳入控制环、ProbeBW 改为轮次推进、并预留 ~15% Headroom。
   printf '  %-32s %s\n' "  └─ BBR 版本" "$(detect_bbr_version)"
+  echo -e "  tcp_wmem:                 ${GREEN}$(sysctl_get net.ipv4.tcp_wmem)${NC}"
+  echo -e "  tcp_rmem:                 ${GREEN}$(sysctl_get net.ipv4.tcp_rmem)${NC}"
+  echo -e "  tcp_limit_output_bytes:   ${GREEN}$(sysctl_get net.ipv4.tcp_limit_output_bytes)${NC}"
+  echo -e "  tcp_slow_start_after_idle: ${GREEN}$(sysctl_get net.ipv4.tcp_slow_start_after_idle)${NC}"
   printf '  %-32s %s\n' "net.core.rmem_max"               "$(sysctl_get net.core.rmem_max)"
   printf '  %-32s %s\n' "net.ipv4.tcp_fastopen"           "$(sysctl_get net.ipv4.tcp_fastopen)"
   printf '  %-32s %s\n' "机型 / 调优档位" "${CPU_CORES} 核 / ${MEM_MB} MB / ${ARCH} → ${TUNE_TIER}"
@@ -1068,6 +1099,8 @@ tune_show() {
   fi
   if [ -f "$SYSCTL_CONF" ]; then
     printf '  %-32s %s\n' "调优配置文件" "$SYSCTL_CONF（已启用）"
+  elif [ -f /etc/sysctl.d/99-xray-xhttp.conf ]; then
+    printf '  %-32s %s\n' "调优配置文件" "/etc/sysctl.d/99-xray-xhttp.conf（已由 xh 启用生效）"
   else
     printf '  %-32s %s\n' "调优配置文件" "未启用（安装期默认已开启，如被移除请 sbbox res 重装）"
   fi
