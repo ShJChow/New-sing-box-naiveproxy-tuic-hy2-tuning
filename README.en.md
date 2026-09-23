@@ -57,7 +57,8 @@ Bundled with:
 - [25. v2.7.15 — sing-box alpha.7 / Hysteria 2.12.3, No MPTCP on the vless-reality Client, naive-h2 Diagnosis](#25-v2715--sing-box-alpha7--hysteria-2123-no-mptcp-on-the-vless-reality-client-naive-h2-diagnosis)
 - [26. v2.7.16 — Fix: Stable sing-box Could Not Load the Subscription; the Mihomo Subscription Failed to Load](#26-v2716--fix-stable-sing-box-could-not-load-the-subscription-the-mihomo-subscription-failed-to-load)
 - [27. v2.7.17 — Firewall Accept Rules No Longer Jump to the Top; fs.suid_dumpable = 0](#27-v2717--firewall-accept-rules-no-longer-jump-to-the-top-fssuid_dumpable--0)
-- [28. Disclaimer](#28-disclaimer)
+- [28. v2.7.18 — Stop Sending ICMP Redirects (send_redirects = 0 on the Uplink)](#28-v2718--stop-sending-icmp-redirects-send_redirects--0-on-the-uplink)
+- [29. Disclaimer](#29-disclaimer)
 
 ---
 
@@ -734,7 +735,11 @@ Earlier releases only validated client configs with this host's pre-release sing
 - **Fix: `open_port` inserted every accept rule at INPUT position 1**, ahead of `lo`, `RELATED,ESTABLISHED` and the `INVALID` drop — v2.7.14's `tcp 28443 ACCEPT` became the first INPUT rule in both iptables and ip6tables. Worse, for a UDP port the accept landed **before its own QDoS hashlimit drop**, silently disabling the rate limit. The new `fw_accept_rule` inserts just before a catch-all `-j REJECT|DROP` (one without port/state matches, as shipped by Oracle's stock image), or appends if there is none, keeping `lo → ESTABLISHED → INVALID → rate limits → port accepts → catch-all`. Tested in a throwaway netns with and without a trailing REJECT (correct placement, no duplicates on repeat calls). On the live host 28443 was appended first and the top copy then deleted (no gap), then saved with `netfilter-persistent`; AnyTLS measured 298/72 Mbps afterwards.
 - **`fs.suid_dumpable = 0`** is now written by the tuning (it was the kernel default 2 on the live host), so a crashing privileged process cannot dump memory holding keys, UUIDs or decrypted traffic; complements `kernel.core_pattern = core` and `* hard core 0`. The co-located Xray project adds the same key in v4.9.32.
 
-## 28. Disclaimer
+## 28. v2.7.18 — Stop Sending ICMP Redirects (send_redirects = 0 on the Uplink)
+
+With Docker installed `ip_forward = 1`, so the kernel sends ICMP redirects when it forwards a packet back out its ingress interface, leaking routing information to the local segment. Sending is on if **either** `all` or the interface is 1; `all`/`default` were 0 but the uplink `enp0s6` — present before boot, so untouched by `default` — was 1, so redirects were being sent. Negative control (host bridge plus two netns, A forced via the host to reach B, ICMP type 5 captured on A): `all=0` with the bridge at 1 → **2 redirects**; bridge at 0 → **0**. The tuning now writes `send_redirects = 0` for `all`, `default` and the current default-route interface (a `.` in a VLAN name becomes `/`); systemd's udev rule re-applies per-interface keys from `sysctl.d` when the NIC appears, so it persists across reboots. Receive side unchanged: with forwarding on, `accept_redirects` requires both `all` and the interface, and `all = 0` is enough. Matches the co-located Xray project's v4.9.33. Regression 13/13 PASS.
+
+## 29. Disclaimer
 
 This project is provided for network technology research and educational purposes only. Users are responsible for complying with local laws and regulations.
 

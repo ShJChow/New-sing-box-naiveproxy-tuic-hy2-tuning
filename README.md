@@ -66,7 +66,8 @@
 - [三十四、v2.7.15 sing-box alpha.7 / Hysteria 2.12.3、vless-reality 客户端去 MPTCP、naive-h2 诊断](#三十四v2715-sing-box-alpha7--hysteria-2123vless-reality-客户端去-mptcpnaive-h2-诊断)
 - [三十五、v2.7.16 修复：稳定版 sing-box 加载不了订阅、Mihomo 订阅整份加载失败](#三十五v2716-修复稳定版-sing-box-加载不了订阅mihomo-订阅整份加载失败)
 - [三十六、v2.7.17 防火墙放行规则不再顶到最前、fs.suid_dumpable = 0](#三十六v2717-防火墙放行规则不再顶到最前fssuid_dumpable--0)
-- [三十七、免责声明](#三十七免责声明)
+- [三十七、v2.7.18 不再发送 ICMP 重定向（出口网卡 send_redirects = 0）](#三十七v2718-不再发送-icmp-重定向出口网卡-send_redirects--0)
+- [三十八、免责声明](#三十八免责声明)
 
 ---
 
@@ -2077,7 +2078,29 @@ ip6tables -S INPUT | sed -n 2,4p
 
 ---
 
-## 三十七、免责声明
+## 三十七、v2.7.18 不再发送 ICMP 重定向（出口网卡 send_redirects = 0）
+
+**问题**：装了 Docker 的机器 `ip_forward = 1`，转发「同口进、同口出」的包时内核会发 ICMP 重定向，向同网段暴露本机路由信息。
+发送侧按「`all` 与网卡**任一**为 1 即生效」：线上 `all` / `default` 是 0，但开机前就已存在的出口网卡 `enp0s6` 是 1（`default` 管不到它），
+所以实际一直在发。
+
+**负对照**：宿主网桥 + 两个 netns，A 用 `/32` 路由强制经宿主到 B，在 A 上抓 ICMP type 5——
+`all=0`、网桥 `send_redirects=1` 时收到 **2 个**重定向；网桥改为 0 后 **0 个**。
+
+**修复**：调优写入 `all` / `default` / 当前出口网卡三处 `send_redirects = 0`（出口网卡按默认路由识别，VLAN 名里的 `.` 转为 `/`）。
+网卡级的键写进 `sysctl.d` 后，systemd 的 udev 规则在网卡出现时会按网卡名重新套用，重启后保持。
+接收侧不改：`ip_forward = 1` 时 `accept_redirects` 要求 all 与网卡同时为 1，`all = 0` 已足够。
+
+```bash
+sysctl net.ipv4.conf.all.send_redirects net.ipv4.conf.default.send_redirects \
+       net.ipv4.conf.$(cat /root/sbbox/nic 2>/dev/null || ip route show default | awk '{print $5; exit}').send_redirects
+```
+
+同机 Xray 项目在 v4.9.33 同步加入，两边 sysctl 键值集合保持一致。回归测试 13/13 PASS。
+
+---
+
+## 三十八、免责声明
 
 本项目仅供网络技术研究与学习交流使用。使用者须自行遵守所在国家/地区的法律法规，因使用本脚本产生的一切后果由使用者自行承担。
 

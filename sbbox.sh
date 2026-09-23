@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.17"
+SBBOX_VERSION="v2.7.18"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -928,6 +928,15 @@ apply_tuning() {
   # 代理进程内存里有私钥、UUID、解密后的流量，默认值 2（suidsafe）仍会 dump 到 core_pattern 指定处；
   # 0 则一律不 dump。配合 limits.conf 的 `* hard core 0` 与 core_pattern = core。
   try_sysctl fs.suid_dumpable 0
+  # 不发送 ICMP 重定向（本机不是路由器；装了 Docker 时 ip_forward=1，会对「同口进同口出」的转发包发重定向）。
+  # 发送侧按「all 与网卡任一为 1 即生效」计算，只写 all/default 不够：开机前就已存在的出口网卡
+  # 不受 default 影响，线上 enp0s6 即为 1，实测（netns + 网桥负对照）all=0、网卡=1 时仍发出重定向，网卡=0 后为 0。
+  # 所以出口网卡也写一条；它落进 sysctl.d 后，udev 在网卡出现时会按网卡名重新套用。
+  try_sysctl net.ipv4.conf.all.send_redirects 0
+  try_sysctl net.ipv4.conf.default.send_redirects 0
+  local _rd_if
+  _rd_if=$(ip route show default 2>/dev/null | awk '/default/{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+  [ -n "$_rd_if" ] && try_sysctl "net.ipv4.conf.${_rd_if//./\/}.send_redirects" 0
   try_sysctl net.ipv4.tcp_retries2 12
   try_sysctl net.ipv4.tcp_syn_retries 4
   try_sysctl net.ipv4.tcp_rfc1337 1
