@@ -64,7 +64,8 @@
 - [三十二、v2.7.11 ~ v2.7.13 订阅服务默认开启，本地保留端口调整](#三十二v2711--v2713-订阅服务默认开启本地保留端口调整)
 - [三十三、v2.7.14 sing-box AnyTLS 节点复活与全链路参数深度调优](#三十三v2714-sing-box-anytls-节点复活与全链路参数深度调优)
 - [三十四、v2.7.15 sing-box alpha.7 / Hysteria 2.12.3、vless-reality 客户端去 MPTCP、naive-h2 诊断](#三十四v2715-sing-box-alpha7--hysteria-2123vless-reality-客户端去-mptcpnaive-h2-诊断)
-- [三十五、免责声明](#三十五免责声明)
+- [三十五、v2.7.16 修复：稳定版 sing-box 加载不了订阅、Mihomo 订阅整份加载失败](#三十五v2716-修复稳定版-sing-box-加载不了订阅mihomo-订阅整份加载失败)
+- [三十六、免责声明](#三十六免责声明)
 
 ---
 
@@ -1942,7 +1943,7 @@ sing-box 自己的拨号器在 MPTCP 与 TFO 同开、且两端真的协商成 M
 
 - naive-h3 / naive-h2 也两项都开，但走 Cronet 自己的网络栈（不用 sing-box 拨号器），实测正常，不改；
 - AnyTLS 客户端只开 MPTCP（sing-box 1.14+ 禁止 AnyTLS 出站开 TFO），不受影响；
-- **Mihomo** 模板里 `vless-reality` 同样是 `tfo: true` + `mptcp: true`，本机没有 mihomo 无法实测，**本版不改**，留待验证。
+- **Mihomo** 模板里 `vless-reality` 同样是 `tfo: true` + `mptcp: true`：v2.7.16 用官方 mihomo v1.19.31 在 netns 直连实测，原样 3/3 通、正常下载，**不受影响**，不改。
 
 ### 4.〔诊断〕naive-h2
 
@@ -1997,7 +1998,54 @@ sing-box 的 naive 入站在 TLS 路径上用 Go 标准库的 HTTP/2 服务端�
 
 ---
 
-## 三十五、免责声明
+## 三十五、v2.7.16 修复：稳定版 sing-box 加载不了订阅、Mihomo 订阅整份加载失败
+
+v2.7.15 之前的测试只用本机的 sing-box（pre-release）跑客户端配置，没有用稳定版、也没有用 mihomo 实测过，三处问题都是在客户端才暴露的。
+
+### 1.〔严重〕sing-box 订阅在稳定版 1.14.x 上整份 FATAL
+
+```
+experimental.cache_file.buffer_size: json: unknown field "buffer_size"
+```
+
+客户端配置的 `cache_file` 写了 `buffer_size` / `flush_interval`——这是 **1.15 才有的字段**。手机上的 SFI / SFA、v2rayN 的 sing-box 内核多为稳定版，
+拿到订阅直接加载失败，**所有节点一起不可用**。客户端开写缓冲本来就没有收益（它是给服务端减少写盘用的），客户端配置去掉这两项；
+服务端 `sb.json`（跑 pre-release）保留。
+
+### 2.〔严重〕Mihomo 订阅（`?clash=1` / `clmi.yaml`）整份加载失败
+
+```
+proxy 1: cannot parse 'idle-session-check-interval' as int ... "30s"
+```
+
+v2.7.14 给 AnyTLS 加的 `idle-session-check-interval: 30s` / `idle-session-timeout: 10m` 照抄了 sing-box 的写法，
+但 mihomo 这两个字段是**整数秒**。mihomo 拒绝加载整份配置，同样是所有节点一起不可用。改为 `30` / `600`。
+
+### 3.〔清理〕Mihomo 订阅不再包含 naive
+
+mihomo 没有原生 naive 出站，此前用 `type: http` + TLS 冒充。但 sing-box 的 naive 入站强制要求 NaïveProxy 填充头，
+普通 HTTP CONNECT 一律被拒（服务端 `missing naive padding`，客户端 `unexpected EOF`）。用 alpha.6 与 alpha.7 两个测试实例分别验证，
+结果相同——**这个节点在 mihomo 里从来不通**，不是本次升级引入的，只会在「自动选择」组里占位。
+naive 请用 sing-box 客户端（`sbox_client.json`，走 Cronet）或 NaïveProxy 官方客户端。
+
+### 4.〔验证〕
+
+| 客户端 | 结果 |
+|---|---|
+| sing-box **1.14.1 稳定版**：`check` + 6 个节点逐个下载 | 全部通过（hysteria2 240、AnyTLS 297、naive-h3 239、naive-h2 248、tuic 281、vless-reality 274；40ms RTT，↓20MB） |
+| sing-box 1.15.0-alpha.7：`check` | 通过 |
+| mihomo v1.19.31：`-t` + 4 个节点逐个延迟与下载 | 全部通过（hysteria2 271、AnyTLS 1300、tuic 663、reality 489） |
+
+```bash
+sing-box check -c sbox_client.json          # 用稳定版跑，不要只用服务端那份 pre-release
+mihomo -t -f clmi.yaml                       # 语法；能否连通要实际走一次流量
+```
+
+**升级已有安装**：`sbbox list` 重新生成客户端配置，客户端重新拉取订阅。
+
+---
+
+## 三十六、免责声明
 
 本项目仅供网络技术研究与学习交流使用。使用者须自行遵守所在国家/地区的法律法规，因使用本脚本产生的一切后果由使用者自行承担。
 

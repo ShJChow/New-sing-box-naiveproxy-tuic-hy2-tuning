@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.15"
+SBBOX_VERSION="v2.7.16"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -2175,6 +2175,10 @@ cmd_sub() {
 }
 
 
+# 客户端配置要能被**稳定版** sing-box 加载（手机 SFI/SFA、v2rayN 的 sing-box 内核多为 1.14.x），
+# 不能照抄服务端（跑 pre-release）的字段。v2.7.16：去掉 experimental.cache_file 的
+# buffer_size / flush_interval——这两个是 1.15 新增，1.14.1 直接 FATAL
+# `unknown field "buffer_size"`，整份订阅加载失败、所有节点一起不可用。改客户端字段后用稳定版跑一次 check。
 gen_client_sbox() {
   local ob=() tags=() json_file="$SB_HOME/sbox_client.json"
 
@@ -2414,9 +2418,7 @@ gen_client_sbox() {
         "cache_file": {
             "enabled": true,
             "store_fakeip": true,
-            "store_dns": true,
-            "buffer_size": "1MB",
-            "flush_interval": "1m"
+            "store_dns": true
         }
     },
     "outbounds": [
@@ -2505,6 +2507,9 @@ gen_client_clash() {
   fi
 
   # 2. 🥈 AnyTLS (新一代 TCP 主力)
+  # v2.7.16：mihomo 的 idle-session-check-interval / idle-session-timeout 是整数秒，
+  # 写成 "30s" / "10m" 会让 mihomo 拒绝加载**整份** clmi.yaml（所有节点一起不可用）。
+  # sing-box 客户端那边用的是时长字符串（"30s" / "10m"），两边不能照抄。
   if [ -n "$anyp" ] && [ "$CERT_OK" = 1 ]; then
     proxies="$proxies
   - name: anytls-$node_tag
@@ -2521,33 +2526,20 @@ gen_client_clash() {
       - http/1.2
     client-fingerprint: chrome
     udp: true
-    idle-session-check-interval: 30s
-    idle-session-timeout: 10m
+    idle-session-check-interval: 30
+    idle-session-timeout: 600
     min-idle-session: 2"
 
     groups="$groups
       - anytls-$node_tag"
   fi
 
-  # 4. NaiveProxy (HTTPS / 流量形态特殊需求)
-  if [ -n "$nvp" ] && [ "$CERT_OK" = 1 ]; then
-    proxies="$proxies
-  - name: naive-$node_tag
-    server: $add
-    port: $port_nv
-    type: http
-    username: $nv_user
-    password: $nv_pw
-    tls: true
-    sni: $sni
-    skip-cert-verify: false
-    client-fingerprint: chrome
-    alpn:
-      - h2
-    tfo: true"
-    groups="$groups
-      - naive-$node_tag"
-  fi
+  # 4. NaiveProxy：v2.7.16 起不再写进 Mihomo 配置。
+  #    mihomo 没有原生 naive 出站，此前用 `type: http` + TLS 冒充，但 sing-box 的 naive 入站
+  #    强制要求 NaïveProxy 填充头，普通 HTTP CONNECT 一律被拒（服务端日志 `missing naive padding`，
+  #    客户端 `unexpected EOF`）。alpha.6 / alpha.7 实测相同——这个节点在 mihomo 里从来不通，
+  #    只会在「自动选择」组里占位。naive 请用 sing-box 客户端（sbox_client.json，走 Cronet）
+  #    或 NaïveProxy 官方客户端。
 
   # 5. TUIC (Hysteria2 的 QUIC 备选)
   if [ -n "$tup" ]; then

@@ -55,7 +55,8 @@ Bundled with:
 - [23. v2.7.11 – v2.7.13 — Subscription Service On by Default; Reserved-Port Changes](#23-v2711--v2713--subscription-service-on-by-default-reserved-port-changes)
 - [24. v2.7.14 — AnyTLS Node Re-introduced & Full-Stack Parameter Tuning](#24-v2714--anytls-node-re-introduced--full-stack-parameter-tuning)
 - [25. v2.7.15 — sing-box alpha.7 / Hysteria 2.12.3, No MPTCP on the vless-reality Client, naive-h2 Diagnosis](#25-v2715--sing-box-alpha7--hysteria-2123-no-mptcp-on-the-vless-reality-client-naive-h2-diagnosis)
-- [26. Disclaimer](#26-disclaimer)
+- [26. v2.7.16 — Fix: Stable sing-box Could Not Load the Subscription; the Mihomo Subscription Failed to Load](#26-v2716--fix-stable-sing-box-could-not-load-the-subscription-the-mihomo-subscription-failed-to-load)
+- [27. Disclaimer](#27-disclaimer)
 
 ---
 
@@ -713,12 +714,21 @@ Measured in a netns at 160 ms RTT / 1% download loss (Mbps down/up, 3 runs unles
 
 - **sing-box 1.15.0-alpha.6 → alpha.7.** Relevant fixes only (HTTP/2 stream-error leakage and transport data races — the path naive-h2's server uses; read loops spinning on persistent errors; half-close propagation; dial contexts cancelled while connections are in use; crash on a corrupted cache file). No new server-side fields, so `sb.json` is unchanged. Both `sb.json` and `sbox_client.json` pass `sing-box check` with the new binary before `sbbox up`.
 - **External Hysteria 2.12.2 → 2.12.3** (quic-go v0.62.0). SHA-256 matches the official `hashes.txt`; since Hysteria has no config-check subcommand, the current config was started once on a local test port before the swap.
-- **Fix: no `tcp_multi_path` on the sing-box `vless-reality` client outbound.** With MPTCP and TFO both on, and the server also MPTCP-capable, connections time out (3/3). Dropping MPTCP gives 144/69, dropping TFO 126/60, so TFO is kept. The regression test never caught it because it goes through the public IP, where NAT strips the MPTCP option; a real client on a network that passes MPTCP would fail to connect. naive (Cronet has its own stack) and AnyTLS (MPTCP only) are unaffected. The Mihomo template has the same `tfo` + `mptcp` pair but could not be tested here, so it is unchanged for now.
+- **Fix: no `tcp_multi_path` on the sing-box `vless-reality` client outbound.** With MPTCP and TFO both on, and the server also MPTCP-capable, connections time out (3/3). Dropping MPTCP gives 144/69, dropping TFO 126/60, so TFO is kept. The regression test never caught it because it goes through the public IP, where NAT strips the MPTCP option; a real client on a network that passes MPTCP would fail to connect. naive (Cronet has its own stack) and AnyTLS (MPTCP only) are unaffected. The Mihomo template has the same `tfo` + `mptcp` pair; tested in v2.7.16 with the official mihomo v1.19.31 over a direct netns link (3/3 connect, normal download) — unaffected, unchanged.
 - **naive-h2 diagnosis.** The wide download spread without shaping (48–439) comes from BBR racing up on a bottleneck-free path (server `ss -ti`: cwnd ~40k packets, 3.8 Gbps pacing, 173 MB client window); shaped lines are steadier (174 at 300↓/50↑, 317 at 1000↓/200↑). Server-side MPTCP/TFO make no difference (test instance, 5 runs; all ranges overlap), so the server is unchanged. **Upload is capped at ~30 Mbps at 160 ms and cannot be fixed by configuration:** the naive inbound serves HTTP/2 through Go's standard library with a zero-value `http2.Server{}`, i.e. Go's default 1 MB per-stream receive window (1 MB ÷ 160 ms ≈ 52 Mbps theoretical); sing-box does not expose it and this project does not patch the core. The ceiling scales as ~1 MB ÷ RTT; use naive-h3 (QUIC) for upload-heavy use. Tested and **not adopted**: `tcp_notsent_lowat` 256 KB / 1 MB / 4 MB — per-run variance (23 to 343 within one setting, with the Reality-Vision control also dipping to 19–33) swamps any effect.
 - **TCP buffer ceiling kept at 64 MB.** A 32 MB A/B (300↓/50↑ with loss) gave vless-reality 128 vs 32, naive-h2 120 vs 111, AnyTLS 201 vs 202, with identical ping-under-load; the 9-08 slowdown changed 64 MB and MTU 1500 together, and the data points at MTU.
 - **Before → after** (alpha.6 + hy 2.12.2 → alpha.7 + hy 2.12.3): hysteria2 109/138 → 114/148, naive-h3 165/63 → 164/59, tuic 116/83 → 119/105, vless-reality 144/69 → 155/62, AnyTLS 347/126 → 323/153 — all within noise, no regression.
 
-## 26. Disclaimer
+## 26. v2.7.16 — Fix: Stable sing-box Could Not Load the Subscription; the Mihomo Subscription Failed to Load
+
+Earlier releases only validated client configs with this host's pre-release sing-box, never with a stable build or with mihomo.
+
+- **sing-box subscription FATAL on stable 1.14.x** (`experimental.cache_file.buffer_size: json: unknown field "buffer_size"`). The client config carried the 1.15-only `buffer_size` / `flush_interval`, so SFI / SFA / v2rayN's sing-box core (usually stable) failed to load the whole file — every node down. Removed from the client config (no client-side benefit); the server's `sb.json` keeps them.
+- **Mihomo subscription (`?clash=1` / `clmi.yaml`) failed to load entirely** (`cannot parse 'idle-session-check-interval' as int ... "30s"`). v2.7.14 copied sing-box's duration strings for AnyTLS; mihomo wants integer seconds. Now `30` / `600`.
+- **naive dropped from the Mihomo subscription.** mihomo has no native naive outbound; the `type: http` + TLS stand-in is rejected by sing-box's naive inbound, which requires NaïveProxy padding (`missing naive padding` / `unexpected EOF`). Same result on alpha.6 and alpha.7 test instances — it never worked and was not caused by the upgrade. Use the sing-box client (Cronet) or the official NaïveProxy client for naive.
+- **Verified:** sing-box 1.14.1 `check` plus a real download through all six nodes (hysteria2 240, AnyTLS 297, naive-h3 239, naive-h2 248, tuic 281, vless-reality 274 Mbps at 40 ms); alpha.7 `check`; mihomo v1.19.31 `-t` plus per-node delay and download for the four remaining nodes (hysteria2 271, AnyTLS 1300, tuic 663, reality 489). Run `sbbox list` to regenerate client configs; clients must re-pull.
+
+## 27. Disclaimer
 
 This project is provided for network technology research and educational purposes only. Users are responsible for complying with local laws and regulations.
 
