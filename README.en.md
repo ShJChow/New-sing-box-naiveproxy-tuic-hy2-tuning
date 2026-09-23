@@ -56,7 +56,8 @@ Bundled with:
 - [24. v2.7.14 — AnyTLS Node Re-introduced & Full-Stack Parameter Tuning](#24-v2714--anytls-node-re-introduced--full-stack-parameter-tuning)
 - [25. v2.7.15 — sing-box alpha.7 / Hysteria 2.12.3, No MPTCP on the vless-reality Client, naive-h2 Diagnosis](#25-v2715--sing-box-alpha7--hysteria-2123-no-mptcp-on-the-vless-reality-client-naive-h2-diagnosis)
 - [26. v2.7.16 — Fix: Stable sing-box Could Not Load the Subscription; the Mihomo Subscription Failed to Load](#26-v2716--fix-stable-sing-box-could-not-load-the-subscription-the-mihomo-subscription-failed-to-load)
-- [27. Disclaimer](#27-disclaimer)
+- [27. v2.7.17 — Firewall Accept Rules No Longer Jump to the Top; fs.suid_dumpable = 0](#27-v2717--firewall-accept-rules-no-longer-jump-to-the-top-fssuid_dumpable--0)
+- [28. Disclaimer](#28-disclaimer)
 
 ---
 
@@ -728,7 +729,12 @@ Earlier releases only validated client configs with this host's pre-release sing
 - **naive dropped from the Mihomo subscription.** mihomo has no native naive outbound; the `type: http` + TLS stand-in is rejected by sing-box's naive inbound, which requires NaïveProxy padding (`missing naive padding` / `unexpected EOF`). Same result on alpha.6 and alpha.7 test instances — it never worked and was not caused by the upgrade. Use the sing-box client (Cronet) or the official NaïveProxy client for naive.
 - **Verified:** sing-box 1.14.1 `check` plus a real download through all six nodes (hysteria2 240, AnyTLS 297, naive-h3 239, naive-h2 248, tuic 281, vless-reality 274 Mbps at 40 ms); alpha.7 `check`; mihomo v1.19.31 `-t` plus per-node delay and download for the four remaining nodes (hysteria2 271, AnyTLS 1300, tuic 663, reality 489). Run `sbbox list` to regenerate client configs; clients must re-pull.
 
-## 27. Disclaimer
+## 27. v2.7.17 — Firewall Accept Rules No Longer Jump to the Top; fs.suid_dumpable = 0
+
+- **Fix: `open_port` inserted every accept rule at INPUT position 1**, ahead of `lo`, `RELATED,ESTABLISHED` and the `INVALID` drop — v2.7.14's `tcp 28443 ACCEPT` became the first INPUT rule in both iptables and ip6tables. Worse, for a UDP port the accept landed **before its own QDoS hashlimit drop**, silently disabling the rate limit. The new `fw_accept_rule` inserts just before a catch-all `-j REJECT|DROP` (one without port/state matches, as shipped by Oracle's stock image), or appends if there is none, keeping `lo → ESTABLISHED → INVALID → rate limits → port accepts → catch-all`. Tested in a throwaway netns with and without a trailing REJECT (correct placement, no duplicates on repeat calls). On the live host 28443 was appended first and the top copy then deleted (no gap), then saved with `netfilter-persistent`; AnyTLS measured 298/72 Mbps afterwards.
+- **`fs.suid_dumpable = 0`** is now written by the tuning (it was the kernel default 2 on the live host), so a crashing privileged process cannot dump memory holding keys, UUIDs or decrypted traffic; complements `kernel.core_pattern = core` and `* hard core 0`. The co-located Xray project adds the same key in v4.9.32.
+
+## 28. Disclaimer
 
 This project is provided for network technology research and educational purposes only. Users are responsible for complying with local laws and regulations.
 

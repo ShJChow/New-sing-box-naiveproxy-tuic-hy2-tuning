@@ -65,7 +65,8 @@
 - [三十三、v2.7.14 sing-box AnyTLS 节点复活与全链路参数深度调优](#三十三v2714-sing-box-anytls-节点复活与全链路参数深度调优)
 - [三十四、v2.7.15 sing-box alpha.7 / Hysteria 2.12.3、vless-reality 客户端去 MPTCP、naive-h2 诊断](#三十四v2715-sing-box-alpha7--hysteria-2123vless-reality-客户端去-mptcpnaive-h2-诊断)
 - [三十五、v2.7.16 修复：稳定版 sing-box 加载不了订阅、Mihomo 订阅整份加载失败](#三十五v2716-修复稳定版-sing-box-加载不了订阅mihomo-订阅整份加载失败)
-- [三十六、免责声明](#三十六免责声明)
+- [三十六、v2.7.17 防火墙放行规则不再顶到最前、fs.suid_dumpable = 0](#三十六v2717-防火墙放行规则不再顶到最前fssuid_dumpable--0)
+- [三十七、免责声明](#三十七免责声明)
 
 ---
 
@@ -2045,7 +2046,38 @@ mihomo -t -f clmi.yaml                       # 语法；能否连通要实际走
 
 ---
 
-## 三十六、免责声明
+## 三十六、v2.7.17 防火墙放行规则不再顶到最前、fs.suid_dumpable = 0
+
+### 1.〔修复〕`open_port` 把放行规则插到 INPUT 第一条
+
+此前每开一个端口都执行 `iptables -I INPUT 1 ... -j ACCEPT`，新规则排到 `lo` / `RELATED,ESTABLISHED` / `INVALID` 丢弃之前。
+v2.7.14 重开 AnyTLS 时，`tcp 28443 ACCEPT` 就成了 INPUT 的第一条（iptables 与 ip6tables 都是）：
+
+- 每个新包都要先比对这一条，已建立连接的快速放行不再是首条命中；
+- **更危险的是 UDP 端口**：放行规则会排到它自己的 QDoS hashlimit 丢弃规则**前面**，限速直接失效。本机 44116 当时恰好是另一次整理后的顺序，没中招，但重装时就会。
+
+现在由 `fw_accept_rule` 决定位置：若 INPUT 里有「兜底拒绝」（不带端口 / 状态匹配的 `-j REJECT|DROP`，Oracle 原厂镜像自带
+`-j REJECT --reject-with icmp-host-prohibited`）就插在它前面，否则追加到末尾。顺序保持
+`lo → ESTABLISHED → INVALID 丢弃 → 限速丢弃 → 端口放行 → 兜底拒绝`。已存在的规则不重复添加。
+
+**验证**：在独立 netns（独立的 iptables）里分别搭「无兜底拒绝」与「末尾 REJECT」两种链，调用两次放行 28443 与 44116——
+两种情况下放行都落在限速规则之后、兜底拒绝之前，且不重复。线上把 28443 先追加到末尾、再删掉顶部那条（全程不断），
+`netfilter-persistent save` 持久化；AnyTLS 实测 298 / 72 Mbps。
+
+```bash
+iptables -S INPUT | sed -n 2,4p     # 应依次是 -i lo / RELATED,ESTABLISHED / INVALID DROP
+ip6tables -S INPUT | sed -n 2,4p
+```
+
+### 2.〔安全〕调优写入 `fs.suid_dumpable = 0`
+
+代理进程内存里有私钥、UUID 与解密后的流量；内核默认 2（suidsafe）时，setuid / 切换过身份的进程崩溃仍可能转储 core。
+设为 0 一律不转储，配合已有的 `kernel.core_pattern = core` 与 `* hard core 0`。线上核实此前为 2（没有任何地方写它）。
+同机 Xray 项目在 v4.9.32 同步加入，两个项目写的 sysctl 键值集合保持一致。
+
+---
+
+## 三十七、免责声明
 
 本项目仅供网络技术研究与学习交流使用。使用者须自行遵守所在国家/地区的法律法规，因使用本脚本产生的一切后果由使用者自行承担。
 

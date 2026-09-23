@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.16"
+SBBOX_VERSION="v2.7.17"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -210,18 +210,27 @@ install_deps() {
 }
 
 # ---------- 端口防火墙放行 (iptables / ip6tables / ufw / firewalld) ----------
+# 放行规则插在哪（v2.7.17）：此前一律 `-I INPUT 1` 顶到最前，排在 lo / RELATED,ESTABLISHED /
+# INVALID 丢弃之前（9-20 的 28443 就是这样跑到第一条的）；更糟的是 UDP 端口的 ACCEPT 会排到它自己的
+# QDoS hashlimit DROP 前面，限速形同虚设。现在：有「兜底拒绝」（不带端口 / 状态匹配的 -j REJECT|DROP，
+# Oracle 原厂镜像自带）就插在它前面，否则追加到末尾——顺序保持 lo → ESTABLISHED → INVALID → 限速 → 放行。
+fw_accept_rule() {
+  local ipt="$1" proto="$2" port="$3" pos
+  "$ipt" -C INPUT -p "$proto" --dport "$port" -j ACCEPT 2>/dev/null && return 0
+  pos=$("$ipt" -S INPUT 2>/dev/null | awk 'NR>1{n++; if ($0 ~ /-j (REJECT|DROP)/ && $0 !~ /--dport|--sport|--ctstate|--state|-i lo|hashlimit/) {print n; exit}}')
+  if [ -n "$pos" ]; then
+    "$ipt" -I INPUT "$pos" -p "$proto" --dport "$port" -j ACCEPT 2>/dev/null
+  else
+    "$ipt" -A INPUT -p "$proto" --dport "$port" -j ACCEPT 2>/dev/null
+  fi
+}
+
 open_port() {
   local port="$1" proto="${2:-tcp}"
   [ -n "$port" ] || return 0
   if [ "$IS_ROOT" = 1 ]; then
-    if command -v iptables >/dev/null 2>&1; then
-      iptables -C INPUT -p "$proto" --dport "$port" -j ACCEPT 2>/dev/null || \
-        iptables -I INPUT 1 -p "$proto" --dport "$port" -j ACCEPT 2>/dev/null
-    fi
-    if command -v ip6tables >/dev/null 2>&1; then
-      ip6tables -C INPUT -p "$proto" --dport "$port" -j ACCEPT 2>/dev/null || \
-        ip6tables -I INPUT 1 -p "$proto" --dport "$port" -j ACCEPT 2>/dev/null
-    fi
+    command -v iptables  >/dev/null 2>&1 && fw_accept_rule iptables  "$proto" "$port"
+    command -v ip6tables >/dev/null 2>&1 && fw_accept_rule ip6tables "$proto" "$port"
     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
       ufw allow "${port}/${proto}" >/dev/null 2>&1
     fi
@@ -915,6 +924,10 @@ apply_tuning() {
   # 值不一致会导致实际生效值取决于文件名而不是任一项目的预期）。
   try_sysctl net.ipv4.tcp_ecn 1
   try_sysctl net.ipv4.tcp_ecn_fallback 1
+  # fs.suid_dumpable = 0：setuid / 中途切换过身份的进程崩溃时不产生 core dump。
+  # 代理进程内存里有私钥、UUID、解密后的流量，默认值 2（suidsafe）仍会 dump 到 core_pattern 指定处；
+  # 0 则一律不 dump。配合 limits.conf 的 `* hard core 0` 与 core_pattern = core。
+  try_sysctl fs.suid_dumpable 0
   try_sysctl net.ipv4.tcp_retries2 12
   try_sysctl net.ipv4.tcp_syn_retries 4
   try_sysctl net.ipv4.tcp_rfc1337 1
