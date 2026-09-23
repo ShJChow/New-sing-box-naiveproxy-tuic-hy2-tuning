@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.14"
+SBBOX_VERSION="v2.7.15"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -2340,6 +2340,10 @@ gen_client_sbox() {
   fi
 
   # 5. (可选) VLESS-Reality (兼容性节点)
+  # v2.7.15：客户端出站不开 tcp_multi_path。sing-box 客户端 MPTCP + TFO 同开时，一旦两端真的协商成
+  # MPTCP（服务端 vless-reality-in 开着 tcp_multi_path），建连就超时（netns 直连 3/3 失败）。
+  # 走公网时 NAT 常剥掉 MPTCP 选项、退回普通 TCP，所以回归测试一直 PASS，没暴露出来。
+  # 只去一项的实测（160ms / 1% 丢包，下/上 Mbps）：去 MPTCP 144/69，去 TFO 126/60 → 保留 TFO。
   if [ -n "$reap" ]; then
     ob+=('{
         "type": "vless",
@@ -2350,7 +2354,6 @@ gen_client_sbox() {
         "flow": "xtls-rprx-vision",
         "packet_encoding": "xudp",
         "tcp_fast_open": true,
-        "tcp_multi_path": true,
         "tls": {
             "enabled": true,
             "server_name": "'"$reality_sni"'",

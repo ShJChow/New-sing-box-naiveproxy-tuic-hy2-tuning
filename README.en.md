@@ -54,7 +54,8 @@ Bundled with:
 - [22. v2.7.10 — External Hysteria2 Initial Windows Raised: Upload 109→141, Slow Line 3→30](#22-v2710--external-hysteria2-initial-windows-raised-upload-109141-slow-line-330)
 - [23. v2.7.11 – v2.7.13 — Subscription Service On by Default; Reserved-Port Changes](#23-v2711--v2713--subscription-service-on-by-default-reserved-port-changes)
 - [24. v2.7.14 — AnyTLS Node Re-introduced & Full-Stack Parameter Tuning](#24-v2714--anytls-node-re-introduced--full-stack-parameter-tuning)
-- [25. Disclaimer](#25-disclaimer)
+- [25. v2.7.15 — sing-box alpha.7 / Hysteria 2.12.3, No MPTCP on the vless-reality Client, naive-h2 Diagnosis](#25-v2715--sing-box-alpha7--hysteria-2123-no-mptcp-on-the-vless-reality-client-naive-h2-diagnosis)
+- [26. Disclaimer](#26-disclaimer)
 
 ---
 
@@ -706,7 +707,18 @@ Applies to the **external** Hysteria2 deployment (official hysteria binary + `hy
   - **Handshake & RTT Latency:** Initial handshake ~11.69ms, pooled warm connection 6.89ms (average 9.92ms).
   - **Throughput:** Single-stream 10MB test finished in 0.12s, reaching **641.90 Mbps** sustained bandwidth.
 
-## 25. Disclaimer
+## 25. v2.7.15 — sing-box alpha.7 / Hysteria 2.12.3, No MPTCP on the vless-reality Client, naive-h2 Diagnosis
+
+Measured in a netns at 160 ms RTT / 1% download loss (Mbps down/up, 3 runs unless noted), using the outbounds from `sbox_client.json` with only `server` pointed at the veth peer.
+
+- **sing-box 1.15.0-alpha.6 → alpha.7.** Relevant fixes only (HTTP/2 stream-error leakage and transport data races — the path naive-h2's server uses; read loops spinning on persistent errors; half-close propagation; dial contexts cancelled while connections are in use; crash on a corrupted cache file). No new server-side fields, so `sb.json` is unchanged. Both `sb.json` and `sbox_client.json` pass `sing-box check` with the new binary before `sbbox up`.
+- **External Hysteria 2.12.2 → 2.12.3** (quic-go v0.62.0). SHA-256 matches the official `hashes.txt`; since Hysteria has no config-check subcommand, the current config was started once on a local test port before the swap.
+- **Fix: no `tcp_multi_path` on the sing-box `vless-reality` client outbound.** With MPTCP and TFO both on, and the server also MPTCP-capable, connections time out (3/3). Dropping MPTCP gives 144/69, dropping TFO 126/60, so TFO is kept. The regression test never caught it because it goes through the public IP, where NAT strips the MPTCP option; a real client on a network that passes MPTCP would fail to connect. naive (Cronet has its own stack) and AnyTLS (MPTCP only) are unaffected. The Mihomo template has the same `tfo` + `mptcp` pair but could not be tested here, so it is unchanged for now.
+- **naive-h2 diagnosis.** The wide download spread without shaping (48–439) comes from BBR racing up on a bottleneck-free path (server `ss -ti`: cwnd ~40k packets, 3.8 Gbps pacing, 173 MB client window); shaped lines are steadier (174 at 300↓/50↑, 317 at 1000↓/200↑). Server-side MPTCP/TFO make no difference (test instance, 5 runs; all ranges overlap), so the server is unchanged. **Upload is capped at ~30 Mbps at 160 ms and cannot be fixed by configuration:** the naive inbound serves HTTP/2 through Go's standard library with a zero-value `http2.Server{}`, i.e. Go's default 1 MB per-stream receive window (1 MB ÷ 160 ms ≈ 52 Mbps theoretical); sing-box does not expose it and this project does not patch the core. The ceiling scales as ~1 MB ÷ RTT; use naive-h3 (QUIC) for upload-heavy use. Tested and **not adopted**: `tcp_notsent_lowat` 256 KB / 1 MB / 4 MB — per-run variance (23 to 343 within one setting, with the Reality-Vision control also dipping to 19–33) swamps any effect.
+- **TCP buffer ceiling kept at 64 MB.** A 32 MB A/B (300↓/50↑ with loss) gave vless-reality 128 vs 32, naive-h2 120 vs 111, AnyTLS 201 vs 202, with identical ping-under-load; the 9-08 slowdown changed 64 MB and MTU 1500 together, and the data points at MTU.
+- **Before → after** (alpha.6 + hy 2.12.2 → alpha.7 + hy 2.12.3): hysteria2 109/138 → 114/148, naive-h3 165/63 → 164/59, tuic 116/83 → 119/105, vless-reality 144/69 → 155/62, AnyTLS 347/126 → 323/153 — all within noise, no regression.
+
+## 26. Disclaimer
 
 This project is provided for network technology research and educational purposes only. Users are responsible for complying with local laws and regulations.
 
