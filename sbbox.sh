@@ -65,9 +65,9 @@ alns="${alns:-}"                            # 申请 acme 证书：alns=1
 tup="${tup:-}" hyp="${hyp:-}" nvp="${nvp:-}"
 reap="${reap:-${vlp:-${rea:-}}}"            # 最新 VLESS-Reality TCP 节点（免域名免证书）
 reap_sni="${reap_sni:-${reality_sni:-}}"    # Reality 伪装目标 SNI（默认 gateway.icloud.com）
-port_rea="${port_rea:-${port_vl:-}}"        # Reality 监听端口（默认随机 10000-65535）
+port_rea="${port_rea:-${port_vl:-}}"        # Reality 监听端口（默认随机 10000-29999 五位数低位）
 anyp="${anyp:-${any:-}}"                    # sing-box 1.14 新特性：AnyTLS + TLS 节点（抗 TLS-in-TLS 指纹）
-port_any="${port_any:-}"                    # AnyTLS 监听端口（默认随机 10000-65535）
+port_any="${port_any:-}"                    # AnyTLS 监听端口（默认随机 10000-29999 五位数低位）
 hyjpt="${hyjpt:-}"                          # Hysteria2 跳跃端口，默认关闭（空）；如 "25000:38000"
 hyobfs="${hyobfs:-1}"                       # Hysteria2 salamander 混淆，默认开启；关闭用 hyobfs=0
 hyobfs_pw="${hyobfs_pw:-}"                  # 混淆密码（默认独立随机值）
@@ -102,7 +102,7 @@ sub_nonaive="${sub_nonaive:-}"              # 剔除 Naiveproxy 节点（客户�
 # sing-box 1.14+ / 1.15+ 新特性选项
 dns_optimistic="${dns_optimistic:-1}"       # 乐观 DNS 缓存 (sing-box 1.14 新特性)：默认开启；关闭用 dns_optimistic=0
 api="${api:-1}"                             # sing-box 原生 API 服务 (sing-box 1.14 新特性)：默认 127.0.0.1 开启；关闭用 api=0
-api_port="${api_port:-}"                    # sing-box 原生 API 端口（默认 10000-65535 随机端口）
+api_port="${api_port:-}"                    # sing-box 原生 API 端口（默认 10000-29999 五位数低位随机端口）
 cache_buffer="${cache_buffer:-1MB}"         # cache_file 写缓冲 (sing-box 1.15 新特性)：默认 1MB，批量落盘提速 I/O
 cache_flush="${cache_flush:-1m}"            # cache_file 刷盘间隔 (sing-box 1.15 新特性)：默认 1m 定时刷盘
 
@@ -153,7 +153,7 @@ showmode() {
   echo "端口跳跃：sbbox hop 25000:38000 【默认关闭】 sbbox hop off"
   echo "极速优化：sbbox speed 100 1000（设置客户端上/下行并激活 Hy2 与 TCP Brutal 极速拥塞控制）"
   echo "TCP Brutal：sbbox brutal show | on | off | speed | add | del（TCP Brutal 拥塞控制与限速）"
-  echo "更换端口：sbbox port [tu] [hy2] [nv] [rea] [any]（无参数分配 10000-65535 随机端口并同步）"
+  echo "更换端口：sbbox port [tu] [hy2] [nv] [rea] [any]（无参数分配 10000-29999 五位数低位随机端口并同步）"
   echo "WARP 出站解锁：sbbox warp [on|off|status|rotate]（官方动态 API 独立生成专属账户，解锁 AI/流媒体）"
   echo "自检修复：sbbox doctor"
   echo "卸载：sbbox del"
@@ -919,7 +919,7 @@ apply_tuning() {
   try_sysctl net.ipv4.tcp_max_syn_backlog "$NETDEV_BACKLOG"
   try_sysctl net.ipv4.tcp_max_tw_buckets 65536
   try_sysctl net.ipv4.ip_local_port_range "1024 65535"
-  try_sysctl net.ipv4.ip_local_reserved_ports "8001,8003,8443,8445,8446,10489,10800-10809,11801-11806,18793,23106,28443,44116"
+  try_sysctl net.ipv4.ip_local_reserved_ports "8001,8003,8443,8445,8446,10489,10800-10809,11801-11806,18793,23106,27295,28443"
 
   # conntrack 仅在模块已加载时调整
   if [ "$CONNTRACK_MAX" -gt 0 ] && [ -r /proc/sys/net/netfilter/nf_conntrack_max ]; then
@@ -1178,6 +1178,33 @@ guard_base_port() {
     ip6tables -t nat -I PREROUTING 1 -p udp --dport "$port" -j RETURN 2>/dev/null
 }
 
+# 综合防碰撞：避开同机 Xray 节点、测试保留端口、系统基础端口及 NAT 劫持
+is_port_conflict() {
+  local p="$1"
+  [ -z "$p" ] && return 0
+  # 避开 Xray 客户端自动化测试端口 10800-10809 与 sbbox 测试端口 11801-11806
+  if [ "$p" -ge 10800 ] && [ "$p" -le 10809 ]; then return 0; fi
+  if [ "$p" -ge 11801 ] && [ "$p" -le 11806 ]; then return 0; fi
+  # 避开 Xray 核心服务端口与系统基础端口（SSH 22, DNS 53, HTTP 80, Reality/Hy2 443, Docker 28081）
+  case "$p" in
+    22|53|80|443|8001|8003|8443|8445|8446|28081) return 0 ;;
+  esac
+  # 避开 Xray 配置文件中声明的任何入站端口
+  if [ -f /usr/local/etc/xray/config.json ]; then
+    if grep -q "\"port\": *$p\b" /usr/local/etc/xray/config.json 2>/dev/null; then return 0; fi
+  fi
+  if [ -f /etc/xhttp-cdn/node.env ]; then
+    if grep -q "PORT=$p\b" /etc/xhttp-cdn/node.env 2>/dev/null; then return 0; fi
+  fi
+  # 避开当前系统已监听的所有端口（ss -tuln）
+  if ss -tuln 2>/dev/null | awk 'NR>1 {print $5}' | awk -F: '{print $NF}' | tr -d '%' | grep -qx "$p"; then
+    return 0
+  fi
+  # 避开 NAT 表端口段劫持规则
+  port_hijacked_by_nat "$p" >/dev/null 2>&1 && return 0
+  return 1
+}
+
 # 探测本机是否具备全局 IPv6 出口。没有却用 prefer_ipv4，sing-box 仍会发 AAAA
 # 并尝试 v6 连接，每次失败都白白多耗一个 RTT（实测日志里大量
 # "network is unreachable" 与 "exchange6: NXDOMAIN"）。无 v6 时直接用 ipv4_only。
@@ -1244,13 +1271,12 @@ installsb() {
   assign_port() { # $1=name $2=env_port
     local name=$1 val=${2:-}
     if [ -z "$val" ] && [ ! -e "$SB_HOME/port_$name" ]; then
-      # 随机端口必须避开已被 nat 端口段规则劫持的区间，
-      # 否则装完看似正常、实际直连该端口的流量会被投递到别的实例。
+      # 五位数低位随机（10000-29999），严格避开 Xray 节点、测试保留端口及系统冲突
       local _try=0
       while :; do
-        val=$(shuf -i 10000-65535 -n 1)
-        port_hijacked_by_nat "$val" >/dev/null 2>&1 || break
-        _try=$((_try+1)); [ $_try -ge 50 ] && break
+        val=$(shuf -i 10000-29999 -n 1)
+        is_port_conflict "$val" && { _try=$((_try+1)); [ $_try -ge 100 ] && break; continue; }
+        break
       done
       echo "$val" > "$SB_HOME/port_$name"
     elif [ -n "$val" ]; then
@@ -1292,8 +1318,13 @@ installsb() {
     *)
       if [ -z "$api_port" ]; then
         api_port=$(cat "$SB_HOME/api_port" 2>/dev/null)
-        if [ -z "$api_port" ] || [ "$api_port" -lt 10000 ] 2>/dev/null; then
-          api_port=$(shuf -i 10000-65535 -n 1)
+        if [ -z "$api_port" ] || [ "$api_port" -lt 10000 ] || [ "$api_port" -gt 29999 ] 2>/dev/null; then
+          local _try=0
+          while :; do
+            api_port=$(shuf -i 10000-29999 -n 1)
+            is_port_conflict "$api_port" && { _try=$((_try+1)); [ $_try -ge 100 ] && break; continue; }
+            break
+          done
         fi
       fi
       echo "$api_port" > "$SB_HOME/api_port"
@@ -1859,20 +1890,14 @@ gen_sub() {
   echo "$token" > "$SB_HOME/subtoken"
   chmod 600 "$SB_HOME/subtoken" 2>/dev/null
 
-  # 订阅端口：默认随机高位端口，可用 subport= 固定
+  # 订阅端口：默认随机五位数低位端口（10000-29999），可用 subport= 固定
   if [ -z "$subport" ]; then
     subport=$(cat "$SB_HOME/subport" 2>/dev/null || true)
-    if [ -z "$subport" ]; then
-      local _try=0 used
-      used=$(ss -tuln 2>/dev/null | awk 'NR>1 {print $5}' | awk -F: '{print $NF}' | tr -d '%' | sort -u)
+    if [ -z "$subport" ] || [ "$subport" -lt 10000 ] || [ "$subport" -gt 29999 ] 2>/dev/null; then
+      local _try=0
       while :; do
-        subport=$(shuf -i 10000-65535 -n 1)
-        if echo "$used" | grep -qx "$subport"; then
-          _try=$((_try+1)); [ $_try -ge 50 ] && break; continue
-        fi
-        port_hijacked_by_nat "$subport" >/dev/null 2>&1 && {
-          _try=$((_try+1)); [ $_try -ge 50 ] && break; continue
-        }
+        subport=$(shuf -i 10000-29999 -n 1)
+        is_port_conflict "$subport" && { _try=$((_try+1)); [ $_try -ge 100 ] && break; continue; }
         break
       done
     fi
@@ -3521,7 +3546,7 @@ cmd_brutal() {
   esac
 }
 
-# 更换端口：sbbox port [tu] [hy2] [nv] [rea] [sub] (未指定参数则为各协议分配 10000-65535 随机端口并同步)
+# 更换端口：sbbox port [tu] [hy2] [nv] [rea] [any] [sub] (未指定参数则为各协议分配 10000-29999 五位数低位随机端口并同步)
 cmd_port() {
   [ -x "$SB_BIN" ] || { error "未安装 sbbox，无法更改端口"; exit 1; }
   load_state
@@ -3539,19 +3564,14 @@ cmd_port() {
     return 0
   fi
 
-  info "正在更新 sbbox 端口配置并同步……"
-
-  # 探测当前主机已占用的端口列表
-  local used
-  used=$(ss -tuln 2>/dev/null | awk 'NR>1 {print $5}' | awk -F: '{print $NF}' | tr -d '%' | sort -u)
+  info "正在更新 sbbox 端口配置并同步（五位数低位随机 10000-29999）……"
 
   local new_tu="" new_hy2="" new_nv="" new_rea="" new_any="" new_sub=""
 
   _gen_rand_port() {
-    local p
+    local p _try=0
     while :; do
-      p=$(shuf -i 10000-65535 -n 1)
-      if echo "$used" | grep -qx "$p"; then continue; fi
+      p=$(shuf -i 10000-29999 -n 1)
       if [ "$p" = "$new_tu" ] || [ "$p" = "$new_hy2" ] || [ "$p" = "$new_nv" ] || [ "$p" = "$new_rea" ] || [ "$p" = "$new_any" ] || [ "$p" = "$new_sub" ]; then continue; fi
       if [ -n "$old_sub" ] && [ -z "$new_sub" ] && [ "$p" = "$old_sub" ]; then continue; fi
       if [ -n "$hyjpt" ]; then
@@ -3560,37 +3580,58 @@ cmd_port() {
         hop_end=$(echo "$hyjpt" | cut -d: -f2 | cut -d- -f2)
         if [ "$p" -ge "$hop_start" ] && [ "$p" -le "$hop_end" ]; then continue; fi
       fi
+      is_port_conflict "$p" && { _try=$((_try+1)); [ $_try -ge 100 ] && break; continue; }
       echo "$p"
       break
     done
   }
 
   if [ -n "$in_tu" ] && [ "$in_tu" != "rand" ] && [ "$in_tu" != "random" ]; then
-    new_tu="$in_tu"
+    if [ "$in_tu" = "keep" ] || [ "$in_tu" = "same" ]; then
+      new_tu="$old_tu"
+    else
+      new_tu="$in_tu"
+    fi
   elif [ "$tup" = yes ]; then
     new_tu=$(_gen_rand_port)
   fi
 
   if [ -n "$in_hy2" ] && [ "$in_hy2" != "rand" ] && [ "$in_hy2" != "random" ]; then
-    new_hy2="$in_hy2"
+    if [ "$in_hy2" = "keep" ] || [ "$in_hy2" = "same" ]; then
+      new_hy2="$old_hy2"
+    else
+      new_hy2="$in_hy2"
+    fi
   elif [ "$hyp" = yes ]; then
     new_hy2=$(_gen_rand_port)
   fi
 
   if [ -n "$in_nv" ] && [ "$in_nv" != "rand" ] && [ "$in_nv" != "random" ]; then
-    new_nv="$in_nv"
+    if [ "$in_nv" = "keep" ] || [ "$in_nv" = "same" ]; then
+      new_nv="$old_nv"
+    else
+      new_nv="$in_nv"
+    fi
   elif [ "$nvp" = yes ]; then
     new_nv=$(_gen_rand_port)
   fi
 
   if [ -n "$in_rea" ] && [ "$in_rea" != "rand" ] && [ "$in_rea" != "random" ]; then
-    new_rea="$in_rea"
+    if [ "$in_rea" = "keep" ] || [ "$in_rea" = "same" ]; then
+      new_rea="$old_rea"
+    else
+      new_rea="$in_rea"
+    fi
   elif [ "$reap" = yes ]; then
     new_rea=$(_gen_rand_port)
   fi
 
   if [ -n "$in_any" ] && [ "$in_any" != "rand" ] && [ "$in_any" != "random" ]; then
-    new_any="$in_any"
+    if [ "$in_any" = "keep" ] || [ "$in_any" = "same" ]; then
+      new_any="$old_any"
+    else
+      new_any="$in_any"
+    fi
   elif [ "$anyp" = yes ]; then
     new_any=$(_gen_rand_port)
   fi
@@ -3598,15 +3639,17 @@ cmd_port() {
   if [ -n "$in_sub" ]; then
     if [ "$in_sub" = "rand" ] || [ "$in_sub" = "random" ]; then
       new_sub=$(_gen_rand_port)
-    elif [ "$in_sub" != "keep" ] && [ "$in_sub" != "no" ]; then
+    elif [ "$in_sub" = "keep" ] || [ "$in_sub" = "same" ]; then
+      new_sub="$old_sub"
+    elif [ "$in_sub" != "no" ]; then
       new_sub="$in_sub"
     fi
   fi
 
-  # 确保 1.14 原生 API 服务端口也是 10000-65535 的 5 位数随机端口
+  # 确保 1.14 原生 API 服务端口也是 10000-29999 的 5 位数低位随机端口
   local cur_api
   cur_api=$(cat "$SB_HOME/api_port" 2>/dev/null)
-  if [ -z "$cur_api" ] || [ "$cur_api" -lt 10000 ] 2>/dev/null; then
+  if [ -z "$cur_api" ] || [ "$cur_api" -lt 10000 ] || [ "$cur_api" -gt 29999 ] 2>/dev/null; then
     cur_api=$(_gen_rand_port)
     echo "$cur_api" > "$SB_HOME/api_port"
     api_port="$cur_api"
@@ -3648,7 +3691,13 @@ cmd_port() {
 
   # 写入新端口文件并更新变量
   [ -n "$new_tu" ] && { echo "$new_tu" > "$SB_HOME/port_tu"; port_tu="$new_tu"; }
-  [ -n "$new_hy2" ] && { echo "$new_hy2" > "$SB_HOME/port_hy2"; port_hy2="$new_hy2"; }
+  if [ -n "$new_hy2" ]; then
+    echo "$new_hy2" > "$SB_HOME/port_hy2"
+    port_hy2="$new_hy2"
+    if [ -f /etc/hysteria/sbbox.yaml ]; then
+      sed -i "s/^listen: .*/listen: :$new_hy2/" /etc/hysteria/sbbox.yaml
+    fi
+  fi
   [ -n "$new_nv" ] && { echo "$new_nv" > "$SB_HOME/port_nv"; port_nv="$new_nv"; }
   [ -n "$new_rea" ] && { echo "$new_rea" > "$SB_HOME/port_rea"; port_rea="$new_rea"; }
   [ -n "$new_any" ] && { echo "$new_any" > "$SB_HOME/port_any"; port_any="$new_any"; }
