@@ -1,6 +1,13 @@
 #!/usr/bin/env python3
 import sys, os, re, base64
-from http.server import HTTPServer, BaseHTTPRequestHandler
+try:
+    from http.server import ThreadingHTTPServer as ServerClass
+except ImportError:
+    from socketserver import ThreadingMixIn
+    from http.server import HTTPServer
+    class ServerClass(ThreadingMixIn, HTTPServer):
+        daemon_threads = True
+from http.server import BaseHTTPRequestHandler
 from urllib.parse import unquote
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 50934
@@ -134,8 +141,14 @@ class SubHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 def run():
-    httpd = HTTPServer(("0.0.0.0", PORT), SubHandler)
-    httpd.serve_forever()
+    httpd = ServerClass(("0.0.0.0", PORT), SubHandler)
+    httpd.daemon_threads = True
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        httpd.server_close()
 
 if __name__ == "__main__":
     run()

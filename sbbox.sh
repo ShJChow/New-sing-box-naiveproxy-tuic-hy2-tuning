@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.18"
+SBBOX_VERSION="v2.7.19"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -154,6 +154,7 @@ showmode() {
   echo "极速优化：sbbox speed 100 1000（设置客户端上/下行并激活 Hy2 与 TCP Brutal 极速拥塞控制）"
   echo "TCP Brutal：sbbox brutal show | on | off | speed | add | del（TCP Brutal 拥塞控制与限速）"
   echo "更换端口：sbbox port [tu] [hy2] [nv] [rea] [any]（无参数分配 10000-65535 随机端口并同步）"
+  echo "WARP 出站解锁：sbbox warp [on|off|status|rotate]（官方动态 API 独立生成专属账户，解锁 AI/流媒体）"
   echo "自检修复：sbbox doctor"
   echo "卸载：sbbox del"
   echo "-----------------------------------------------------------"
@@ -163,6 +164,7 @@ showmode() {
   echo "  nvp=1    🥉 启用 NaiveProxy (H3+H2，Chromium 内核级反探测伪装）"
   echo "  tup=1    4 启用 TUIC (v5，标准 QUIC 0-RTT，Hysteria2 备选）"
   echo "  reap=1   (可选) 启用 VLESS-Reality TCP 节点（免域名免证书，兼容旧客户端）"
+  echo "  warp=ai|all  (可选) 自动启用 WARP 出站解锁（默认关闭；ai 仅解锁流媒体/AI，all 全量流量）"
   echo "  alns=1   启用 acme 证书（需 ym=你的域名）"
   echo "  ym=域名  acme 证书域名（Hysteria2/AnyTLS/Tuic/Naive 使用）"
   echo "  hyjpt=25000:38000  Hysteria2 跳跃端口（默认关闭；同机有其他代理脚本时慎开）"
@@ -780,6 +782,26 @@ apply_nic_tuning() {
     fi
   else
     warn "未安装 ethtool，跳过 GRO/GSO（apt install ethtool 后重跑 sbbox tune on 可启用）"
+  fi
+
+  # RPS/RFS 软中断多核均衡：遍历网卡 rx 队列分配 CPU 掩码，避免单核 softirq 瓶颈
+  local cpu_cores rps_mask flow_entries num_rx
+  cpu_cores=$(nproc 2>/dev/null || echo 1)
+  if [ "$cpu_cores" -gt 1 ]; then
+    rps_mask=$(printf '%x' $(( (1 << cpu_cores) - 1 )))
+    flow_entries=$((8192 * cpu_cores))
+    sysctl -w net.core.rps_sock_flow_entries="$flow_entries" >/dev/null 2>&1 || true
+    if [ -d "/sys/class/net/$nic/queues" ]; then
+      num_rx=$(find "/sys/class/net/$nic/queues/" -maxdepth 1 -name 'rx-*' 2>/dev/null | wc -l)
+      [ "$num_rx" -le 0 ] && num_rx=1
+      for rxq in /sys/class/net/"$nic"/queues/rx-*/rps_cpus; do
+        [ -f "$rxq" ] && echo "$rps_mask" > "$rxq" 2>/dev/null || true
+      done
+      for rxq_dir in /sys/class/net/"$nic"/queues/rx-*/; do
+        [ -f "${rxq_dir}rps_flow_cnt" ] && echo "$((flow_entries / num_rx))" > "${rxq_dir}rps_flow_cnt" 2>/dev/null || true
+      done
+      info "网卡 $nic RPS/RFS 已绑定多核均衡（cores=$cpu_cores, mask=$rps_mask, flows=$flow_entries）"
+    fi
   fi
 }
 
@@ -2744,6 +2766,7 @@ sbrestart() {
   sleep 1
   if [ "$SERVICE_TYPE" = "systemd" ] && [ "$IS_ROOT" = 1 ]; then
     systemctl restart ${SB_SERVICE} >/dev/null 2>&1
+    hy2_external_restart
   elif [ "$SERVICE_TYPE" = "openrc" ] && [ "$IS_ROOT" = 1 ]; then
     rc-service sing-box restart >/dev/null 2>&1
   else
@@ -2844,6 +2867,7 @@ cleandel() {
   crontab /tmp/sbbox_cron.tmp >/dev/null 2>&1
   rm -f /tmp/sbbox_cron.tmp
   local old_hyjpt=$(cat "$SB_HOME/hyjpt" 2>/dev/null)
+  local port_hy2=$(cat "$SB_HOME/port_hy2" 2>/dev/null)
   if [ -n "$old_hyjpt" ]; then
     for item in $(echo "$old_hyjpt" | tr ',' ' '); do
       local ipt_port=$(echo "$item" | tr '-' ':')
@@ -2851,8 +2875,14 @@ cleandel() {
       ip6tables -D INPUT -p udp --dport "$ipt_port" -j ACCEPT 2>/dev/null || true
     done
   fi
-  iptables -t nat -F PREROUTING >/dev/null 2>&1
-  ip6tables -t nat -F PREROUTING >/dev/null 2>&1
+  # 精准清理属于 sbbox 的端口跳跃与基础端口保护规则，严禁全局 Flush 破坏 Docker / 其他代理
+  if [ -n "$port_hy2" ]; then
+    iptables -t nat -S PREROUTING 2>/dev/null | grep -w "$port_hy2" | sed 's/^-A/iptables -t nat -D/' | bash 2>/dev/null || true
+    ip6tables -t nat -S PREROUTING 2>/dev/null | grep -w "$port_hy2" | sed 's/^-A/ip6tables -t nat -D/' | bash 2>/dev/null || true
+    iptables -t nat -S OUTPUT 2>/dev/null | grep -w "$port_hy2" | sed 's/^-A/iptables -t nat -D/' | bash 2>/dev/null || true
+    ip6tables -t nat -S OUTPUT 2>/dev/null | grep -w "$port_hy2" | sed 's/^-A/ip6tables -t nat -D/' | bash 2>/dev/null || true
+  fi
+  netfilter-persistent save >/dev/null 2>&1 || true
   rm -f "$SB_BINDIR/sbbox" "$SB_HOME/deps_done"
   rm -rf "$SB_HOME" 2>/dev/null
   info "sbbox 已完全卸载"
@@ -2900,8 +2930,8 @@ apply_hy_hop() {
       local ipt_port=$(echo "$item" | tr '-' ':')
       iptables -t nat -A PREROUTING -p udp --dport "$ipt_port" -j DNAT --to-destination :$port_hy2 2>/dev/null
       ip6tables -t nat -A PREROUTING -p udp --dport "$ipt_port" -j DNAT --to-destination :$port_hy2 2>/dev/null
-      iptables -C INPUT -p udp --dport "$ipt_port" -j ACCEPT 2>/dev/null || iptables -I INPUT 1 -p udp --dport "$ipt_port" -j ACCEPT 2>/dev/null
-      ip6tables -C INPUT -p udp --dport "$ipt_port" -j ACCEPT 2>/dev/null || ip6tables -I INPUT 1 -p udp --dport "$ipt_port" -j ACCEPT 2>/dev/null
+      fw_accept_rule iptables  udp "$ipt_port"
+      fw_accept_rule ip6tables udp "$ipt_port"
     done
     # 保护基础端口：若它落在本机其他端口段规则的范围内，会被改写投递到别处。
     guard_base_port "$port_hy2"
@@ -3691,6 +3721,238 @@ cmd_rotate() {
   info "密钥轮换完成，请用上面的新节点信息重新导入客户端"
 }
 
+# ======================================================
+# Cloudflare WARP 原生出站管理 (WireGuard 智能分流与流媒体/AI 解锁)
+# ======================================================
+WARP_CONF="$SB_HOME/warp.json"
+WARP_MODE_FILE="$SB_HOME/warp_mode"
+
+ensure_warp_account() {
+  local force="${1:-0}"
+  if [ "$force" != "1" ] && [ -s "$WARP_CONF" ]; then
+    return 0
+  fi
+  info "正在通过 Cloudflare 官方 API 动态注册独立专属 WARP 账户……"
+  local py_res
+  py_res=$(python3 -c "
+import urllib.request, json, subprocess, base64, sys
+
+try:
+    res = subprocess.check_output(['openssl', 'genpkey', '-algorithm', 'X25519', '-outform', 'DER'], stderr=subprocess.DEVNULL)
+    priv_raw = res[-32:]
+    priv_b64 = base64.b64encode(priv_raw).decode()
+    p = subprocess.Popen(['openssl', 'pkey', '-inform', 'DER', '-pubout', '-outform', 'DER'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    pub_der, _ = p.communicate(input=res)
+    pub_raw = pub_der[-32:]
+    pub_b64 = base64.b64encode(pub_raw).decode()
+    
+    req = urllib.request.Request(
+        'https://api.cloudflareclient.com/v0a2158/reg',
+        data=json.dumps({'key': pub_b64, 'type': 'Android', 'locale': 'zh_CN'}).encode(),
+        headers={'Content-Type': 'application/json', 'User-Agent': 'okhttp/3.12.1'}
+    )
+    with urllib.request.urlopen(req, timeout=12) as r:
+        resp = json.loads(r.read().decode())
+    cfg = resp.get('config', {})
+    v6 = cfg.get('interface', {}).get('addresses', {}).get('v6', '')
+    v4 = cfg.get('interface', {}).get('addresses', {}).get('v4', '172.16.0.2')
+    res_b64 = cfg.get('client_id', '')
+    reserved = list(base64.b64decode(res_b64)) if res_b64 else [0, 0, 0]
+    out = {
+        'id': resp.get('id', ''),
+        'private_key': priv_b64,
+        'public_key': pub_b64,
+        'v6': v6,
+        'v4': v4,
+        'reserved': reserved
+    }
+    print(json.dumps(out))
+except Exception as e:
+    sys.stderr.write(f'ERROR: {e}\n')
+    sys.exit(1)
+" 2>"$SB_HOME/warp_err.log")
+
+  if [ $? -eq 0 ] && [ -n "$py_res" ]; then
+    echo "$py_res" > "$WARP_CONF"
+    chmod 600 "$WARP_CONF"
+    info "WARP 独立专属账户注册成功并已安全保存（$WARP_CONF）"
+    return 0
+  else
+    error "WARP 账户注册失败：$(cat "$SB_HOME/warp_err.log" 2>/dev/null || echo '未知错误')"
+    return 1
+  fi
+}
+
+apply_warp_to_sb_conf() {
+  local mode="${1:-ai}"
+  [ -f "$SB_CONF" ] || { error "配置文件不存在：$SB_CONF"; return 1; }
+  [ -s "$WARP_CONF" ] || { error "WARP 凭据文件不存在：$WARP_CONF"; return 1; }
+
+  local py_res
+  py_res=$(python3 -c "
+import json, sys
+
+sb_conf = '$SB_CONF'
+warp_conf = '$WARP_CONF'
+mode = '$mode'
+
+try:
+    with open(sb_conf) as f:
+        d = json.load(f)
+    with open(warp_conf) as f:
+        w = json.load(f)
+
+    warp_ep = {
+        'type': 'wireguard',
+        'tag': 'warp-out',
+        'address': [w.get('v4', '172.16.0.2') + '/32', w.get('v6') + '/128'],
+        'private_key': w.get('private_key'),
+        'peers': [{
+            'address': '162.159.192.1',
+            'port': 2408,
+            'public_key': 'bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=',
+            'allowed_ips': ['0.0.0.0/0', '::/0'],
+            'reserved': w.get('reserved', [0, 0, 0])
+        }]
+    }
+
+    endpoints = d.get('endpoints', [])
+    if not isinstance(endpoints, list):
+        endpoints = []
+    endpoints = [ep for ep in endpoints if ep.get('tag') != 'warp-out']
+    endpoints.append(warp_ep)
+    d['endpoints'] = endpoints
+
+    rules = d.setdefault('route', {}).setdefault('rules', [])
+    rules = [r for r in rules if r.get('outbound') != 'warp-out']
+
+    if mode == 'all':
+        rule = {
+            'action': 'route',
+            'ip_cidr': ['0.0.0.0/0', '::/0'],
+            'outbound': 'warp-out'
+        }
+    else:
+        rule = {
+            'action': 'route',
+            'domain_suffix': [
+                'openai.com', 'chatgpt.com', 'oaistatic.com', 'oaiusercontent.com',
+                'anthropic.com', 'claude.ai',
+                'netflix.com', 'netflix.net', 'nflxext.com', 'nflximg.net', 'nflxvideo.net',
+                'disneyplus.com', 'disney-plus.net', 'dssott.com',
+                'spotify.com', 'scdn.co'
+            ],
+            'outbound': 'warp-out'
+        }
+
+    # 插入位置：紧随所有 reject 规则之后，保持私有 IP 与防滥用拦截优先生效
+    insert_idx = len(rules)
+    for i, r in enumerate(rules):
+        if r.get('action') == 'reject':
+            insert_idx = i + 1
+    rules.insert(insert_idx, rule)
+
+    with open(sb_conf + '.tmp', 'w') as f:
+        json.dump(d, f, indent=2)
+    print('OK')
+except Exception as e:
+    sys.stderr.write(f'{e}\n')
+    sys.exit(1)
+" 2>&1)
+
+  if [ "$py_res" = "OK" ] && [ -f "${SB_CONF}.tmp" ]; then
+    if "$SB_BIN" check -c "${SB_CONF}.tmp" >/dev/null 2>&1; then
+      mv -f "${SB_CONF}.tmp" "$SB_CONF"
+      echo "$mode" > "$WARP_MODE_FILE"
+      sbrestart
+      info "WARP 出站已启用（模式：$mode），流媒体与 AI 已自动分流！"
+      return 0
+    else
+      error "sing-box 校验新 WARP 配置失败，已回滚"
+      rm -f "${SB_CONF}.tmp"
+      return 1
+    fi
+  else
+    error "更新 WARP 配置失败：$py_res"
+    rm -f "${SB_CONF}.tmp"
+    return 1
+  fi
+}
+
+remove_warp_from_sb_conf() {
+  [ -f "$SB_CONF" ] || return 0
+  python3 -c "
+import json
+sb_conf = '$SB_CONF'
+with open(sb_conf) as f:
+    d = json.load(f)
+if 'endpoints' in d:
+    d['endpoints'] = [ep for ep in d['endpoints'] if ep.get('tag') != 'warp-out']
+    if not d['endpoints']:
+        del d['endpoints']
+if 'route' in d and 'rules' in d['route']:
+    d['route']['rules'] = [r for r in d['route']['rules'] if r.get('outbound') != 'warp-out']
+with open(sb_conf + '.tmp', 'w') as f:
+    json.dump(d, f, indent=2)
+" 2>/dev/null
+  if [ -f "${SB_CONF}.tmp" ]; then
+    if "$SB_BIN" check -c "${SB_CONF}.tmp" >/dev/null 2>&1; then
+      mv -f "${SB_CONF}.tmp" "$SB_CONF"
+      rm -f "$WARP_MODE_FILE"
+      sbrestart
+      info "WARP 出站已关闭，所有流量已恢复原生 Direct 直出"
+    else
+      rm -f "${SB_CONF}.tmp"
+    fi
+  fi
+}
+
+cmd_warp() {
+  local action="${1:-status}"
+  local mode="${2:-ai}"
+  case "$action" in
+    on|enable)
+      case "$mode" in
+        all|ALL) mode="all" ;;
+        *) mode="ai" ;;
+      esac
+      ensure_warp_account && apply_warp_to_sb_conf "$mode"
+      ;;
+    off|disable|stop)
+      remove_warp_from_sb_conf
+      ;;
+    status)
+      echo ""
+      echo -e "${CYAN}=== Cloudflare WARP 出站状态 ===${NC}"
+      if [ -s "$WARP_MODE_FILE" ]; then
+        echo -e "  状态:         ${GREEN}已开启 ($(cat "$WARP_MODE_FILE") 模式)${NC}"
+        if [ "$(cat "$WARP_MODE_FILE")" = "ai" ]; then
+          echo -e "  分流策略:     ${GREEN}仅流媒体与 AI (OpenAI/ChatGPT/Claude/Netflix/Disney+/Spotify) 走 WARP${NC}"
+          echo -e "                其他普通流量维持原生直连 (极速 BBRv3 / TCP Brutal)"
+        else
+          echo -e "  分流策略:     ${YELLOW}全量流量出站走 WARP${NC}"
+        fi
+      else
+        echo -e "  状态:         ${YELLOW}未启用（全部流量原生 Direct 直连出站）${NC}"
+      fi
+      if [ -s "$WARP_CONF" ]; then
+        echo -e "  专属 IPv6:    ${CYAN}$(python3 -c "import json; print(json.load(open('$WARP_CONF')).get('v6',''))" 2>/dev/null)${NC}"
+        echo -e "  凭据文件:     $WARP_CONF (权限 0600)"
+      fi
+      ;;
+    rotate)
+      info "正在重新申请专属 WARP 账户凭据……"
+      ensure_warp_account 1
+      if [ -s "$WARP_MODE_FILE" ]; then
+        apply_warp_to_sb_conf "$(cat "$WARP_MODE_FILE")"
+      fi
+      ;;
+    *)
+      echo "用法：sbbox warp on [ai|all] | off | status | rotate"
+      ;;
+  esac
+}
+
 status_show() {
   echo "========= sbbox 服务状态 ========="
   if pgrep -f "sing-box run -c $SB_CONF" >/dev/null 2>&1; then
@@ -3698,10 +3960,17 @@ status_show() {
   else
     echo -e "sing-box: ${RED}未运行${NC}"
   fi
+  if hy2_external; then
+    if systemctl is-active hysteria-sbbox >/dev/null 2>&1; then
+      echo -e "hysteria-sbbox: ${GREEN}运行中 (外置 Hysteria 2.12.3)${NC}"
+    else
+      echo -e "hysteria-sbbox: ${RED}未运行${NC}"
+    fi
+  fi
   echo ""
   if command -v ss >/dev/null 2>&1; then
     echo -e "${CYAN}[+] 监听端口${NC}"
-    ss -tulnp 2>/dev/null | grep -E 'sing-box' || echo "  （未发现 sing-box 监听）"
+    ss -tulnp 2>/dev/null | grep -E 'sing-box|hysteria' || echo "  （未发现 sing-box/hysteria 监听）"
   fi
   local api_p
   api_p=$(cat "$SB_HOME/api_port" 2>/dev/null)
@@ -3718,6 +3987,10 @@ status_show() {
   fi
   if [ -s "$SB_HOME/hybw" ]; then
     echo -e "${CYAN}[+] Hysteria2 优化带宽${NC}: $(awk '{print "客户端上行 "$1" Mbps / 客户端下行 "$2" Mbps"}' "$SB_HOME/hybw")"
+  fi
+  if [ -s "$WARP_MODE_FILE" ]; then
+    echo ""
+    echo -e "${CYAN}[+] Cloudflare WARP 出站解锁${NC}: $(cat "$WARP_MODE_FILE") 模式"
   fi
   echo ""
   if [ -x "$SB_BIN" ]; then
@@ -3761,6 +4034,7 @@ main() {
     speed|bw) shift; cmd_speed "$@"; exit ;;
     brutal) shift; cmd_brutal "$@"; exit ;;
     port)   shift; cmd_port "$@"; exit ;;
+    warp)   shift; cmd_warp "$@"; exit ;;
     doctor) doctor; exit ;;
     rotate) cmd_rotate; exit ;;
     del)    cleandel; exit ;;
@@ -3822,6 +4096,11 @@ main() {
   apply_hy_hop
   install_service
   gen_client
+
+  case "$warp" in
+    1|yes|on|true|YES|ON|TRUE) cmd_warp on ai ;;
+    ai|all) cmd_warp on "$warp" ;;
+  esac
 
   install_cmd
   setup_logrotate
@@ -4141,6 +4420,14 @@ doctor() {
     svc_down=1
   else
     echo -e "sing-box 服务：${GREEN}运行中${NC}"
+  fi
+  if hy2_external; then
+    if systemctl is-active hysteria-sbbox >/dev/null 2>&1; then
+      echo -e "hysteria-sbbox 独立服务：${GREEN}运行中 (外置 Hysteria 2.12.3)${NC}"
+    else
+      echo -e "hysteria-sbbox 独立服务：${RED}未运行${NC} → 尝试重启"
+      svc_down=1
+    fi
   fi
 
   # 需要证书的协议（naive）若证书缺失或域名不匹配视为不通

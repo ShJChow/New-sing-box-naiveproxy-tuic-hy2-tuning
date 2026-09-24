@@ -67,7 +67,8 @@
 - [三十五、v2.7.16 修复：稳定版 sing-box 加载不了订阅、Mihomo 订阅整份加载失败](#三十五v2716-修复稳定版-sing-box-加载不了订阅mihomo-订阅整份加载失败)
 - [三十六、v2.7.17 防火墙放行规则不再顶到最前、fs.suid_dumpable = 0](#三十六v2717-防火墙放行规则不再顶到最前fssuid_dumpable--0)
 - [三十七、v2.7.18 不再发送 ICMP 重定向（出口网卡 send_redirects = 0）](#三十七v2718-不再发送-icmp-重定向出口网卡-send_redirects--0)
-- [三十八、免责声明](#三十八免责声明)
+- [三十八、v2.7.19 对标 argosbx 深度审查、原生 WARP 出站解锁、网卡 RPS/RFS 绑核与运维安全加固](#三十八v2719-对标-argosbx-深度审查原生-warp-出站解锁网卡-rpsrfs-绑核与运维安全加固)
+- [三十九、免责声明](#三十九免责声明)
 
 ---
 
@@ -2100,7 +2101,39 @@ sysctl net.ipv4.conf.all.send_redirects net.ipv4.conf.default.send_redirects \
 
 ---
 
-## 三十八、免责声明
+## 三十八、v2.7.19 对标 argosbx 深度审查、原生 WARP 出站解锁、网卡 RPS/RFS 绑核与运维安全加固
+
+对标业界知名一键脚本 `yonggekkk/argosbx` 进行全链路源码级深度审查（参见详细对比报告），取其长处（流媒体落地解锁与救砖思维），摒弃其短板与安全隐患（硬编码公共私钥、暴力清空防火墙、无内核网络调优、订阅明文传输、二进制非官方构建），实现针对性升级：
+
+### 1.〔新特性〕原生 Cloudflare WARP 出站与 AI/流媒体智能分流 (`sbbox warp`)
+- **根除 argosbx 的公共私钥风控隐患**：argosbx 接口失败时直接回退到硬编码的静态公用私钥，导致海量用户共用同一账号被 Cloudflare 风控。本项目内置调用 Cloudflare 官方 API（动态生成 X25519 密钥对），为当前机器注册**独立唯一的专属 WARP 账户**，专属 IPv6 与保留字段严格保存在 `0600` 权限的 `warp.json`。
+- **智能分流设计**：在 `sb.json` 中配置原生 `wireguard` endpoint（tag: `warp-out`）。默认 `ai` 模式仅将 OpenAI/ChatGPT、Claude、Netflix、Disney+、Spotify 等常用 AI 与流媒体域名牵引至 WARP 出站，普通流量依然走原生网卡 Direct 出站，完美保留 BBRv3 / TCP Brutal 的极限带宽与低延迟！
+- **管理命令**：
+  - `sbbox warp on [ai|all]`：开启 WARP 出站（`ai` 智能分流 / `all` 全量出站）；
+  - `sbbox warp off`：一键无缝回滚 Direct 直连；
+  - `sbbox warp status`：查看 WARP 账户与当前分流模式；
+  - `sbbox warp rotate`：重新申请并轮换全新 WARP 账户。
+  - 安装期支持传入环境变量 `warp=ai` 或 `warp=all` 自动激活。
+
+### 2.〔性能〕网卡层软中断 RPS/RFS 多核队列均衡补齐
+- **短板修复**：此前仅在 sysctl 中设置了全局 `rps_sock_flow_entries`，若机器未安装过 Xray 项目，网卡队列文件未真正写入 `rps_cpus` 掩码，软中断仍扎堆单核。
+- **加固**：在 `apply_nic_tuning` 中自动识别 CPU 核心数，计算多核掩码，遍历网卡各 `rx-*/rps_cpus` 队列写入核心掩码，并将 `rps_flow_cnt = 16384` 均匀分配至各队列，彻底释放 4 核/多核机器的网络软中断吞吐上限。
+
+### 3.〔安全〕防火墙精准卸载治理与 QDoS 放行顺序修复
+- **根治暴力 PREROUTING 清空**：`cleandel()` 卸载中此前存在遗留的 `iptables -t nat -F PREROUTING`，会连带清空同机 Docker 及其他代理服务的端口映射规则。现已升级为按端口与特征精准删除 sbbox 规则，杜绝破坏同机环境。
+- **修复端口跳跃放行排位**：`apply_hy_hop()` 中此前使用的 `iptables -I INPUT 1` 修正为调用 `fw_accept_rule`，确保放行规则永远排在 `INVALID` 丢弃与 `QDoS hashlimit` 令牌桶限速之后，杜绝高频 UDP 握手穿透限速防护。
+
+### 4.〔运维〕外置 Hysteria2 运维生命周期闭环
+- `sbbox res` 重启服务时自动联动重启 `hysteria-sbbox.service`；
+- `sbbox doctor` 自检与自动修复完整覆盖外置 Hysteria 2 进程与 UDP 44116 端口监听；
+- `sbbox status` 显式标出外置 Hysteria 2.12.3 的运行状态与端口占用。
+
+### 5.〔健壮〕订阅服务高并发与防挂死改造 (`sub_server.py`)
+- Python 订阅服务端升级为 `ThreadingHTTPServer`（多线程并发模型），彻底解决单线程阻塞导致客户端拉取订阅超时的隐患。
+
+---
+
+## 三十九、免责声明
 
 本项目仅供网络技术研究与学习交流使用。使用者须自行遵守所在国家/地区的法律法规，因使用本脚本产生的一切后果由使用者自行承担。
 

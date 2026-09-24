@@ -739,7 +739,25 @@ Earlier releases only validated client configs with this host's pre-release sing
 
 With Docker installed `ip_forward = 1`, so the kernel sends ICMP redirects when it forwards a packet back out its ingress interface, leaking routing information to the local segment. Sending is on if **either** `all` or the interface is 1; `all`/`default` were 0 but the uplink `enp0s6` — present before boot, so untouched by `default` — was 1, so redirects were being sent. Negative control (host bridge plus two netns, A forced via the host to reach B, ICMP type 5 captured on A): `all=0` with the bridge at 1 → **2 redirects**; bridge at 0 → **0**. The tuning now writes `send_redirects = 0` for `all`, `default` and the current default-route interface (a `.` in a VLAN name becomes `/`); systemd's udev rule re-applies per-interface keys from `sysctl.d` when the NIC appears, so it persists across reboots. Receive side unchanged: with forwarding on, `accept_redirects` requires both `all` and the interface, and `all = 0` is enough. Matches the co-located Xray project's v4.9.33. Regression 13/13 PASS.
 
-## 29. Disclaimer
+## 29. v2.7.19 — In-depth Review vs argosbx, Native WARP Outbound Unblocking, RPS/RFS Queue Binding, and DevOps/Security Hardening
+
+Based on an in-depth source code audit comparing `yonggekkk/argosbx` with `sbbox`, this release integrates key strengths (outbound unblocking) while discarding brittle implementations (hardcoded public private keys, destructive firewall flushing, un-tuned network stacks, and unencrypted subscriptions):
+
+- **Native Cloudflare WARP Outbound & Smart AI/Streaming Detour (`sbbox warp`):**
+  - **Eliminating Shared-Key Risks:** Rather than falling back to hardcoded public private keys like argosbx (which exposes thousands of users to shared Cloudflare account bans), `sbbox` calls the official Cloudflare Client API to dynamically register a **dedicated, unique WARP account** using locally generated X25519 keypairs. The private credentials, assigned IPv6 address, and reserved fields are stored in `/root/sbbox/warp.json` (`0600` permissions).
+  - **Smart Routing Detour:** Configures a native `wireguard` endpoint in `sb.json` (`tag: warp-out`). By default (`ai` mode), requests for OpenAI, ChatGPT, Claude, Netflix, Disney+, and Spotify are routed via WARP, while regular web and proxy traffic maintains native direct delivery to leverage BBRv3 and the 64 MB TCP window.
+  - **Management Commands:** `sbbox warp on [ai|all]`, `sbbox warp off`, `sbbox warp status`, and `sbbox warp rotate`.
+- **RPS/RFS Softirq Multi-Queue Affinity on Network Interfaces:**
+  - Automated detection of CPU cores in `apply_nic_tuning` computes multi-core affinity bitmasks (e.g. `f` for 4 cores), distributing softirqs across all `rx-*/rps_cpus` queues and setting `rps_flow_cnt = 16384` evenly. Prevents single-core softirq saturation on high-throughput links.
+- **Firewall Clean-Up Precision & QDoS Accept Placement Fix:**
+  - Replaced legacy `iptables -t nat -F PREROUTING` in `cleandel()` with targeted rule deletion matched by ports and chains, avoiding disruption of Docker or other co-located services.
+  - Replaced legacy `iptables -I INPUT 1` in `apply_hy_hop()` with `fw_accept_rule` to ensure port accepts are placed after QDoS hashlimit drop rules.
+- **External Hysteria 2 DevOps Lifecycle Integration:**
+  - `sbbox res` now restarts `hysteria-sbbox.service` in tandem; `sbbox doctor` and `sbbox status` comprehensively check external Hysteria 2.12.3 process and UDP 44116 port health.
+- **Subscription Server Concurrency (`sub_server.py`):**
+  - Upgraded from single-threaded `HTTPServer` to `ThreadingHTTPServer` to prevent client fetch timeout bottlenecks.
+
+## 30. Disclaimer
 
 This project is provided for network technology research and educational purposes only. Users are responsible for complying with local laws and regulations.
 
