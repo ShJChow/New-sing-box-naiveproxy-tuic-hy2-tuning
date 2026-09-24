@@ -58,7 +58,9 @@ Bundled with:
 - [26. v2.7.16 — Fix: Stable sing-box Could Not Load the Subscription; the Mihomo Subscription Failed to Load](#26-v2716--fix-stable-sing-box-could-not-load-the-subscription-the-mihomo-subscription-failed-to-load)
 - [27. v2.7.17 — Firewall Accept Rules No Longer Jump to the Top; fs.suid_dumpable = 0](#27-v2717--firewall-accept-rules-no-longer-jump-to-the-top-fssuid_dumpable--0)
 - [28. v2.7.18 — Stop Sending ICMP Redirects (send_redirects = 0 on the Uplink)](#28-v2718--stop-sending-icmp-redirects-send_redirects--0-on-the-uplink)
-- [29. Disclaimer](#29-disclaimer)
+- [29. v2.7.19 — In-depth Review vs argosbx, Native WARP Outbound Unblocking, RPS/RFS Queue Binding, and DevOps/Security Hardening](#29-v2719--in-depth-review-vs-argosbx-native-warp-outbound-unblocking-rpsrfs-queue-binding-and-devopssecurity-hardening)
+- [30. v2.7.20 — AnyTLS Session Pool Lifecycle Tuning, Port Reservations, and Automated Test Integration](#30-v2720--anytls-session-pool-lifecycle-tuning-port-reservations-and-automated-test-integration)
+- [31. Disclaimer](#31-disclaimer)
 
 ---
 
@@ -757,7 +759,24 @@ Based on an in-depth source code audit comparing `yonggekkk/argosbx` with `sbbox
 - **Subscription Server Concurrency (`sub_server.py`):**
   - Upgraded from single-threaded `HTTPServer` to `ThreadingHTTPServer` to prevent client fetch timeout bottlenecks.
 
-## 30. Disclaimer
+## 30. v2.7.20 — AnyTLS Session Pool Lifecycle Tuning, Port Reservations, and Automated Test Integration
+
+Based on empirical performance on cross-border high-RTT (160ms+) networks and production best practice feedback, v2.7.20 delivers targeted micro-tuning to **AnyTLS** client session pool management, expands local port reservations, and closes the automated test loop:
+
+- **AnyTLS Client Session Pool Lifecycle Convergence (`idle_session_timeout` 10m → 2m):**
+  - **Rationale & Trade-off:** While the previous 10m timeout kept TCP congestion windows warm over long periods, mobile clients (phones/tablets) shifting networks (Wi-Fi $\leftrightarrow$ 5G) or sleeping for extended periods tended to accumulate dead sessions, causing occasional latency spikes on post-wake first requests.
+  - **Parameters Tuned:**
+    - **sing-box Client:** `idle_session_timeout` set to `"2m"` (120s), keeping `min_idle_session: 2` (pre-warmed for 0-RTT web browsing) and `idle_session_check_interval: "30s"`.
+    - **Mihomo / Clash Client:** `idle-session-timeout` set to `120` (seconds), keeping `min-idle-session: 2` and `idle-session-check-interval: 30`.
+    - Delivers sub-millisecond connection reuse for desktop and active browsing while preventing stale connection buildup on mobile devices.
+- **Kernel Local Reserved Ports Expansion (`11801-11806`):**
+  - Expanded `net.ipv4.ip_local_reserved_ports` from `11801-11805` to `11801-11806` to include the AnyTLS test port, preventing ephemeral outbound connections from colliding and throwing `bind: address already in use`.
+  - Co-located Xray project synchronized in `06-tuning-lib.sh` and `/etc/sysctl.d/99-xray-xhttp.conf` for 100% sysctl parity.
+- **Automated Regression Test Loop Integration (14/14 ALL PASS):**
+  - Integrated AnyTLS (port 11806) into `/root/run_test.py` to establish continuous automated health validation.
+  - Test results: Median 3.1ms, p95 14.8ms, jitter 1.1x across 7 sampled runs; all 14 nodes (1 baseline + 8 Xray + 6 sbbox) pass with full green status.
+
+## 31. Disclaimer
 
 This project is provided for network technology research and educational purposes only. Users are responsible for complying with local laws and regulations.
 

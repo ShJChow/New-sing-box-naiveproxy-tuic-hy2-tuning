@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.19"
+SBBOX_VERSION="v2.7.20"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -919,7 +919,7 @@ apply_tuning() {
   try_sysctl net.ipv4.tcp_max_syn_backlog "$NETDEV_BACKLOG"
   try_sysctl net.ipv4.tcp_max_tw_buckets 65536
   try_sysctl net.ipv4.ip_local_port_range "1024 65535"
-  try_sysctl net.ipv4.ip_local_reserved_ports "8001,8003,8443,8445,8446,10489,10800-10809,11801-11805,18793,23106,28443,44116"
+  try_sysctl net.ipv4.ip_local_reserved_ports "8001,8003,8443,8445,8446,10489,10800-10809,11801-11806,18793,23106,28443,44116"
 
   # conntrack 仅在模块已加载时调整
   if [ "$CONNTRACK_MAX" -gt 0 ] && [ -r /proc/sys/net/netfilter/nf_conntrack_max ]; then
@@ -2298,7 +2298,7 @@ gen_client_sbox() {
         "tcp_keep_alive": "30s",
         "tcp_keep_alive_interval": "5s",
         "idle_session_check_interval": "30s",
-        "idle_session_timeout": "10m",
+        "idle_session_timeout": "2m",
         "min_idle_session": 2,
         "tls": {
             "enabled": true,
@@ -2571,7 +2571,7 @@ gen_client_clash() {
     client-fingerprint: chrome
     udp: true
     idle-session-check-interval: 30
-    idle-session-timeout: 600
+    idle-session-timeout: 120
     min-idle-session: 2"
 
     groups="$groups

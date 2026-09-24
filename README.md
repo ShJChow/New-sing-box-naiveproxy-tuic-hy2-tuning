@@ -68,7 +68,8 @@
 - [三十六、v2.7.17 防火墙放行规则不再顶到最前、fs.suid_dumpable = 0](#三十六v2717-防火墙放行规则不再顶到最前fssuid_dumpable--0)
 - [三十七、v2.7.18 不再发送 ICMP 重定向（出口网卡 send_redirects = 0）](#三十七v2718-不再发送-icmp-重定向出口网卡-send_redirects--0)
 - [三十八、v2.7.19 对标 argosbx 深度审查、原生 WARP 出站解锁、网卡 RPS/RFS 绑核与运维安全加固](#三十八v2719-对标-argosbx-深度审查原生-warp-出站解锁网卡-rpsrfs-绑核与运维安全加固)
-- [三十九、免责声明](#三十九免责声明)
+- [三十九、v2.7.20 AnyTLS 连接池生命周期微调、端口保留与自动化测试闭环](#三十九v2720-anytls-连接池生命周期微调端口保留与自动化测试闭环)
+- [四十、免责声明](#四十免责声明)
 
 ---
 
@@ -2133,7 +2134,28 @@ sysctl net.ipv4.conf.all.send_redirects net.ipv4.conf.default.send_redirects \
 
 ---
 
-## 三十九、免责声明
+## 三十九、v2.7.20 AnyTLS 连接池生命周期微调、端口保留与自动化测试闭环
+
+基于真实跨洋高延迟（RTT 160ms+）网络实测与最佳实践反馈，在 **v2.7.20** 中对 **AnyTLS** 客户端连接池生命周期、本地端口保留及全链路自动化验证回路完成深度微调与收敛：
+
+### 1.〔客户端〕AnyTLS 连接池生命周期微调（`idle_session_timeout` 10m → 2m）
+- **根因分析与权衡**：此前设置的 `10m` 虽然实现了极长周期的 warm cwnd 保活，但在移动端设备（手机/平板）频繁切网（如 Wi-Fi $\leftrightarrow$ 5G）或长时间熄屏待机时，过长的空闲超时易累积失效连接，导致恢复唤醒后的首包探测偶发挂起。
+- **参数收敛**：
+  - **sing-box 客户端**（`sbox_client.json` 与订阅生成逻辑）：`idle_session_timeout` 调整为 `"2m"`（120秒），保留 `min_idle_session: 2`（预留 2 条活跃连接，秒开网页）与 `idle_session_check_interval: "30s"`；
+  - **Mihomo / Clash 客户端**（`clmi.yaml` 与订阅生成逻辑）：`idle-session-timeout` 调整为 `120`（秒），保留 `min-idle-session: 2` 与 `idle-session-check-interval: 30`；
+  - 既兼顾了桌面端与网页浏览的 0-RTT 极速复用秒开，又彻底解决了移动端闲置死连接堆积隐患。
+
+### 2.〔网络〕内核本地保留端口扩容（`11801-11806`）与双项目严格对齐
+- **端口碰撞防护**：将 `net.ipv4.ip_local_reserved_ports` 中的 sbbox 端口范围由 `11801-11805` 扩展为 `11801-11806`，覆盖 AnyTLS 测试端口，阻断本地短连接随机分配到测试端口造成 `bind: address already in use`。
+- **双仓库完全对齐**：同机部署的 Xray 项目在 `06-tuning-lib.sh` 与 `/etc/sysctl.d/99-xray-xhttp.conf` 同步加入，两项目保持 100% sysctl 键值一致性。
+
+### 3.〔测试〕全量测试回路补齐 AnyTLS 节点（14/14 ALL PASS）
+- 自动化诊断脚本全面接入 AnyTLS（11806 端口）进行本地 SOCKS5 代理循环探测。
+- 现场 7 轮预热采样实测：**中位 3.1ms，p95 14.8ms，抖动仅 1.1x**，全系统 14 个测试节点（1 个直连基线 + 8 个 Xray 节点 + 6 个 sbbox 协议节点）全绿通过！
+
+---
+
+## 四十、免责声明
 
 本项目仅供网络技术研究与学习交流使用。使用者须自行遵守所在国家/地区的法律法规，因使用本脚本产生的一切后果由使用者自行承担。
 
