@@ -249,6 +249,32 @@ open_port() {
   fi
 }
 
+close_port() {
+  local port="$1" proto="${2:-tcp}"
+  [ -n "$port" ] || return 0
+  if [ "$IS_ROOT" = 1 ]; then
+    if command -v iptables >/dev/null 2>&1; then
+      iptables -S INPUT 2>/dev/null | grep -E "(^| )--dport $port( |$)" | sed 's/^-A/iptables -D/' | bash 2>/dev/null || true
+    fi
+    if command -v ip6tables >/dev/null 2>&1; then
+      ip6tables -S INPUT 2>/dev/null | grep -E "(^| )--dport $port( |$)" | sed 's/^-A/ip6tables -D/' | bash 2>/dev/null || true
+    fi
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+      ufw delete allow "${port}/${proto}" >/dev/null 2>&1 || true
+    fi
+    if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state 2>/dev/null | grep -q "running"; then
+      firewall-cmd --remove-port="${port}/${proto}" --permanent >/dev/null 2>&1 || true
+      firewall-cmd --reload >/dev/null 2>&1 || true
+    fi
+    if command -v netfilter-persistent >/dev/null 2>&1; then
+      netfilter-persistent save >/dev/null 2>&1 || true
+    elif [ -x "$(command -v iptables-save 2>/dev/null)" ] && [ -d /etc/iptables ]; then
+      iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+      ip6tables-save > /etc/iptables/rules.v6 2>/dev/null || true
+    fi
+  fi
+}
+
 
 # ---------- sing-box 内核下载/更新 ----------
 # 查询 sing-box 最新版本号（去掉 tag 的 v 前缀）。
@@ -1287,7 +1313,18 @@ installsb() {
   [ -n "$tup" ] && { assign_port tu "$port_tu"; echo "Tuic 端口：$port_tu"; open_port "$port_tu" udp; }
   [ -n "$hyp" ] && { assign_port hy2 "$port_hy2"; echo "Hysteria2 端口：$port_hy2"; open_port "$port_hy2" udp; apply_hy_qdos "$port_hy2"; }
   [ -n "$nvp" ] && { assign_port nv "$port_nv"; echo "Naiveproxy 端口：$port_nv"; open_port "$port_nv" tcp; open_port "$port_nv" udp; }
-  [ -n "$reap" ] && { assign_port rea "$port_rea"; echo "VLESS-Reality 端口：$port_rea"; open_port "$port_rea" tcp; }
+  if [ -n "$reap" ]; then
+    assign_port rea "$port_rea"
+    echo "VLESS-Reality 端口：$port_rea"
+    open_port "$port_rea" tcp
+  else
+    if [ -f "$SB_HOME/port_rea" ]; then
+      local _unneeded_rea
+      _unneeded_rea=$(cat "$SB_HOME/port_rea" 2>/dev/null || true)
+      [ -n "$_unneeded_rea" ] && close_port "$_unneeded_rea" tcp
+      rm -f "$SB_HOME/port_rea" "$SB_HOME/proto_rea"
+    fi
+  fi
   [ -n "$anyp" ] && { assign_port any "${port_any:-28443}"; echo "AnyTLS 端口：$port_any"; open_port "$port_any" tcp; }
 
 
@@ -3691,23 +3728,7 @@ cmd_port() {
 
   # 清理旧端口在防火墙与 NAT 表中的规则
   _clean_old_port() {
-    local p="$1" proto="${2:-tcp}"
-    [ -n "$p" ] || return 0
-    if [ "$IS_ROOT" = 1 ]; then
-      if command -v iptables >/dev/null 2>&1; then
-        iptables -S INPUT 2>/dev/null | grep -E "(^| )--dport $p( |$)" | sed 's/^-A/iptables -D/' | bash 2>/dev/null || true
-      fi
-      if command -v ip6tables >/dev/null 2>&1; then
-        ip6tables -S INPUT 2>/dev/null | grep -E "(^| )--dport $p( |$)" | sed 's/^-A/ip6tables -D/' | bash 2>/dev/null || true
-      fi
-      if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
-        ufw delete allow "${p}/${proto}" >/dev/null 2>&1 || true
-      fi
-      if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state 2>/dev/null | grep -q "running"; then
-        firewall-cmd --remove-port="${p}/${proto}" --permanent >/dev/null 2>&1 || true
-        firewall-cmd --reload >/dev/null 2>&1 || true
-      fi
-    fi
+    close_port "$1" "${2:-tcp}"
   }
 
   [ -n "$old_tu" ] && _clean_old_port "$old_tu" udp
@@ -3733,7 +3754,13 @@ cmd_port() {
     fi
   fi
   [ -n "$new_nv" ] && { echo "$new_nv" > "$SB_HOME/port_nv"; port_nv="$new_nv"; }
-  [ -n "$new_rea" ] && { echo "$new_rea" > "$SB_HOME/port_rea"; port_rea="$new_rea"; }
+  if [ -n "$new_rea" ]; then
+    echo "$new_rea" > "$SB_HOME/port_rea"
+    port_rea="$new_rea"
+  else
+    rm -f "$SB_HOME/port_rea"
+    port_rea=""
+  fi
   [ -n "$new_any" ] && { echo "$new_any" > "$SB_HOME/port_any"; port_any="$new_any"; }
   [ -n "$new_sub" ] && { echo "$new_sub" > "$SB_HOME/subport"; subport="$new_sub"; }
 
@@ -4233,9 +4260,13 @@ save_state() {
   [ -n "$tup" ] && touch "$SB_HOME/proto_tup"
   [ -n "$hyp" ] && touch "$SB_HOME/proto_hyp"
   [ -n "$nvp" ] && touch "$SB_HOME/proto_nvp"
-  [ -n "$reap" ] && touch "$SB_HOME/proto_rea"
+  if [ -n "$reap" ]; then
+    touch "$SB_HOME/proto_rea"
+    [ -n "$port_rea" ] && echo "$port_rea" > "$SB_HOME/port_rea"
+  else
+    rm -f "$SB_HOME/proto_rea" "$SB_HOME/port_rea"
+  fi
   [ -n "$anyp" ] && touch "$SB_HOME/proto_any"
-  [ -n "$port_rea" ] && echo "$port_rea" > "$SB_HOME/port_rea"
   [ -n "$port_any" ] && echo "$port_any" > "$SB_HOME/port_any"
   echo "$ym" > "$SB_HOME/ym"
   [ -n "$hyjpt" ] && echo "$hyjpt" > "$SB_HOME/hyjpt"
