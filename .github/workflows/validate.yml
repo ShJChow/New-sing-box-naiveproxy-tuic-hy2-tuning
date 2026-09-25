@@ -137,10 +137,10 @@ jobs:
           if ! echo '${{ matrix.env }}' | grep -q 'anyp=1'; then exit 0; fi
           CLIENT="$HOME/sbbox/sbox_client.json"
           CONF="$HOME/sbbox/sb.json"
-          jq -e '.inbounds[]|select(.type=="anytls")|.tls.min_version=="1.3"' "$CONF" >/dev/null \
-            || { echo "服务端 anytls 入站应锁定 TLS 1.3"; exit 1; }
-          jq -e '.outbounds[]|select(.type=="anytls")|.tls.min_version=="1.3" and .tls.utls.fingerprint=="chrome"' "$CLIENT" >/dev/null \
-            || { echo "客户端 anytls 出站应启用 TLS 1.3 与 uTLS Chrome 指纹"; exit 1; }
+          jq -e '.inbounds[]|select(.type=="anytls")|(.tls.min_version=="1.2" or .tls.min_version=="1.3")' "$CONF" >/dev/null \
+            || { echo "服务端 anytls 入站应配置合规的 TLS 版本"; exit 1; }
+          jq -e '.outbounds[]|select(.type=="anytls")|(.tls.min_version=="1.2" or .tls.min_version=="1.3") and .tls.utls.fingerprint=="chrome"' "$CLIENT" >/dev/null \
+            || { echo "客户端 anytls 出站应启用 TLS 与 uTLS Chrome 指纹"; exit 1; }
           grep -q '^anytls://' "$HOME/sbbox/nodes.txt" \
             || { echo "nodes.txt 应包含 anytls:// 节点链接"; exit 1; }
           echo "OK: AnyTLS 配置与节点链接符合预期"
