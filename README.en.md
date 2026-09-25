@@ -1,10 +1,10 @@
-# New-sing-box-naiveproxy-tuic-hy2-tuning — Sing-box 2026 Secure Proxy Script (Four Major Protocols + Optional Reality)
+# New-sing-box-naiveproxy-tuic-hy2-tuning — Sing-box 2026 Secure Proxy Script
 
 [![validate](https://github.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/actions/workflows/validate.yml/badge.svg)](https://github.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/actions/workflows/validate.yml)
 
 **Language:** [简体中文](./README.md) · **English**
 
-A **sing-box 1.14 single-core** deployment script, covering the 2026 protocol tiers (Four Major Protocols + Optional Reality):
+A **sing-box 1.14 single-core** deployment script, covering the 2026 protocol tiers:
 
 | Priority | Protocol | Purpose & Key Features | Transport | Certificate Requirement |
 | :--- | :--- | :--- | :--- | :--- |
