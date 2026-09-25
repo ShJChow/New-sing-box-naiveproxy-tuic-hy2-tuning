@@ -61,7 +61,8 @@ Bundled with:
 - [29. v2.7.19 — In-depth Review vs argosbx, Native WARP Outbound Unblocking, RPS/RFS Queue Binding, and DevOps/Security Hardening](#29-v2719--in-depth-review-vs-argosbx-native-warp-outbound-unblocking-rpsrfs-queue-binding-and-devopssecurity-hardening)
 - [30. v2.7.20 — AnyTLS Session Pool Lifecycle Tuning, Port Reservations, and Automated Test Integration](#30-v2720--anytls-session-pool-lifecycle-tuning-port-reservations-and-automated-test-integration)
 - [31. v2.7.21 — The sing-box Subscription Now Works for TUN Out of the Box, FakeIP for Faster First Connections, QDoS Rule Placement](#31-v2721--the-sing-box-subscription-now-works-for-tun-out-of-the-box-fakeip-for-faster-first-connections-qdos-rule-placement)
-- [32. Disclaimer](#32-disclaimer)
+- [32. v2.7.22 — Hardened Reality Decommission Lifecycle and Self-Healing Firewall Cleanup, Reality Not Installed by Default](#32-v2722--hardened-reality-decommission-lifecycle-and-self-healing-firewall-cleanup-reality-not-installed-by-default)
+- [33. Disclaimer](#33-disclaimer)
 
 ---
 
@@ -784,7 +785,20 @@ Based on empirical performance on cross-border high-RTT (160ms+) networks and pr
 - **Security:** `apply_hy_qdos` inserted the port's ESTABLISHED / INVALID / rate-limit rules at INPUT positions 1–3, ahead of `lo`, although global ESTABLISHED / INVALID rules already exist. It now adds only the rate-limit drop, right after the global INVALID drop (still before the port accept), adds the global rules only if missing (after `lo`), and removes the legacy per-port pair.
 - **Verified:** `check` passes on stable 1.14.1 and on 1.15.0-alpha.7 (no deprecation warning). A real TUN run with 1.14.1 inside a throwaway netns (`auto_route` confined to that netns): non-CN domains resolve to FakeIP (`198.18.0.2`), CN domains to real addresses, requests through TUN return 204 with ~4 ms first byte on a warm connection, and a 30 MB download ran at ~278 Mbps (over the public hairpin, connectivity reference only). The firewall function was rehearsed in a netns from both a legacy state and an empty chain: `lo → ESTABLISHED → INVALID → rate limit → accept`, no duplicates on repeat calls. Run `sbbox list` and re-pull the `?singbox=1` subscription.
 
-## 32. Disclaimer
+## 32. v2.7.22 — Hardened Reality Decommission Lifecycle and Self-Healing Firewall Cleanup, Reality Not Installed by Default
+
+Tailored for lean environments and co-existence architectures (where Xray already manages comprehensive Reality topologies), v2.7.22 establishes complete lifecycle decommission and firewall cleanup mechanisms for the optional **VLESS-Reality** node:
+
+- **Clean Core Protocol Matrix (Four Pillars by Default):**
+  - Default one-click deployment focuses squarely on the four primary protocols (**Hysteria2**, **AnyTLS**, **NaiveProxy**, **TUIC**). Reality remains strictly an opt-in legacy fallback via explicit `reap=1`.
+  - When Reality is not requested (default) or `reap=0` is supplied, the installer actively tears down Reality listening structures.
+- **Self-Healing Firewall and Port Cleanup (`close_port`):**
+  - Introduced unified `close_port()` helper: whenever a protocol is decommissioned, residual `iptables` and `ip6tables` accept rules are automatically removed and saved via `netfilter-persistent`, eliminating orphan port exposure.
+  - State file cleanup: fixed state persistence in `save_state` and `cmd_port` so omitted protocols properly purge their `port_*` and `proto_*` files, preventing accidental revival on subsequent `sbbox port` or `sbbox doctor` invocations.
+  - Credentials teardown: unused temporary keypair files (`reality_priv`, `reality_pub`, `reality_sid`, `reality_sni`) are securely scrubbed.
+  - CI test assertions updated: validated full test suite passing in GitHub Actions.
+
+## 33. Disclaimer
 
 This project is provided for network technology research and educational purposes only. Users are responsible for complying with local laws and regulations.
 
