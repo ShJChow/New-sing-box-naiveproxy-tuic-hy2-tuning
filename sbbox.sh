@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.20"
+SBBOX_VERSION="v2.7.21"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -2249,6 +2249,15 @@ cmd_sub() {
 # buffer_size / flush_interval——这两个是 1.15 新增，1.14.1 直接 FATAL
 # `unknown field "buffer_size"`，整份订阅加载失败、所有节点一起不可用。改客户端字段后用稳定版跑一次 check。
 gen_client_sbox() {
+  # v2.7.21：客户端配置自带入站，导入即用。此前只有出站、没有任何 inbounds——SFI / SFA / v2rayN
+  # 导入后没有入口接管流量，TUN 模式形同虚设。现在：
+  #   tun-in   auto_route + strict_route（防 DNS / 路由泄漏）；不写 stack：1.14 默认即 mixed，
+  #            1.15+ 默认用新的 Go TUN 栈（写了 stack 会报弃用警告，1.17 移除）；
+  #   mixed-in 127.0.0.1:2080，给不开 TUN 的场景；
+  #   FakeIP   TUN 下非国内域名的 A/AAAA 直接回假地址，省掉「先经代理做远程 DNS 再建连」的那一轮往返，
+  #            新连接首包更快（cache_file.store_fakeip 早已开着，只是一直没配 fakeip 服务器）；
+  #   路由     sniff → hijack-dns（TUN 必需）→ 私有地址直连 → geosite-cn 直连。
+  # 以上字段均在 1.14 稳定版范围内，改后须用稳定版 sing-box check（见 README）。
   local ob=() tags=() json_file="$SB_HOME/sbox_client.json"
 
   # Tuic 的 UDP 中继二选一，官方文档标明两者互斥：
@@ -2465,12 +2474,27 @@ gen_client_sbox() {
 {
     "\$schema": "https://sing-box.sagernet.org/schema.json",
     "log": { "level": "warn", "timestamp": true },
+    "inbounds": [
+        {
+            "type": "tun",
+            "tag": "tun-in",
+            "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
+            "mtu": 9000,
+            "auto_route": true,
+            "strict_route": true
+        },
+        { "type": "mixed", "tag": "mixed-in", "listen": "127.0.0.1", "listen_port": 2080 }
+    ],
     "dns": {
         "servers": [
             { "tag": "remote", "type": "https", "server": "1.1.1.1", "detour": "select" },
-            { "tag": "local", "type": "udp", "server": "223.5.5.5", "detour": "direct" }
+            { "tag": "local", "type": "udp", "server": "223.5.5.5", "detour": "direct" },
+            { "tag": "fakeip", "type": "fakeip", "inet4_range": "198.18.0.0/15", "inet6_range": "fc00::/18" }
         ],
-        "rules": [ { "rule_set": "geosite-cn", "server": "local" } ],
+        "rules": [
+            { "rule_set": "geosite-cn", "server": "local" },
+            { "inbound": "tun-in", "query_type": ["A", "AAAA"], "server": "fakeip" }
+        ],
         "strategy": "prefer_ipv4",
         "final": "remote",
         "optimistic": true,
@@ -2521,6 +2545,8 @@ $sel,
                 "action": "sniff",
                 "timeout": "300ms"
             },
+            { "protocol": "dns", "action": "hijack-dns" },
+            { "ip_is_private": true, "outbound": "direct" },
             { "rule_set": "geosite-cn", "outbound": "direct" }
         ],
         "rule_set": [
@@ -2914,26 +2940,34 @@ cleandel() {
 }
 
 # Hysteria2 QDoS (QUIC Denial of Service / UDP Flooding) 防护
+# v2.7.21：此前把「该端口的 ESTABLISHED / INVALID / 限速」三条固定插到 INPUT 第 1–3 位，排到 lo 之前，
+# 而全局的 ESTABLISHED / INVALID 规则本来就有，这两条是多余的。现在只保留真正需要的限速丢弃规则，
+# 插在全局 INVALID 丢弃之后（仍在端口放行之前，QDoS 不受影响）；全局规则缺失时才补、补在 lo 之后；
+# 顺带清掉旧版本留下的端口专属 ESTABLISHED / INVALID 两条。
+qdos_rule() {
+  local ipt="$1" port="$2" name="$3" pos
+  local -a spec=(-p udp --dport "$port" -m conntrack --ctstate NEW -m hashlimit --hashlimit-above 50/sec --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name "$name" -j DROP)
+  while "$ipt" -D INPUT -p udp --dport "$port" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; do :; done
+  while "$ipt" -D INPUT -p udp --dport "$port" -m conntrack --ctstate INVALID -j DROP 2>/dev/null; do :; done
+  if ! "$ipt" -C INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null; then
+    pos=$("$ipt" -S INPUT 2>/dev/null | awk 'NR>1{n++; if ($0 ~ /-i lo -j ACCEPT$/) p=n} END{print p+1}')
+    "$ipt" -I INPUT "$pos" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+  fi
+  if ! "$ipt" -C INPUT -m conntrack --ctstate INVALID -j DROP 2>/dev/null; then
+    pos=$("$ipt" -S INPUT 2>/dev/null | awk 'NR>1{n++; if ($0 ~ /--ctstate RELATED,ESTABLISHED -j ACCEPT$/ && $0 !~ /--dport/) p=n} END{print p+1}')
+    "$ipt" -I INPUT "$pos" -m conntrack --ctstate INVALID -j DROP 2>/dev/null || true
+  fi
+  "$ipt" -C INPUT "${spec[@]}" 2>/dev/null && return 0
+  pos=$("$ipt" -S INPUT 2>/dev/null | awk 'NR>1{n++; if ($0 ~ /--ctstate INVALID -j DROP$/ && $0 !~ /--dport/) p=n} END{print p+1}')
+  "$ipt" -I INPUT "$pos" "${spec[@]}" 2>/dev/null || true
+}
+
 apply_hy_qdos() {
   local port="${1:-$port_hy2}"
   [ -n "$port" ] || return 0
   if [ "$IS_ROOT" = 1 ]; then
-    if command -v iptables >/dev/null 2>&1; then
-      iptables -C INPUT -p udp --dport "$port" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
-        iptables -I INPUT 1 -p udp --dport "$port" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
-      iptables -C INPUT -p udp --dport "$port" -m conntrack --ctstate INVALID -j DROP 2>/dev/null || \
-        iptables -I INPUT 2 -p udp --dport "$port" -m conntrack --ctstate INVALID -j DROP 2>/dev/null || true
-      iptables -C INPUT -p udp --dport "$port" -m conntrack --ctstate NEW -m hashlimit --hashlimit-above 50/sec --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name "hy_qdos_${port}" -j DROP 2>/dev/null || \
-        iptables -I INPUT 3 -p udp --dport "$port" -m conntrack --ctstate NEW -m hashlimit --hashlimit-above 50/sec --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name "hy_qdos_${port}" -j DROP 2>/dev/null || true
-    fi
-    if command -v ip6tables >/dev/null 2>&1; then
-      ip6tables -C INPUT -p udp --dport "$port" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
-        ip6tables -I INPUT 1 -p udp --dport "$port" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
-      ip6tables -C INPUT -p udp --dport "$port" -m conntrack --ctstate INVALID -j DROP 2>/dev/null || \
-        ip6tables -I INPUT 2 -p udp --dport "$port" -m conntrack --ctstate INVALID -j DROP 2>/dev/null || true
-      ip6tables -C INPUT -p udp --dport "$port" -m conntrack --ctstate NEW -m hashlimit --hashlimit-above 50/sec --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name "hy6_qdos_${port}" -j DROP 2>/dev/null || \
-        ip6tables -I INPUT 3 -p udp --dport "$port" -m conntrack --ctstate NEW -m hashlimit --hashlimit-above 50/sec --hashlimit-burst 100 --hashlimit-mode srcip --hashlimit-name "hy6_qdos_${port}" -j DROP 2>/dev/null || true
-    fi
+    command -v iptables  >/dev/null 2>&1 && qdos_rule iptables  "$port" "hy_qdos_${port}"
+    command -v ip6tables >/dev/null 2>&1 && qdos_rule ip6tables "$port" "hy6_qdos_${port}"
     if command -v netfilter-persistent >/dev/null 2>&1; then
       netfilter-persistent save >/dev/null 2>&1
     elif [ -x "$(command -v iptables-save 2>/dev/null)" ] && [ -d /etc/iptables ]; then

@@ -60,7 +60,8 @@ Bundled with:
 - [28. v2.7.18 — Stop Sending ICMP Redirects (send_redirects = 0 on the Uplink)](#28-v2718--stop-sending-icmp-redirects-send_redirects--0-on-the-uplink)
 - [29. v2.7.19 — In-depth Review vs argosbx, Native WARP Outbound Unblocking, RPS/RFS Queue Binding, and DevOps/Security Hardening](#29-v2719--in-depth-review-vs-argosbx-native-warp-outbound-unblocking-rpsrfs-queue-binding-and-devopssecurity-hardening)
 - [30. v2.7.20 — AnyTLS Session Pool Lifecycle Tuning, Port Reservations, and Automated Test Integration](#30-v2720--anytls-session-pool-lifecycle-tuning-port-reservations-and-automated-test-integration)
-- [31. Disclaimer](#31-disclaimer)
+- [31. v2.7.21 — The sing-box Subscription Now Works for TUN Out of the Box, FakeIP for Faster First Connections, QDoS Rule Placement](#31-v2721--the-sing-box-subscription-now-works-for-tun-out-of-the-box-fakeip-for-faster-first-connections-qdos-rule-placement)
+- [32. Disclaimer](#32-disclaimer)
 
 ---
 
@@ -776,7 +777,14 @@ Based on empirical performance on cross-border high-RTT (160ms+) networks and pr
   - Integrated AnyTLS (port 11806) into `/root/run_test.py` to establish continuous automated health validation.
   - Test results: Median 3.1ms, p95 14.8ms, jitter 1.1x across 7 sampled runs; all 14 nodes (1 baseline + 8 Xray + 6 sbbox) pass with full green status.
 
-## 31. Disclaimer
+## 31. v2.7.21 — The sing-box Subscription Now Works for TUN Out of the Box, FakeIP for Faster First Connections, QDoS Rule Placement
+
+- **TUN:** `sbox_client.json` (the `?singbox=1` subscription) had outbounds and routes but **no `inbounds`**, so SFI / SFA / v2rayN had nothing to capture traffic after import. It now ships `tun-in` (`auto_route` + `strict_route`, MTU 9000, no `stack` field — 1.14 defaults to mixed and 1.15+ to the new Go TUN stack, where `stack` is deprecated) and `mixed-in` on `127.0.0.1:2080`. Routing gains the TUN-required `hijack-dns` and a private-address direct rule.
+- **Handshake:** under TUN, non-CN A/AAAA queries get FakeIP answers (`198.18.0.0/15`, `fc00::/18`), so a new connection no longer waits for a remote DNS round trip through the proxy before connecting. CN domains still resolve locally and go direct. (`cache_file.store_fakeip` was already on; no fakeip server had been configured.)
+- **Security:** `apply_hy_qdos` inserted the port's ESTABLISHED / INVALID / rate-limit rules at INPUT positions 1–3, ahead of `lo`, although global ESTABLISHED / INVALID rules already exist. It now adds only the rate-limit drop, right after the global INVALID drop (still before the port accept), adds the global rules only if missing (after `lo`), and removes the legacy per-port pair.
+- **Verified:** `check` passes on stable 1.14.1 and on 1.15.0-alpha.7 (no deprecation warning). A real TUN run with 1.14.1 inside a throwaway netns (`auto_route` confined to that netns): non-CN domains resolve to FakeIP (`198.18.0.2`), CN domains to real addresses, requests through TUN return 204 with ~4 ms first byte on a warm connection, and a 30 MB download ran at ~278 Mbps (over the public hairpin, connectivity reference only). The firewall function was rehearsed in a netns from both a legacy state and an empty chain: `lo → ESTABLISHED → INVALID → rate limit → accept`, no duplicates on repeat calls. Run `sbbox list` and re-pull the `?singbox=1` subscription.
+
+## 32. Disclaimer
 
 This project is provided for network technology research and educational purposes only. Users are responsible for complying with local laws and regulations.
 

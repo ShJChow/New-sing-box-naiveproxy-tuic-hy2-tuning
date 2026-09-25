@@ -69,7 +69,8 @@
 - [三十七、v2.7.18 不再发送 ICMP 重定向（出口网卡 send_redirects = 0）](#三十七v2718-不再发送-icmp-重定向出口网卡-send_redirects--0)
 - [三十八、v2.7.19 对标 argosbx 深度审查、原生 WARP 出站解锁、网卡 RPS/RFS 绑核与运维安全加固](#三十八v2719-对标-argosbx-深度审查原生-warp-出站解锁网卡-rpsrfs-绑核与运维安全加固)
 - [三十九、v2.7.20 AnyTLS 连接池生命周期微调、端口保留与自动化测试闭环](#三十九v2720-anytls-连接池生命周期微调端口保留与自动化测试闭环)
-- [四十、免责声明](#四十免责声明)
+- [四十、v2.7.21 sing-box 订阅导入即可用 TUN + FakeIP 加速首连、Hysteria2 防洪规则不再顶到最前](#四十v2721-sing-box-订阅导入即可用-tun--fakeip-加速首连hysteria2-防洪规则不再顶到最前)
+- [四十一、免责声明](#四十一免责声明)
 
 ---
 
@@ -2155,7 +2156,48 @@ sysctl net.ipv4.conf.all.send_redirects net.ipv4.conf.default.send_redirects \
 
 ---
 
-## 四十、免责声明
+## 四十、v2.7.21 sing-box 订阅导入即可用 TUN + FakeIP 加速首连、Hysteria2 防洪规则不再顶到最前
+
+### 1.〔TUN〕客户端配置自带入站
+
+此前 `sbox_client.json`（`?singbox=1` 订阅）只有出站和路由，**没有任何 `inbounds`**。SFI / SFA / v2rayN 导入后没有入口接管流量，TUN 模式形同虚设。现在自带：
+
+| 入站 | 设置 |
+|---|---|
+| `tun-in` | `auto_route` + `strict_route`（防 DNS / 路由泄漏），MTU 9000；**不写 `stack`**：1.14 默认即 mixed，1.15+ 默认用新的 Go TUN 栈（写了会报弃用警告，1.17 移除） |
+| `mixed-in` | `127.0.0.1:2080`，给不开 TUN 的场景 |
+
+路由补上 TUN 必需的 `hijack-dns`，以及私有地址直连（顺序：sniff → hijack-dns → 私有地址直连 → geosite-cn 直连）。
+
+### 2.〔握手〕FakeIP 省掉新连接前的远程 DNS 往返
+
+TUN 下非国内域名的 A / AAAA 查询直接返回 FakeIP（`198.18.0.0/15`、`fc00::/18`），连接按域名经代理发出，
+**不必先经代理做一次远程 DNS、再建连**，每条新连接少一轮往返。国内域名仍走本地 DNS、直连。
+（`cache_file.store_fakeip` 早已开着，只是一直没配 fakeip 服务器。）
+
+### 3.〔安全〕Hysteria2 防洪规则插入位置
+
+`apply_hy_qdos` 此前把「该端口的 ESTABLISHED / INVALID / 限速」三条固定插到 INPUT 第 1–3 位，排到 `lo` 之前；
+而全局 ESTABLISHED / INVALID 本来就有，这两条是多余的（9-25 重分配 hy2 端口时就这样顶到了最前）。
+现在只保留限速丢弃规则，插在全局 INVALID 丢弃之后（仍在端口放行之前）；全局规则缺失时才补、补在 `lo` 之后；并清掉旧版本留下的两条端口专属规则。
+
+### 4.〔验证〕
+
+- 稳定版 sing-box **1.14.1** 与 1.15.0-alpha.7 对新配置 `check` 均通过（无弃用警告）；
+- 在独立 netns 里用 1.14.1 真实起 TUN（`auto_route` 只作用于该 netns，不影响宿主 SSH）：
+  国外域名解析为 FakeIP（`198.18.0.2`）、国内域名为真实地址；经 TUN 访问返回 204，连接复用后首字节约 4ms；经 TUN 下载 30MB 约 278 Mbps（走公网回环，仅作连通参考）；
+- 防火墙函数在独立 netns 里分别从「旧版残留」与「空链」两种状态演练：顺序均为 `lo → ESTABLISHED → INVALID → 限速 → 放行`，重复调用不重复添加。
+
+```bash
+sing-box check -c sbox_client.json    # 用稳定版跑
+iptables -S INPUT | sed -n 2,6p
+```
+
+**升级已有安装**：`sbbox list` 重新生成客户端配置，客户端重新拉取 `?singbox=1` 订阅。
+
+---
+
+## 四十一、免责声明
 
 本项目仅供网络技术研究与学习交流使用。使用者须自行遵守所在国家/地区的法律法规，因使用本脚本产生的一切后果由使用者自行承担。
 
