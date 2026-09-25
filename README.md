@@ -329,41 +329,18 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 
 ## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.22)
 
-本项目在经历数十轮真实跨洋高延迟环境（160ms+ / 1% 丢包）实测、大流量压测与内核协同迭代后，架构已全面收敛成熟。以下为核心技术演进与调优总结：
+本项目经跨洋弱网环境（160ms+ / 1% 丢包）数十轮实测迭代，核心演进总结如下：
 
-### 1. 协议梯队收敛与四大主力确立（v2.7.0 – v2.7.22）
-- **剔除冗余协议**：彻底移除了维护复杂度高且收益已被覆盖的 ShadowTLS（v2.7.0）。
-- **四大核心主力架构**：聚焦落地新一代四大核心主力（**Hysteria2** / **AnyTLS** / **NaiveProxy** / **TUIC**），将 VLESS-Reality 默认关闭转为纯可选兼容节点（`reap=1`）；在 v2.7.22 中进一步完善下线生命周期与防火墙规则自愈清理，默认不安装 Reality。
-
-### 2. AnyTLS 与 NaiveProxy 深度调优（v2.7.1 – v2.7.20）
-- **AnyTLS（新一代 TCP 主力）**：
-  - 原生消除 TLS-in-TLS 指纹，配置完整 8 级填充混淆（`padding_scheme: 0=100-300, ..., 7=500-1000`）；
-  - 会话池连接复用参数深度调优（`idle_session_check_interval: 30s`，`idle_session_timeout: 2m`，`min_idle_session: 2`），兼顾桌面端 0-RTT/1-RTT 极速复用与移动端防死连接累积；向下兼容 TLS 1.2（`alpn: [h3, h2, http/1.1, http/1.2]`）。
-- **NaiveProxy（内核级反探测伪装）**：
-  - 基于 Chromium/Cronet 协议栈；服务端启用 `udp_fragment: true` + `quic_congestion_control: bbr` + `udp_timeout: 300s`；
-  - 严格遵守 Cronet 客户端禁忌：严禁使用 `insecure: true`（Cronet 强校验），出站严禁注入 extra_headers Padding（Cronet 自带）；
-  - 测明 h2 上行受 Go 标准库 1MB 单流窗口硬限制（~30 Mbps），大流量上传优先推荐 naive-h3。
-
-### 3. Hysteria 2 / TUIC 高性能流控与 QDoS 防御（v2.1 – v2.7.21）
-- **外置 Hysteria 2.12.3 调优**：初始接收窗口从 512KB/1MB 放大至 8MB/20MB，彻底解决跨洋慢线路上传被拖死至 3 Mbps 的缺陷；UDP 空闲超时严格收敛至 60 秒。
-- **默认关闭端口跳跃**：默认关闭大范围端口段跳跃，杜绝同机多代理 DNAT 互相劫持及 conntrack 表耗尽风险。
-- **Netfilter 令牌桶 QDoS 防御**：针对 UDP 443 / 27295 的 NEW 连接应用 hashlimit（50/s burst 100），置顶 `lo` 与 `ESTABLISHED` 放行，在系统入栈最前端丢弃伪造握手洪泛。
-- **TUIC 加固**：基于 QUIC 0-RTT 极速握手，严格禁止注入 uTLS（QUIC 不支持 uTLS），统一采用证书公钥固定（`certificate_public_key_sha256`）和证书指纹（`pcs`/`pinSHA256`）防中间人。
-
-### 4. 客户端生态兼容与全自动 TUN 接管（v2.7.16 – v2.7.21）
-- **内核跨版本兼容**：彻底剔除 1.14 废弃、1.15+ FATAL 阻断的 `download_detour` 与 `store_rdrc`；确保 1.15 服务端专属字段不泄露至客户端订阅，保障 1.14 稳定版客户端 100% 正常加载。
-- **订阅原生自带 TUN 入站**：客户端订阅内置 `tun-in`（`auto_route` + `strict_route`，MTU 9000）与 `mixed-in 127.0.0.1:2080`；TUN 模式下非国内域名解析走 FakeIP（`198.18.0.0/15`），免除新连接前经代理的远程 DNS 往返，大幅提升首连体验。
-
-### 5. 系统底层网络性能与安全加固（v2.5.0 – v2.7.20）
-- **BBRv3 原生内核协同**：锁定 `7.2.7-joeyblog-bbrv3` 原生内核与 TCP Brutal；TCP 缓冲上限维持 64MB（高丢包限速线下实测显著优于 32MB）。
-- **多核软中断负载均衡**：虚拟网卡多队列激活 RPS/RFS（`rps_cpus = f`），消除单核 softirq 瓶颈。
-- **全栈防信息泄露**：启用 `fs.suid_dumpable = 0` 阻断崩溃内存私钥转储；网卡级配置 `send_redirects = 0` 阻断 ICMP 路由重定向投毒；sysctl 全局保留关键代理与测试端口防碰撞。
-- **原生 Cloudflare WARP 解锁**：集成官方 API 动态生成专属独立账户（`sbbox warp`），智能分流 OpenAI/ChatGPT/Netflix/Spotify 等流媒体。
+| 演进领域 | 涉及版本 | 核心技术方案与调优结论 |
+| :--- | :--- | :--- |
+| **四大主力协议收敛** | v2.7.0–v2.7.22 | 聚焦四大主力（Hysteria2 / AnyTLS / NaiveProxy / TUIC）；v2.7.22 彻底下线 Reality 并默认不安装，引入 `close_port` 自愈清理防火墙 |
+| **AnyTLS / NaiveProxy 深度调优** | v2.7.1–v2.7.20 | AnyTLS 启用 8 级填充防 TLS-in-TLS，深度调优会话池复用；NaiveProxy 严格遵守 Cronet 禁忌（禁 insecure，禁 extra_headers Padding） |
+| **流控加固与 QDoS 防御** | v2.1–v2.7.21 | 外置 Hy2 接收窗口升至 8M/20M 根治慢线上传限速；默认关闭大范围端口跳跃；Netfilter hashlimit 令牌桶抗洪；TUIC 严禁注入 uTLS |
+| **客户端生态兼容与全自动 TUN** | v2.7.16–v2.7.21 | 剔除 1.15+ FATAL 阻断项（`download_detour`/`store_rdrc`）；客户端订阅原生内置 `tun-in` + FakeIP，解决首连远程 DNS 往返延迟 |
+| **系统底层网络性能与安全** | v2.5.0–v2.7.20 | 协同 BBRv3 与 TCP Brutal；维持 64MB Socket 缓冲；网卡多队列 RPS/RFS 软中断均衡；`fs.suid_dumpable=0` 防内存转储；内置 WARP 解锁流媒体 |
 
 ---
 
 ## 十一、免责声明
 
 本项目仅供网络技术研究与学习交流使用。使用者须自行遵守所在国家/地区的法律法规，因使用本脚本产生的一切后果由使用者自行承担。
-
-

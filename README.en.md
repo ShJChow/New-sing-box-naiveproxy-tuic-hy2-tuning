@@ -293,36 +293,15 @@ Benchmark measured locally on VPS over 9 iterations showing median (min–max):
 
 ## 10. Release History & Core Tuning Evolution (v2.1 – v2.7.22)
 
-After dozens of rigorous iterative rounds across high-latency cross-Pacific topologies (160ms+ / 1% packet loss), high-throughput stress tests, and deep kernel-level co-tuning, the architecture has matured and converged. Below is a structured summary of core technical milestones and tuning evolutions:
+After dozens of iterative rounds across high-latency cross-Pacific topologies (160ms+ / 1% packet loss), core technical milestones are summarized below:
 
-### 1. Protocol Matrix Convergence & Four Pillars Established (v2.7.0 – v2.7.22)
-- **Eliminated Redundant Protocols**: Completely deprecated and removed ShadowTLS (v2.7.0) due to redundant maintenance overhead and diminishing returns.
-- **Four Primary Protocols**: Unified deployment around four high-performance pillars (**Hysteria2**, **AnyTLS**, **NaiveProxy**, **TUIC**). VLESS-Reality was shifted to an optional legacy fallback (`reap=1`). In v2.7.22, the Reality decommission lifecycle and self-healing firewall cleanup was fully hardened, removing Reality by default.
-
-### 2. AnyTLS & NaiveProxy Deep Tuning (v2.7.1 – v2.7.20)
-- **AnyTLS (Next-Gen TCP Mainstay)**:
-  - Eliminated TLS-in-TLS fingerprinting, applying 8-tier adaptive random padding schemes (`padding_scheme: 0=100-300, ..., 7=500-1000`);
-  - Tuned session pool lifecycle (`idle_session_check_interval: 30s`, `idle_session_timeout: 2m`, `min_idle_session: 2`), achieving sub-millisecond 0-RTT/1-RTT multiplexing on desktop while eliminating zombie socket buildup on mobile; backward compatible with TLS 1.2 (`alpn: [h3, h2, http/1.1, http/1.2]`).
-- **NaiveProxy (Kernel-Grade Anti-Censorship)**:
-  - Backed by Chromium/Cronet native network stack; tuned inbound with `udp_fragment: true`, `quic_congestion_control: bbr`, and `udp_timeout: 300s`;
-  - Strictly adheres to Cronet client invariants: never inject `"insecure": true` (Cronet hard checks certs), never inject outbound `extra_headers: {"Padding": ...}` (Cronet manages padding internally);
-  - Diagnosed Go standard library HTTP/2 1MB stream-window ceiling on naive-h2 upload (~30 Mbps), establishing naive-h3 as the primary recommendation for large uploads.
-
-### 3. Hysteria 2 / TUIC Flow Control & QDoS Hardening (v2.1 – v2.7.21)
-- **External Hysteria 2.12.3 Tuning**: Initial receive window expanded from 512KB/1MB to 8MB/20MB, curing the 3 Mbps upload throttle on slow transoceanic lines; UDP idle timeout tightened to 60s.
-- **Port Hopping Disabled by Default**: Eliminated DNAT collision risks between multiple proxies on the same host and prevented conntrack exhaustion.
-- **Netfilter Token Bucket QDoS Mitigation**: Placed per-source hashlimit rate-limiting (`50/s burst 100`) on UDP NEW handshakes right after INVALID DROP, dropping forged floods before processing.
-- **TUIC Hardening**: QUIC 0-RTT instant handshakes; strictly prohibited uTLS (uTLS does not support QUIC), mandating SPKI public key pinning (`certificate_public_key_sha256`) and certificate fingerprints (`pcs` / `pinSHA256`) against MITM.
-
-### 4. Client Ecosystem Compatibility & Seamless TUN Integration (v2.7.16 – v2.7.21)
-- **Cross-Version Kernel Compatibility**: Stripped deprecated and 1.15+ fatal options (`download_detour`, `store_rdrc`); isolated 1.15-exclusive server fields away from client subscriptions, ensuring 100% compatibility with stable 1.14 clients.
-- **Out-of-the-Box TUN Inbound**: Subscriptions directly provide `tun-in` (`auto_route` + `strict_route`, MTU 9000) and `mixed-in 127.0.0.1:2080`; non-CN domain resolution resolves to FakeIP (`198.18.0.0/15`), eliminating remote DNS round-trips before connection establishment.
-
-### 5. System Network Performance & Security Hardening (v2.5.0 – v2.7.20)
-- **BBRv3 Kernel Integration**: Coordinated with kernel `7.2.7-joeyblog-bbrv3` and TCP Brutal; TCP buffer ceilings maintained at 64MB (demonstrated superior throughput over 32MB under lossy rate-limited links).
-- **Multi-Queue Softirq Balancing**: Enabled RPS/RFS on virtual NIC queues (`rps_cpus = f`), removing single-core softirq bottlenecks.
-- **Anti-Leak & System Hardening**: Enforced `fs.suid_dumpable = 0` to block memory key dumps on crash; configured interface-level `send_redirects = 0` against ICMP route poisoning; reserved proxy and testing ports globally in sysctl.
-- **Native Cloudflare WARP Outbound**: Built-in API automated registration (`sbbox warp`) for independent WARP credentials, intelligently unlocking streaming platforms (OpenAI, ChatGPT, Netflix, Spotify).
+| Area | Versions | Technical Strategy & Tuning Findings |
+| :--- | :--- | :--- |
+| **Four Pillars Convergence** | v2.7.0–v2.7.22 | Unified around Four Primary Pillars (Hysteria2 / AnyTLS / NaiveProxy / TUIC); v2.7.22 decommissioned Reality by default with self-healing `close_port` firewall cleanup. |
+| **AnyTLS & NaiveProxy Deep Tuning** | v2.7.1–v2.7.20 | AnyTLS eliminates TLS-in-TLS with 8-tier random padding and tuned session pool; NaiveProxy enforces Cronet invariants (no insecure, no extra Padding). |
+| **Flow Control & QDoS Hardening** | v2.1–v2.7.21 | External Hy2 receive window raised to 8M/20M curing transoceanic upload bottlenecks; port hopping disabled by default; Netfilter hashlimit anti-flood; TUIC strictly bans uTLS. |
+| **Client Ecosystem & Seamless TUN** | v2.7.16–v2.7.21 | Purged 1.15+ fatal options (`download_detour`, `store_rdrc`); subscriptions ship out-of-the-box `tun-in` + FakeIP to eliminate remote DNS round-trips before connection. |
+| **System Performance & Anti-Leak** | v2.5.0–v2.7.20 | Coordinated BBRv3 with TCP Brutal; maintained 64MB buffer ceiling; RPS/RFS softirq balancing; `fs.suid_dumpable=0`; built-in WARP streaming unlock. |
 
 ---
 
