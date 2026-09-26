@@ -39,7 +39,7 @@
 - [七、内核版本管理](#七内核版本管理)
 - [八、v2rayN 订阅与客户端配置](#八v2rayn-订阅与客户端配置)
 - [九、四条节点实测吞吐](#九四条节点实测吞吐)
-- [十、版本迭代与核心调优演进记录 (v2.1 - v2.7.22)](#十版本迭代与核心调优演进记录-v21---v2722)
+- [十、版本迭代与核心调优演进记录 (v2.1 - v2.7.23)](#十版本迭代与核心调优演进记录-v21---v2723)
 - [十一、免责声明](#十一免责声明)
 
 ---
@@ -327,14 +327,14 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 
 ---
 
-## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.22)
+## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.23)
 
 本项目经跨洋弱网环境（160ms+ / 1% 丢包）数十轮实测迭代，核心演进总结如下：
 
 | 演进领域 | 涉及版本 | 核心技术方案与调优结论 |
 | :--- | :--- | :--- |
 | **四大主力协议收敛** | v2.7.0–v2.7.22 | 聚焦四大主力（Hysteria2 / AnyTLS / NaiveProxy / TUIC）；v2.7.22 彻底下线 Reality 并默认不安装，引入 `close_port` 自愈清理防火墙 |
-| **AnyTLS / NaiveProxy 深度调优** | v2.7.1–v2.7.20 | AnyTLS 启用 8 级填充防 TLS-in-TLS，深度调优会话池复用；NaiveProxy 严格遵守 Cronet 禁忌（禁 insecure，禁 extra_headers Padding） |
+| **AnyTLS / NaiveProxy 深度调优** | v2.7.1–v2.7.23 | AnyTLS 启用 8 级填充防 TLS-in-TLS，深度调优会话池复用；NaiveProxy 严格遵守 Cronet 禁忌；v2.7.23 对齐 klzgrad 官方规范，全面剔除 TFO（防 0.1% 罕见特征及丢包黑洞超时）；并发收敛（`insecure_concurrency=2`），根治多连接竞争缓冲与 ACK 饥饿，协同服务端 BBRv3 单流/双流精准流控与 64MB 缓冲：h2 下行飙升至 209 Mbps（+90%，0% 丢包达 391 Mbps）；h3 剥离冗余 TCP 参数，下行提速至 204 Mbps（+63%，1G 线下达 413 Mbps），上行达 92 Mbps |
 | **流控加固与 QDoS 防御** | v2.1–v2.7.21 | 外置 Hy2 接收窗口升至 8M/20M 根治慢线上传限速；默认关闭大范围端口跳跃；Netfilter hashlimit 令牌桶抗洪；TUIC 严禁注入 uTLS |
 | **客户端生态兼容与全自动 TUN** | v2.7.16–v2.7.21 | 剔除 1.15+ FATAL 阻断项（`download_detour`/`store_rdrc`）；客户端订阅原生内置 `tun-in` + FakeIP，解决首连远程 DNS 往返延迟 |
 | **系统底层网络性能与安全** | v2.5.0–v2.7.20 | 协同 BBRv3 与 TCP Brutal；维持 64MB Socket 缓冲；网卡多队列 RPS/RFS 软中断均衡；`fs.suid_dumpable=0` 防内存转储；内置 WARP 解锁流媒体 |

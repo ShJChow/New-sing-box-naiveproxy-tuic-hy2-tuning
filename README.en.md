@@ -39,7 +39,7 @@ Bundled with:
 - [7. Kernel Version Management](#7-kernel-version-management)
 - [8. Subscription & Client Configs](#8-subscription--client-configs)
 - [9. Benchmark Throughput](#9-benchmark-throughput)
-- [10. Release History & Core Tuning Evolution (v2.1 – v2.7.22)](#10-release-history--core-tuning-evolution-v21--v2722)
+- [10. Release History & Core Tuning Evolution (v2.1 – v2.7.23)](#10-release-history--core-tuning-evolution-v21--v2723)
 - [11. Disclaimer](#11-disclaimer)
 
 ---
@@ -291,14 +291,14 @@ Benchmark measured locally on VPS over 9 iterations showing median (min–max):
 
 ---
 
-## 10. Release History & Core Tuning Evolution (v2.1 – v2.7.22)
+## 10. Release History & Core Tuning Evolution (v2.1 – v2.7.23)
 
 After dozens of iterative rounds across high-latency cross-Pacific topologies (160ms+ / 1% packet loss), core technical milestones are summarized below:
 
 | Area | Versions | Technical Strategy & Tuning Findings |
 | :--- | :--- | :--- |
 | **Four Pillars Convergence** | v2.7.0–v2.7.22 | Unified around Four Primary Pillars (Hysteria2 / AnyTLS / NaiveProxy / TUIC); v2.7.22 decommissioned Reality by default with self-healing `close_port` firewall cleanup. |
-| **AnyTLS & NaiveProxy Deep Tuning** | v2.7.1–v2.7.20 | AnyTLS eliminates TLS-in-TLS with 8-tier random padding and tuned session pool; NaiveProxy enforces Cronet invariants (no insecure, no extra Padding). |
+| **AnyTLS & NaiveProxy Deep Tuning** | v2.7.1–v2.7.23 | AnyTLS eliminates TLS-in-TLS with 8-tier random padding and tuned session pool; NaiveProxy enforces Cronet invariants; v2.7.23 aligns with klzgrad official guidelines: completely eliminates TFO (avoids 0.1% fingerprint & loss blackhole backoff); concurrency converged to `insecure_concurrency=2` eliminating socket buffer contention and ACK starvation, letting server BBRv3 maximize stream pacing with 64MB buffers: h2 download jumps to 209 Mbps (+90%, 391 Mbps @ 0% loss); h3 stripped of redundant TCP dial options, download boosted to 204 Mbps (+63%, 413 Mbps @ 1G line), upstream reaching 92 Mbps. |
 | **Flow Control & QDoS Hardening** | v2.1–v2.7.21 | External Hy2 receive window raised to 8M/20M curing transoceanic upload bottlenecks; port hopping disabled by default; Netfilter hashlimit anti-flood; TUIC strictly bans uTLS. |
 | **Client Ecosystem & Seamless TUN** | v2.7.16–v2.7.21 | Purged 1.15+ fatal options (`download_detour`, `store_rdrc`); subscriptions ship out-of-the-box `tun-in` + FakeIP to eliminate remote DNS round-trips before connection. |
 | **System Performance & Anti-Leak** | v2.5.0–v2.7.20 | Coordinated BBRv3 with TCP Brutal; maintained 64MB buffer ceiling; RPS/RFS softirq balancing; `fs.suid_dumpable=0`; built-in WARP streaming unlock. |

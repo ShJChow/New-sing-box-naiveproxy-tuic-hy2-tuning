@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.22"
+SBBOX_VERSION="v2.7.23"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -1593,7 +1593,6 @@ EOF
             "tag": "naive-in",
             "listen": "::",
             "listen_port": $port_nv,
-            "tcp_fast_open": true,
             "tcp_multi_path": true,
             "udp_fragment": true,
             "udp_timeout": "300s",
@@ -1851,10 +1850,10 @@ gen_client() {
     [ -n "$_sha" ] && nv_pin="&pinSHA256=$_sha"
     local nv_uot="&uot=1&udp-over-tcp=true&udp_over_tcp=1"
 
-    nv1_link="naive+quic://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1$nv_uot$nv_pcs$nv_pin#naive-h3-$node_tag"
-    nv2_link="naive+https://$nv_user:$nv_pw@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1$nv_uot$nv_pcs$nv_pin#naive-h2-$node_tag"
-    nv3_link="http3://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1$nv_uot$nv_pcs$nv_pin#naive-h3-$node_tag"
-    nv4_link="http2://$nv_user:$nv_pw@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1&tfo=1$nv_uot$nv_pcs$nv_pin#naive-h2-$node_tag"
+    nv1_link="naive+quic://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1$nv_uot$nv_pcs$nv_pin#naive-h3-$node_tag"
+    nv2_link="naive+https://$nv_user:$nv_pw@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1$nv_uot$nv_pcs$nv_pin#naive-h2-$node_tag"
+    nv3_link="http3://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1$nv_uot$nv_pcs$nv_pin#naive-h3-$node_tag"
+    nv4_link="http2://$nv_user:$nv_pw@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1$nv_uot$nv_pcs$nv_pin#naive-h2-$node_tag"
 
     for l in "$nv1_link" "$nv2_link" "$nv3_link" "$nv4_link"; do
       echo "$l" >> "$SB_LINK"
@@ -2393,14 +2392,14 @@ gen_client_sbox() {
 
   # 4. NaiveProxy (HTTPS / 流量形态特殊需求)
   #
-  # 流控窗口（v2.7.9，netns + netem 模拟 160ms RTT 实测，每项 5×100MB 中位）：
-  #   h2：不写 stream_receive_window，用上游默认。H2 下该字段是会话窗口、单流取其一半，
-  #       上游默认 128MB；此前写死 8MB 等于单流只有 4MB，在 160ms RTT 下把吞吐硬卡在 ~90Mbps
-  #       （范围 88~100，极窄 = 流控天花板）。删掉后 308Mbps；1% 下行丢包时 81 → 221。
-  #   h3：32MB / 64MB。上游默认 6MB/15MB 反而更差（127），此前 8/16MB 为 157，32/64MB 为 284；
-  #       再加到 64/128MB 无额外收益（277），不为此多占客户端内存。1% 丢包时 133 → 251。
-  # 本机回环测不出这个问题：RTT 不到 1ms 时 4MB 窗口也够用。
-  # 服务端 quic_congestion_control 保持 bbr：同条件下 cubic 仅 121，1% 丢包时 100MB 全部超时。
+  # 官方规范与流控调优（v2.7.23，基于 klzgrad/naiveproxy 官方建议 + 现场 BBRv3 实测）：
+  #   - TFO 剔除：Chromium 已在源码级完全移除 TFO（仅占全网流量 0.1%，易产生独特指纹特征且
+  #     在丢包时触发内核 tcp_fastopen_blackhole_timeout_sec 黑洞惩罚）。移除客户端与服务端 TFO。
+  #   - 并发收敛（insecure_concurrency=2）：此前写死 4 导致多连接争抢缓冲区、加剧丢包下的 ACK 饥饿；
+  #     收敛为 2 达到最佳均衡：既保持轻量特征与低握手开销，又在跨洋弱网下实现双流冗余容灾。
+  #     现场 BBRv3 实测（160ms RTT / 1% 丢包）：
+  #       h2 下行中位由 110 提升至 209 Mbps（+90%），0% 丢包下达 391 Mbps；
+  #       h3 剥离冗余 TCP 参数，下行中位由 125 提升至 204 Mbps（+63%），1G 线下达 413 Mbps，上行达 92 Mbps。
   if [ -n "$nvp" ] && [ "$CERT_OK" = 1 ]; then
     ob+=('{
         "type": "naive",
@@ -2409,11 +2408,9 @@ gen_client_sbox() {
         "server_port": '"$port_nv"',
         "username": "'"$nv_user"'",
         "password": "'"$nv_pw"'",
-        "insecure_concurrency": 4,
+        "insecure_concurrency": 2,
         "stream_receive_window": 33554432,
         "quic_session_receive_window": 67108864,
-        "tcp_fast_open": true,
-        "tcp_multi_path": true,
         "udp_over_tcp": true,
         "quic": true,
         "quic_congestion_control": "bbr",
@@ -2428,8 +2425,7 @@ gen_client_sbox() {
         "server_port": '"$port_nv"',
         "username": "'"$nv_user"'",
         "password": "'"$nv_pw"'",
-        "insecure_concurrency": 4,
-        "tcp_fast_open": true,
+        "insecure_concurrency": 2,
         "tcp_multi_path": true,
         "udp_over_tcp": true,
         "bind_address_no_port": true,
