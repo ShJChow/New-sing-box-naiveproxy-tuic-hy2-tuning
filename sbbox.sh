@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.23"
+SBBOX_VERSION="v2.7.24"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -1438,7 +1438,7 @@ EOF
                 "enabled": true,
                 "server_name": "$reality_sni",
                 "min_version": "1.3",
-                "alpn": [ "h2", "http/1.1" ],
+                "alpn": [ "h2" ],
                 "reality": {
                     "enabled": true,
                     "handshake": {
@@ -1650,8 +1650,8 @@ EOF
             "tls": {
                 "enabled": true,
                 "server_name": "$ym",
-                "min_version": "1.2",
-                "alpn": [ "h3", "h2", "http/1.1", "http/1.2" ],
+                "min_version": "1.3",
+                "alpn": [ "h3", "h2" ],
                 "certificate_path": "$cert_path",
                 "key_path": "$key_path",
                 "handshake_timeout": "15s"
@@ -2373,12 +2373,10 @@ gen_client_sbox() {
         "tls": {
             "enabled": true,
             "server_name": "'"$sni"'",
-            "min_version": "1.2",
+            "min_version": "1.3",
             "alpn": [
                 "h3",
-                "h2",
-                "http/1.1",
-                "http/1.2"
+                "h2"
             ],
             "insecure": '"$msins"',
             "utls": {
@@ -2650,8 +2648,6 @@ gen_client_clash() {
     alpn:
       - h3
       - h2
-      - http/1.1
-      - http/1.2
     client-fingerprint: chrome
     udp: true
     idle-session-check-interval: 30
@@ -2713,8 +2709,7 @@ gen_client_clash() {
     tfo: true
     mptcp: true
     alpn:
-      - h2
-      - http/1.1"
+      - h2"
 
     groups="$groups
       - reality-$node_tag"

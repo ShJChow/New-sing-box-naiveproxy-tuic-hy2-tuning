@@ -39,7 +39,7 @@
 - [七、内核版本管理](#七内核版本管理)
 - [八、v2rayN 订阅与客户端配置](#八v2rayn-订阅与客户端配置)
 - [九、四条节点实测吞吐](#九四条节点实测吞吐)
-- [十、版本迭代与核心调优演进记录 (v2.1 - v2.7.23)](#十版本迭代与核心调优演进记录-v21---v2723)
+- [十、版本迭代与核心调优演进记录 (v2.1 - v2.7.24)](#十版本迭代与核心调优演进记录-v21---v2724)
 - [十一、免责声明](#十一免责声明)
 
 ---
@@ -118,7 +118,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/yonggekkk/acme-yg/main/acme.sh
 | TLS 证书校验 | `insecure=0`（强制校验） |
 | SHA-256 证书指纹锁定 | **默认安装即开启**：自动调用 OpenSSL 提取活动证书 HEX 指纹（`pcs`）、DER SHA256（`pinSHA256`）及 SPKI 公钥 Base64，全量注入 Tuic / Hysteria2 / Naiveproxy 节点与客户端配置，防中间人劫持 |
 | Naiveproxy 证书 | **强制 acme 真实证书** |
-| 最低协议兼容 | **TLS 1.2**（`min_version: "1.2"`）+ ALPN `["h3", "h2", "http/1.1"]`，兼顾旧客户端与极速新协议 |
+| 最低协议兼容 | **TLS 1.3**（`min_version: "1.3"`）+ ALPN `["h3", "h2"]`，全面剔除低效串行 HTTP/1.1，兼顾现代极速新协议 |
 | Hysteria2 伪装 | `masquerade` 反代真实站点（默认 www.bing.com），未认证探测拿到真实页面 |
 | Hysteria2 拥塞控制 | `ignore_client_bandwidth: true` + `bbr_profile: standard`（服务端主导，稳定公平） |
 | Hysteria2 混淆 | `obfs: salamander`（默认开启），混淆密码独立随机 |
@@ -327,14 +327,14 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 
 ---
 
-## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.23)
+## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.24)
 
 本项目经跨洋弱网环境（160ms+ / 1% 丢包）数十轮实测迭代，核心演进总结如下：
 
 | 演进领域 | 涉及版本 | 核心技术方案与调优结论 |
 | :--- | :--- | :--- |
 | **四大主力协议收敛** | v2.7.0–v2.7.22 | 聚焦四大主力（Hysteria2 / AnyTLS / NaiveProxy / TUIC）；v2.7.22 彻底下线 Reality 并默认不安装，引入 `close_port` 自愈清理防火墙 |
-| **AnyTLS / NaiveProxy 深度调优** | v2.7.1–v2.7.23 | AnyTLS 启用 8 级填充防 TLS-in-TLS，深度调优会话池复用；NaiveProxy 严格遵守 Cronet 禁忌；v2.7.23 对齐 klzgrad 官方规范，全面剔除 TFO（防 0.1% 罕见特征及丢包黑洞超时）；并发收敛（`insecure_concurrency=2`），根治多连接竞争缓冲与 ACK 饥饿，协同服务端 BBRv3 单流/双流精准流控与 64MB 缓冲：h2 下行飙升至 209 Mbps（+90%，0% 丢包达 391 Mbps）；h3 剥离冗余 TCP 参数，下行提速至 204 Mbps（+63%，1G 线下达 413 Mbps），上行达 92 Mbps |
+| **AnyTLS / NaiveProxy 深度调优** | v2.7.1–v2.7.24 | AnyTLS 升级为纯 TLS 1.3，收敛 ALPN 至 `["h3", "h2"]`，彻底剔除低效串行 HTTP/1.1，杜绝队头阻塞；启用 8 级填充防 TLS-in-TLS，深度调优会话池复用；NaiveProxy 严格遵守 Cronet 禁忌；v2.7.23 对齐 klzgrad 官方规范，全面剔除 TFO（防 0.1% 罕见特征及丢包黑洞超时）；并发收敛（`insecure_concurrency=2`），根治多连接竞争缓冲与 ACK 饥饿，协同服务端 BBRv3 单流/双流精准流控与 64MB 缓冲：h2 下行飙升至 209 Mbps（+90%，0% 丢包达 391 Mbps）；h3 剥离冗余 TCP 参数，下行提速至 204 Mbps（+63%，1G 线下达 413 Mbps），上行达 92 Mbps |
 | **流控加固与 QDoS 防御** | v2.1–v2.7.21 | 外置 Hy2 接收窗口升至 8M/20M 根治慢线上传限速；默认关闭大范围端口跳跃；Netfilter hashlimit 令牌桶抗洪；TUIC 严禁注入 uTLS |
 | **客户端生态兼容与全自动 TUN** | v2.7.16–v2.7.21 | 剔除 1.15+ FATAL 阻断项（`download_detour`/`store_rdrc`）；客户端订阅原生内置 `tun-in` + FakeIP，解决首连远程 DNS 往返延迟 |
 | **系统底层网络性能与安全** | v2.5.0–v2.7.20 | 协同 BBRv3 与 TCP Brutal；维持 64MB Socket 缓冲；网卡多队列 RPS/RFS 软中断均衡；`fs.suid_dumpable=0` 防内存转储；内置 WARP 解锁流媒体 |
