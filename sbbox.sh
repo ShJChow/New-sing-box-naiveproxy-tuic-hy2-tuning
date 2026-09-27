@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.24"
+SBBOX_VERSION="v2.7.25"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -1837,7 +1837,7 @@ gen_client() {
 
   # 2. 🥈 AnyTLS (新一代 TCP 主力)
   if [ -n "$anyp" ] && [ "$CERT_OK" = 1 ]; then
-    any_link="anytls://$pw_any@$add:$port_any?peer=$sni&sni=$sni&alpn=h3%2Ch2%2Chttp%2F1.1%2Chttp%2F1.2&tls12=1&insecure=0&allowInsecure=0#anytls-$node_tag"
+    any_link="anytls://$pw_any@$add:$port_any?peer=$sni&sni=$sni&alpn=h3%2Ch2&insecure=0&allowInsecure=0#anytls-$node_tag"
     echo "$any_link" >> "$SB_LINK"
     echo "💣【 🥈 AnyTLS + TLS (新一代 TCP 主力) 】节点信息如下："
     echo "$any_link"; echo
@@ -1880,7 +1880,7 @@ gen_client() {
   if [ -n "$reap" ]; then
     local rea_add="${server_ip:-$add}"
     [[ "$rea_add" == *:* && "$rea_add" != \[*\] ]] && rea_add="[$rea_add]"
-    rea_link="vless://$uuid@$rea_add:$port_rea?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$reality_sni&fp=chrome&pbk=$reality_pub&sid=$reality_sid&type=tcp&headerType=none&packetEncoding=xudp&alpn=h2,http%2F1.1#reality-$node_tag"
+    rea_link="vless://$uuid@$rea_add:$port_rea?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$reality_sni&fp=chrome&pbk=$reality_pub&sid=$reality_sid&type=tcp&headerType=none&packetEncoding=xudp&alpn=h2#reality-$node_tag"
     echo "$rea_link" >> "$SB_LINK"
     echo "💣【 (可选) VLESS-Reality (兼容性节点) 】节点信息如下："
     echo "$rea_link"; echo
