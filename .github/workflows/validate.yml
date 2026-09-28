@@ -143,6 +143,8 @@ jobs:
             || { echo "客户端 anytls 出站应启用 TLS 与 uTLS Chrome 指纹"; exit 1; }
           grep -q '^anytls://' "$HOME/sbbox/nodes.txt" \
             || { echo "nodes.txt 应包含 anytls:// 节点链接"; exit 1; }
+          grep '^anytls://' "$HOME/sbbox/nodes.txt" | grep -q 'security=tls' \
+            || { echo "anytls 链接必须包含 security=tls（v2rayN 兼容性铁律）"; exit 1; }
           echo "OK: AnyTLS 配置与节点链接符合预期"
 
       - name: 断言 Hysteria2 拥塞控制与混淆互斥关系正确

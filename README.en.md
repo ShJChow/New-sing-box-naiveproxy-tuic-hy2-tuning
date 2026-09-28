@@ -39,7 +39,7 @@ Bundled with:
 - [7. Kernel Version Management](#7-kernel-version-management)
 - [8. Subscription & Client Configs](#8-subscription--client-configs)
 - [9. Benchmark Throughput](#9-benchmark-throughput)
-- [10. Release History & Core Tuning Evolution (v2.1 – v2.7.30)](#10-release-history--core-tuning-evolution-v21--v2730)
+- [10. Release History & Core Tuning Evolution (v2.1 – v2.7.31)](#10-release-history--core-tuning-evolution-v21--v2731)
 - [11. Disclaimer](#11-disclaimer)
 
 ---
@@ -303,13 +303,14 @@ Benchmark measured locally on VPS over 9 iterations showing median (min–max):
 
 ---
 
-## 10. Release History & Core Tuning Evolution (v2.1 – v2.7.30)
+## 10. Release History & Core Tuning Evolution (v2.1 – v2.7.31)
 
 After dozens of iterative rounds across high-latency cross-Pacific topologies (160ms+ / 1% packet loss), core technical milestones are summarized below:
 
 | Area | Versions | Technical Strategy & Tuning Findings |
 | :--- | :--- | :--- |
 | **Four Pillars Convergence** | v2.7.0–v2.7.22 | Unified around Four Primary Pillars (Hysteria2 / AnyTLS / NaiveProxy / TUIC); v2.7.22 decommissioned Reality by default with self-healing `close_port` firewall cleanup. |
+| **AnyTLS Client Link Spec Hardening** | v2.7.31 | Fix AnyTLS connection failure when importing into v2rayN (sing-box core): explicitly added `security=tls` into `anytls://` link parameters, satisfying v2rayN internal `_node.StreamSecurity` validation check and eliminating empty TLS outbound generation (`FATAL: TLS required`); added cert fingerprint pinning parameters (`pcs` / `pinSHA256`); removed redundant TFO from server `anytls-in` to avoid blackhole penalty; verified all primary pillars on live outbound fetch and matrix CI. |
 | **AnyTLS Session Pool Scaling** | v2.7.30 | Speedup for AnyTLS as the primary node: enlarged idle session pool from 2 to 4 (`min_idle_session: 4` / `min-idle-session: 4`), keeping 4 warm TLS 1.3 tunnels on standby to eliminate handshake RTT and TCP head-of-line blocking under parallel browser requests, delivering true 0-RTT opening; extended idle session timeout to 5 minutes (`5m` / `300s`) to avoid recurring teardowns; tightened health check interval to 15s (`15s` / `15`) for rapid eviction of dead sockets; added `bind_address_no_port: true` in sing-box client outbound to reduce port pressure; removed deprecated `global-client-fingerprint` warning in Mihomo. |
 | **AnyTLS & NaiveProxy Deep Tuning** | v2.7.1–v2.7.25 | AnyTLS upgraded to pure TLS 1.3 with ALPN converged to `["h2"]` (fixed in v2.7.27: AnyTLS runs over TCP, the QUIC-only `h3` was listed by mistake), completely eliminating serial HTTP/1.1 and head-of-line blocking; AnyTLS eliminates TLS-in-TLS with 8-tier random padding and tuned session pool; NaiveProxy enforces Cronet invariants; v2.7.23 aligns with klzgrad official guidelines: completely eliminates TFO (avoids 0.1% fingerprint & loss blackhole backoff); concurrency converged to `insecure_concurrency=2` eliminating socket buffer contention and ACK starvation, letting server BBRv3 maximize stream pacing with 64MB buffers: h2 download jumps to 209 Mbps (+90%, 391 Mbps @ 0% loss); h3 stripped of redundant TCP dial options, download boosted to 204 Mbps (+63%, 413 Mbps @ 1G line), upstream reaching 92 Mbps. |
 | **Dual Kernel Channels & Self-Healing** | v2.7.7–v2.7.26 | Clarified `pre` (default pre-release) and `stable` (official release) dual channels; eliminated rollback loops when switching to `stable` caused by sing-box 1.15-specific fields (`buffer_size`/`flush_interval`); added `sbbox up stable` and `sbbox up pre` commands with automatic config adaptation; persisted channel selection to disk for weekly cron upgrades; added channel visibility in `sbbox status`. |

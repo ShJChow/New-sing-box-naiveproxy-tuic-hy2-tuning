@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.30"
+SBBOX_VERSION="v2.7.31"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -1680,7 +1680,6 @@ EOF
             "tag": "anytls-in",
             "listen": "::",
             "listen_port": $port_any,
-            "tcp_fast_open": true,
             "tcp_multi_path": true,
             "udp_fragment": true,
             "disable_tcp_keep_alive": false,
@@ -1897,7 +1896,10 @@ gen_client() {
 
   # 2. 🥈 AnyTLS (新一代 TCP 主力)
   if [ -n "$anyp" ] && [ "$CERT_OK" = 1 ]; then
-    any_link="anytls://$pw_any@$add:$port_any?peer=$sni&sni=$sni&alpn=h2&insecure=0&allowInsecure=0#anytls-$node_tag"
+    local any_pcs="" any_pin=""
+    [ -n "$_fp" ] && any_pcs="&pcs=$_fp"
+    [ -n "$_sha" ] && any_pin="&pinSHA256=$_sha"
+    any_link="anytls://$pw_any@$add:$port_any?security=tls&sni=$sni&peer=$sni&alpn=h2&insecure=0&allowInsecure=0&allow_insecure=0$any_pcs$any_pin#anytls-$node_tag"
     echo "$any_link" >> "$SB_LINK"
     echo "💣【 🥈 AnyTLS + TLS (新一代 TCP 主力) 】节点信息如下："
     echo "$any_link"; echo
