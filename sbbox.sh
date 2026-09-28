@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.27"
+SBBOX_VERSION="v2.7.28"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -1910,16 +1910,15 @@ gen_client() {
     [ -n "$_sha" ] && nv_pin="&pinSHA256=$_sha"
     local nv_uot="&uot=1&udp-over-tcp=true&udp_over_tcp=1"
 
+    # v2.7.28：去掉 http3:// / http2:// 两条同入站的重复写法（v2rayN 不识别，导入即 -1）
     nv1_link="naive+quic://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1$nv_uot$nv_pcs$nv_pin#naive-h3-$node_tag"
     nv2_link="naive+https://$nv_user:$nv_pw@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1$nv_uot$nv_pcs$nv_pin#naive-h2-$node_tag"
-    nv3_link="http3://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1$nv_uot$nv_pcs$nv_pin#naive-h3-$node_tag"
-    nv4_link="http2://$nv_user:$nv_pw@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1$nv_uot$nv_pcs$nv_pin#naive-h2-$node_tag"
 
-    for l in "$nv1_link" "$nv2_link" "$nv3_link" "$nv4_link"; do
+    for l in "$nv1_link" "$nv2_link"; do
       echo "$l" >> "$SB_LINK"
     done
     echo "💣【 🥉 Naiveproxy (流量形态特殊需求) 】节点信息如下："
-    echo "$nv1_link"; echo "$nv2_link"; echo "$nv3_link"; echo "$nv4_link"; echo
+    echo "$nv1_link"; echo "$nv2_link"; echo
   fi
 
   # 4. 4 TUIC (Hysteria2 的 QUIC 备选)
@@ -2006,7 +2005,7 @@ gen_sub() {
   # 默认把全部节点（含 Naiveproxy H2/H3）打进订阅。
   # 若客户端不支持 naive+ 链接（如某些 v2rayN 版本），可加 sub_nonaive=1 剔除。
   if [ -n "$sub_nonaive" ]; then
-    # naive 有两套 scheme：naive+https/naive+quic 与 Shadowrocket 的 http2/http3
+    # v2.7.28 起只下发 naive+https / naive+quic；http2/http3 仍保留在过滤里，兼容旧版生成的链接文件
     grep -Ev '^(naive\+|http2://|http3://)' "$SB_LINK" > "$SB_HOME/.sub.plain"
   else
     cp "$SB_LINK" "$SB_HOME/.sub.plain"
