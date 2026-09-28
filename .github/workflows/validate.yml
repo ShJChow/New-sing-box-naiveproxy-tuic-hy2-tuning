@@ -196,10 +196,11 @@ jobs:
           jq -e '.outbounds[]|select(.tag=="naive-h3")|.quic==true and .quic_congestion_control=="bbr" and .udp_over_tcp==true' "$CLIENT" >/dev/null             || { echo "naive H3 出站应 quic=true + cc=bbr + udp_over_tcp"; exit 1; }
           echo "OK: naive H2/H3 出站 UDP-over-TCP 与拥塞控制均开启"
           # 分享链接要带 uot=1（v2rayN NaiveFmt 解析）和 congestion_control=bbr
-          grep -c 'uot=1' "$HOME/sbbox/nodes.txt" | grep -qx '4'             || { echo "4 条 naive 链接都应带 uot=1（UDP over TCP）"; exit 1; }
-          # 固定证书：pcs= 应为 64 位 hex 指纹（naive 4 条必带，tuic 全协议时也带，故 >=4）
+          # v2.7.28 起 nodes.txt 中 Naive 仅保留 2 条（naive+quic:// 与 naive+https://）
+          grep -c 'uot=1' "$HOME/sbbox/nodes.txt" | grep -qx '2'             || { echo "2 条 naive 链接都应带 uot=1（UDP over TCP）"; exit 1; }
+          # 固定证书：pcs= 应为 64 位 hex 指纹（naive 2 条必带，tuic 全协议时也带，故 >=2）
           PCS=$(grep -c 'pcs=[0-9a-fA-F]\{64\}' "$HOME/sbbox/nodes.txt" || true)
-          [ "$PCS" -ge 4 ] || { echo "naive 链接应带证书 SHA-256 指纹 pcs="; exit 1; }
+          [ "$PCS" -ge 2 ] || { echo "naive 链接应带证书 SHA-256 指纹 pcs="; exit 1; }
           echo "OK: 分享链接已带 uot=1、拥塞控制与证书指纹参数"
 
       - name: 断言 Tuic TLS 加固（utls + 公钥固定）
@@ -301,15 +302,19 @@ jobs:
           [ "$(wc -l < "$SUB")" -eq 0 ] || { echo "订阅含换行，v2rayN 无法解析"; exit 1; }
           base64 -d < "$SUB" > /tmp/decoded.txt
           echo "--- 订阅内容 ---"; cat /tmp/decoded.txt
-          # naive 两套 scheme 都要在：naive+ 给 v2rayN/NekoBox，http2/3 给 Shadowrocket
+          # naive 节点：v2.7.28 起静态订阅只保存 naive+https:// 与 naive+quic:// 给 v2rayN/NekoBox
           grep -q '^naive+https://' /tmp/decoded.txt || { echo "缺少 naive H2 节点(v2rayN)"; exit 1; }
           grep -q '^naive+quic://'  /tmp/decoded.txt || { echo "缺少 naive H3 节点(v2rayN)"; exit 1; }
-          grep -q '^http2://'       /tmp/decoded.txt || { echo "缺少 naive H2 节点(Shadowrocket)"; exit 1; }
-          grep -q '^http3://'       /tmp/decoded.txt || { echo "缺少 naive H3 节点(Shadowrocket)"; exit 1; }
           grep -q '^hysteria2://'  /tmp/decoded.txt || { echo "缺少 hysteria2 节点"; exit 1; }
           grep -q '^tuic://'       /tmp/decoded.txt || { echo "缺少 tuic 节点"; exit 1; }
           grep -q '^anytls://'     /tmp/decoded.txt || { echo "缺少 anytls 节点"; exit 1; }
-          echo "OK: 订阅含全部主力节点，naive 双 scheme 与 anytls 齐备"
+          echo "OK: 静态订阅含全部主力节点，naive 与 anytls 齐备"
+
+          # 验证 Shadowrocket UA 动态转换为 http2:// 与 http3://（v2.7.29 特性）
+          SR_SUB=$(curl -fsSL -H "User-Agent: Shadowrocket/2056 CFNetwork/1410.0.3 Darwin/22.6.0" "http://127.0.0.1:18080/$TOKEN" | base64 -d)
+          echo "$SR_SUB" | grep -q '^http2://' || { echo "Shadowrocket UA 动态下发缺少 http2://"; exit 1; }
+          echo "$SR_SUB" | grep -q '^http3://' || { echo "Shadowrocket UA 动态下发缺少 http3://"; exit 1; }
+          echo "OK: Shadowrocket UA 动态转换已验证"
 
       - name: 断言 sub_nonaive=1 时剔除 naive 但仍合法
         run: |
