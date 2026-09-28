@@ -237,7 +237,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 | `sbbox port [tu] [hy2] [nv]` | Change node ports (no args assigns random ports 10000-65535 and syncs configs & subscription) |
 | `sbbox cert status` | Show certificate validity |
 | `sbbox cert renew` | Renew certificate and restart |
-| `sbbox up` | Update sing-box kernel (default pre-release channel; rollback on failure) |
+| `sbbox up [stable\|pre]` | Update sing-box kernel or switch channels (default pre channel; support `sbbox up stable` / `pre` one-command switch, rollback on failure) |
 | `sbbox log [N]` | Show the last N log lines (default 20) |
 | `sbbox rotate` | Rotate all protocol passwords and subscription token |
 | `sbbox doctor` | Health-check and auto-repair |
@@ -247,12 +247,24 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 
 ## 7. Kernel Version Management
 
-Install and `sbbox up` pull the latest pre-release test version by default (`sbrel=pre`, e.g. `v1.15.0-alpha.2`).
+Install and `sbbox up` follow the **`pre` release channel** by default, tracking the newest releases (including alpha/beta/rc, currently `v1.15.0-alpha.9`) to leverage the latest network features and performance improvements. If you prefer to strictly follow official stable releases, you can select the **`stable` channel** (currently `v1.14.2`).
+
+- **Default channel `pre`**: Pulls the newest release from the GitHub repository, regardless of pre-release tag (automatically acquires the newest stable on release day as well).
+- **Stable channel `stable`**: Only pulls official stable releases from `releases/latest`.
+- **One-Command Channel Switch & Self-Healing (New in v2.7.26)**: Seamlessly switch between channels. The script automatically handles schema differences between sing-box 1.14 and 1.15+ (such as `cache_file` buffer settings) to prevent validation fatal errors and erroneous rollbacks, and persists your channel selection to disk:
 
 ```bash
-sbbox up                  # update to latest pre-release (default, sbrel=pre)
-sbrel=stable sbbox up     # switch to official stable channel
+# Upgrade and switch commands
+sbbox up                  # update kernel on currently saved channel (default pre; skip if latest)
+sbbox up stable           # switch to official stable channel and update/downgrade (persists stable)
+sbbox up pre              # switch to newest pre-release channel and update (persists pre)
+
+# Environment variable syntax also supported
+sbrel=stable sbbox up     # switch to stable channel
+sbrel=pre sbbox up        # switch to pre-release channel
 ```
+
+> **Channel Persistence**: The channel choice is stored in `~/sbbox/sbrel`. Weekly Sunday cron updates will strictly respect this channel.
 
 ---
 
@@ -291,14 +303,15 @@ Benchmark measured locally on VPS over 9 iterations showing median (min–max):
 
 ---
 
-## 10. Release History & Core Tuning Evolution (v2.1 – v2.7.24)
+## 10. Release History & Core Tuning Evolution (v2.1 – v2.7.26)
 
 After dozens of iterative rounds across high-latency cross-Pacific topologies (160ms+ / 1% packet loss), core technical milestones are summarized below:
 
 | Area | Versions | Technical Strategy & Tuning Findings |
 | :--- | :--- | :--- |
 | **Four Pillars Convergence** | v2.7.0–v2.7.22 | Unified around Four Primary Pillars (Hysteria2 / AnyTLS / NaiveProxy / TUIC); v2.7.22 decommissioned Reality by default with self-healing `close_port` firewall cleanup. |
-| **AnyTLS & NaiveProxy Deep Tuning** | v2.7.1–v2.7.24 | AnyTLS upgraded to pure TLS 1.3 with ALPN converged to `["h3", "h2"]`, completely eliminating serial HTTP/1.1 and head-of-line blocking; AnyTLS eliminates TLS-in-TLS with 8-tier random padding and tuned session pool; NaiveProxy enforces Cronet invariants; v2.7.23 aligns with klzgrad official guidelines: completely eliminates TFO (avoids 0.1% fingerprint & loss blackhole backoff); concurrency converged to `insecure_concurrency=2` eliminating socket buffer contention and ACK starvation, letting server BBRv3 maximize stream pacing with 64MB buffers: h2 download jumps to 209 Mbps (+90%, 391 Mbps @ 0% loss); h3 stripped of redundant TCP dial options, download boosted to 204 Mbps (+63%, 413 Mbps @ 1G line), upstream reaching 92 Mbps. |
+| **AnyTLS & NaiveProxy Deep Tuning** | v2.7.1–v2.7.25 | AnyTLS upgraded to pure TLS 1.3 with ALPN converged to `["h3", "h2"]`, completely eliminating serial HTTP/1.1 and head-of-line blocking; AnyTLS eliminates TLS-in-TLS with 8-tier random padding and tuned session pool; NaiveProxy enforces Cronet invariants; v2.7.23 aligns with klzgrad official guidelines: completely eliminates TFO (avoids 0.1% fingerprint & loss blackhole backoff); concurrency converged to `insecure_concurrency=2` eliminating socket buffer contention and ACK starvation, letting server BBRv3 maximize stream pacing with 64MB buffers: h2 download jumps to 209 Mbps (+90%, 391 Mbps @ 0% loss); h3 stripped of redundant TCP dial options, download boosted to 204 Mbps (+63%, 413 Mbps @ 1G line), upstream reaching 92 Mbps. |
+| **Dual Kernel Channels & Self-Healing** | v2.7.7–v2.7.26 | Clarified `pre` (default pre-release) and `stable` (official release) dual channels; eliminated rollback loops when switching to `stable` caused by sing-box 1.15-specific fields (`buffer_size`/`flush_interval`); added `sbbox up stable` and `sbbox up pre` commands with automatic config adaptation; persisted channel selection to disk for weekly cron upgrades; added channel visibility in `sbbox status`. |
 | **Flow Control & QDoS Hardening** | v2.1–v2.7.21 | External Hy2 receive window raised to 8M/20M curing transoceanic upload bottlenecks; port hopping disabled by default; Netfilter hashlimit anti-flood; TUIC strictly bans uTLS. |
 | **Client Ecosystem & Seamless TUN** | v2.7.16–v2.7.21 | Purged 1.15+ fatal options (`download_detour`, `store_rdrc`); subscriptions ship out-of-the-box `tun-in` + FakeIP to eliminate remote DNS round-trips before connection. |
 | **System Performance & Anti-Leak** | v2.5.0–v2.7.20 | Coordinated BBRv3 with TCP Brutal; maintained 64MB buffer ceiling; RPS/RFS softirq balancing; `fs.suid_dumpable=0`; built-in WARP streaming unlock. |

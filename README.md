@@ -223,7 +223,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 | `uuid` | 自动生成 | 自定义 UUID（Tuic / Reality 用；各协议密码独立随机，不再复用 UUID） |
 | `name` | 空 | 节点名称前缀 |
 | `noautoup` | 空 | 关闭每周内核自动升级（`noautoup=1`） |
-| `sbrel` | **`stable`（默认）** | 内核版本通道：默认只取官方最新正式版（`stable`）；跟踪 beta/rc 用 `sbrel=pre` |
+| `sbrel` | **`pre`（默认）** | 内核版本通道：默认跟踪最新测试版（含 alpha/beta/rc 与新特性）；只跟踪稳定正式版用 `sbrel=stable` |
 | `tuicuos` | **0（默认原生 UDP）** | Tuic UDP 中继模式：默认原生 UDP 防断流；QUIC 流用 `tuicuos=1` |
 | `tuils` | **1（默认开启）** | Tuic TLS 加固（证书公钥 SHA-256 固定）；关闭用 `tuils=0` |
 | `dns_optimistic` | **1（默认开启）** | sing-box 1.14 乐观 DNS 缓存并持久化到本地数据库，消除解析长尾延迟；关闭用 `dns_optimistic=0` |
@@ -253,7 +253,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 | `sbbox cert renew` | 强制续期证书 → 落地 → 重启 → 重生成客户端配置 |
 | `sbbox cert sync` | 只做「续期之后」那半段：把已续期的证书落地、重启服务、按新指纹重生成客户端配置。不触发签发，证书未变时直接跳过 |
 | `sbbox cert hook` | 把 `sbbox cert sync` 挂进 acme.sh 的 `reloadcmd`（保留其中原有命令，幂等）。**装完 sbbox 必做一次**，见第十一节第 1 条 |
-| `sbbox up` | 升级 sing-box 内核（默认 stable 官方正式版；失败自动回滚） |
+| `sbbox up [stable\|pre]` | 升级 sing-box 内核或切换通道（默认 pre 通道；支持 `sbbox up stable` / `pre` 一键切换，失败自动回滚） |
 | `sbbox log [N]` | 查看最近 N 行日志（默认 20） |
 | `sbbox rotate` | 轮换全部协议密码、混淆密码与订阅令牌（端口/UUID/证书不变，客户端需重新导入） |
 | `sbbox doctor` | 自检并尝试修复 |
@@ -263,15 +263,24 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 
 ## 七、内核版本管理
 
-安装与 `sbbox up` 默认从 **SagerNet 官方最新正式版（releases/latest）拉取内核**。
+安装与 `sbbox up` 默认采用 **`pre` 测试版通道**，跟踪最新发布版本（含 alpha/beta/rc，当前 `v1.15.0-alpha.9`），享受最新网络特性与性能优化；如需严格锁定官方稳定正式版，可选择 **`stable` 通道**（当前 `v1.14.2`）。
 
-- **默认通道是 `stable`**：只跟踪稳定正式版。
-- 若想体验最新测试特性，可用 `sbrel=pre` 跟踪 pre-release（beta/rc）：
+- **默认通道 `pre`**：获取 GitHub 仓库最新 release，不论是否预发布（正式版发布时同样会自动获取最新正式版）。
+- **稳定通道 `stable`**：仅从 `releases/latest` 获取官方稳定正式版。
+- **一键切换与配置自愈（v2.7.26 新增）**：支持在两个通道间无缝切换，脚本自动处理 sing-box 1.14 与 1.15+ 之间的配置差异（如 `cache_file` 缓冲写入参数），避免校验 fatal 与误回滚，并持久化通道选择到磁盘：
 
 ```bash
-sbrel=stable sbbox up     # 升级/切换到最新正式版（默认）
-sbrel=pre sbbox up        # 升级/切换到 pre 通道
+# 切换与升级命令
+sbbox up                  # 按当前已保存通道升级内核（默认 pre；已是最新则跳过）
+sbbox up stable           # 一键切换至官方稳定正式版通道并升级/降级（自动固化为 stable）
+sbbox up pre              # 一键切换至最新测试版通道并升级（自动固化为 pre）
+
+# 也支持环境变量语法
+sbrel=stable sbbox up     # 切换至稳定版通道
+sbrel=pre sbbox up        # 切换至测试版通道
 ```
+
+> **通道持久化说明**：通道配置固化保存在 `~/sbbox/sbrel` 中。每周日的 cron 自动更新任务将严格遵循已配置的通道执行升级，避免意外篡改版本策略。
 
 ---
 
@@ -327,7 +336,7 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 
 ---
 
-## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.25)
+## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.26)
 
 本项目经跨洋弱网环境（160ms+ / 1% 丢包）数十轮实测迭代，核心演进总结如下：
 
@@ -335,6 +344,7 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 | :--- | :--- | :--- |
 | **四大主力协议收敛** | v2.7.0–v2.7.22 | 聚焦四大主力（Hysteria2 / AnyTLS / NaiveProxy / TUIC）；v2.7.22 彻底下线 Reality 并默认不安装，引入 `close_port` 自愈清理防火墙 |
 | **AnyTLS / NaiveProxy 深度调优** | v2.7.1–v2.7.25 | AnyTLS 升级为纯 TLS 1.3，收敛 ALPN 至 `["h3", "h2"]`，彻底清除节点链接与模板中遗留的 HTTP/1.1 与 HTTP/1.2，杜绝队头阻塞；启用 8 级填充防 TLS-in-TLS，深度调优会话池复用；NaiveProxy 严格遵守 Cronet 禁忌；v2.7.23 对齐 klzgrad 官方规范，全面剔除 TFO（防 0.1% 罕见特征及丢包黑洞超时）；并发收敛（`insecure_concurrency=2`），根治多连接竞争缓冲与 ACK 饥饿，协同服务端 BBRv3 单流/双流精准流控与 64MB 缓冲：h2 下行飙升至 209 Mbps（+90%，0% 丢包达 391 Mbps）；h3 剥离冗余 TCP 参数，下行提速至 204 Mbps（+63%，1G 线下达 413 Mbps），上行达 92 Mbps |
+| **内核双通道与配置自愈** | v2.7.7–v2.7.26 | 明确 pre（默认测试版）与 stable（稳定正式版）双通道规范；根治降级 stable 时因 1.15 专属字段（`buffer_size`/`flush_interval`）导致的校验 FATAL 回滚循环；新增 `sbbox up stable` 与 `sbbox up pre` 快捷切换与配置动态自愈适配机制；通道选择持久化至磁盘供每周自动升级严格遵守；`sbbox status` 补齐当前内核通道可视化指示 |
 | **流控加固与 QDoS 防御** | v2.1–v2.7.21 | 外置 Hy2 接收窗口升至 8M/20M 根治慢线上传限速；默认关闭大范围端口跳跃；Netfilter hashlimit 令牌桶抗洪；TUIC 严禁注入 uTLS |
 | **客户端生态兼容与全自动 TUN** | v2.7.16–v2.7.21 | 剔除 1.15+ FATAL 阻断项（`download_detour`/`store_rdrc`）；客户端订阅原生内置 `tun-in` + FakeIP，解决首连远程 DNS 往返延迟 |
 | **系统底层网络性能与安全** | v2.5.0–v2.7.20 | 协同 BBRv3 与 TCP Brutal；维持 64MB Socket 缓冲；网卡多队列 RPS/RFS 软中断均衡；`fs.suid_dumpable=0` 防内存转储；内置 WARP 解锁流媒体 |

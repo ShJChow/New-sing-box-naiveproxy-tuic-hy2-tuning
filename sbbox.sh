@@ -4,7 +4,7 @@
 #
 # 基于 yonggekkk/argosbx 架构，剥离为 sing-box 单内核，
 # 支持 VLESS-Reality / Tuic / Hysteria2 / Naiveproxy(H2+H3) 四协议。
-# 默认使用最新测试版内核（sbrel=pre，跟踪 alpha/beta/rc 最新预发布与新特性），默认开启 QUIC 与 BBR 拥塞控制。
+# 默认使用最新测试版内核（sbrel=pre，跟踪 alpha/beta/rc 最新预发布与新特性），支持一键切换官方稳定正式版（sbbox up stable）。
 #
 # 集成内核级流控调优 (xh tuning on) + acme.sh 证书申请。
 #
@@ -20,7 +20,7 @@
 #   sbbox res                         # 重启 sing-box
 #   sbbox tune [show|off]             # 流控调优管理
 #   sbbox cert [status|renew|sync|hook] # 证书管理（sync=续期后落地+重生成，hook=挂到 acme 自动续期）
-#   sbbox up                          # 更新 sing-box 内核
+#   sbbox up [stable|pre]             # 更新内核或切换稳定版/测试版通道
 #   sbbox log [N]                     # 查看最近 N 行日志
 #   sbbox del                         # 卸载
 #
@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.25"
+SBBOX_VERSION="v2.7.26"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -79,7 +79,7 @@ hydown="${hydown:-}"                        # Hysteria2 下行 Mbps
 ippz="${ippz:-}"                            # 4 / 6 / 双栈
 name="${name:-}"
 noautoup="${noautoup:-}"                    # 关闭每周内核自动升级：noautoup=1
-# 内核版本通道：默认 pre，跟踪最新测试版（beta/rc/alpha）并应用最新特性；若需只跟踪稳定正式版用 sbrel=stable。
+# 内核版本通道：默认 pre，跟踪最新测试版（alpha/beta/rc）并应用最新特性；若需只跟踪稳定正式版用 sbrel=stable 或执行 sbbox up stable。
 # 先记下用户是否显式指定，再套默认值 —— 否则「没传」与「传了 pre」无法区分，
 # 已持久化的通道选择会被默认值静默覆盖。
 sbrel_explicit="${sbrel:+1}"
@@ -146,7 +146,7 @@ showmode() {
   echo "显示节点信息：sbbox list 【或】 bash sbbox.sh list"
   echo "服务与流控状态：sbbox status"
   echo "重启 sing-box：sbbox res"
-  echo "更新内核：sbbox up"
+  echo "更新内核：sbbox up [stable|pre]（无参数按当前通道更新；可指定 stable 切稳定版或 pre 切测试版）"
   echo "流控调优：sbbox tune show | sbbox tune off"
   echo "证书管理：sbbox cert status | renew | sync | hook"
   echo "订阅地址：sbbox sub 【开启】 sbbox sub on 【关闭】 sbbox sub off"
@@ -171,7 +171,7 @@ showmode() {
   echo "  hyup=100 hydown=1000  Hysteria2 Brutal 拥塞控制客户端带宽"
 
   echo "  sub=1    启用 v2rayN / 通用订阅服务（默认开启 1；关闭用 sub=0；subport=端口 subid=令牌 可选）"
-  echo "  sbrel=pre     内核跟踪最新测试版与新特性（默认 pre；只跟踪稳定正式版用 sbrel=stable）"
+  echo "  sbrel=pre|stable 内核更新通道（默认 pre，跟踪测试版与新特性；只跟踪稳定正式版用 sbrel=stable）"
   echo "  cache_buffer=1MB  cache_file 写缓冲（默认 1MB，sing-box 1.15 新特性）"
   echo "  cache_flush=1m   cache_file 刷盘间隔（默认 1m，sing-box 1.15 新特性）"
   echo "  uuid=自定义 UUID（Tuic 用；各协议密码独立随机，不再复用）"
@@ -278,26 +278,82 @@ close_port() {
 
 # ---------- sing-box 内核下载/更新 ----------
 # 查询 sing-box 最新版本号（去掉 tag 的 v 前缀）。
-# 默认通道是 pre：跟踪最新 pre-release（beta/rc），正式版本身也在该列表里，
-# 所以「pre」等价于「最新的一个 release，不论是否预发布」。
+# 默认通道是 pre：跟踪最新 pre-release（beta/rc/alpha），取最新发布项。
 # sbrel=stable 时改用 releases/latest，GitHub 只在该端点返回正式版。
 latest_sb_version() {
-  local api
+  local api tag=""
   if [ "$sbrel" = "pre" ]; then
     # 列表 API 包含 pre-release；按发布时间倒序，取第一条（最新的）
     api="https://api.github.com/repos/SagerNet/sing-box/releases?per_page=5"
   else
     api="https://api.github.com/repos/SagerNet/sing-box/releases/latest"
   fi
-  { (command -v curl >/dev/null 2>&1 && curl -fsSL --retry 2 "$api" 2>/dev/null) || \
-    (command -v wget >/dev/null 2>&1 && wget -qO- --tries=2 "$api" 2>/dev/null); } \
-    | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
-    | cut -d'"' -f4 | sed 's/^v//'
+  tag=$({ (command -v curl >/dev/null 2>&1 && curl -fsSL --retry 2 "$api" 2>/dev/null) || \
+          (command -v wget >/dev/null 2>&1 && wget -qO- --tries=2 "$api" 2>/dev/null); } \
+        | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
+        | cut -d'"' -f4 | sed 's/^v//')
+  if [ -z "$tag" ]; then
+    # API 失败/限流时的备用网页解析
+    if [ "$sbrel" = "pre" ]; then
+      tag=$(curl -fsSL https://github.com/SagerNet/sing-box/releases 2>/dev/null | grep -o 'releases/tag/v[0-9][^"/]*' | head -1 | sed 's|releases/tag/v||')
+    else
+      tag=$(curl -sIL https://github.com/SagerNet/sing-box/releases/latest 2>/dev/null | grep -i '^location:' | grep -o 'tag/v[0-9][^"/[:space:]]*' | head -1 | sed 's|tag/v||')
+    fi
+  fi
+  echo "$tag"
 }
 
 sb_installed_version() {
   [ -x "$SB_BIN" ] || return 1
   "$SB_BIN" version 2>/dev/null | awk '/version/{print $NF; exit}'
+}
+
+# 判断语义化版本：$1 >= $2 返回 0，否则返回 1
+sb_version_ge() {
+  local v1="${1%%-*}" v2="${2%%-*}"
+  [ "$(printf '%s\n%s\n' "$v2" "$v1" | sort -V | head -n1)" = "$v2" ]
+}
+
+# 根据目标 sing-box 内核版本自愈/适配服务端配置 ($SB_CONF)
+# 解决 1.14 与 1.15+ experimental.cache_file 字段 schema 兼容性差异
+adapt_sb_conf_for_version() {
+  local ver="$1" conf="$SB_CONF"
+  [ -f "$conf" ] || return 0
+  if sb_version_ge "$ver" "1.15"; then
+    python3 -c "
+import json
+try:
+    with open('$conf', 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    cf = data.get('experimental', {}).get('cache_file', {})
+    if cf.get('enabled') and 'buffer_size' not in cf:
+        cf['buffer_size'] = '${cache_buffer:-1MB}'
+        cf['flush_interval'] = '${cache_flush:-1m}'
+        with open('$conf', 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+except Exception:
+    pass
+" 2>/dev/null || true
+  else
+    python3 -c "
+import json
+try:
+    with open('$conf', 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    cf = data.get('experimental', {}).get('cache_file', {})
+    changed = False
+    for k in ['buffer_size', 'flush_interval']:
+        if k in cf:
+            del cf[k]
+            changed = True
+    if changed:
+        with open('$conf', 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4, ensure_ascii=False)
+except Exception:
+    pass
+" 2>/dev/null || true
+  fi
+  chmod 600 "$conf" 2>/dev/null || true
 }
 
 # 从官方 release 安装指定版本；成功返回 0
@@ -1680,6 +1736,12 @@ EOF
   route_rules="$route_rules,
             { \"action\": \"reject\", \"protocol\": [ \"bittorrent\" ] }"
   sed -i '${s/,$//}' "$SB_CONF"
+  local cache_file_extra=""
+  if sb_version_ge "$(sb_installed_version)" "1.15"; then
+    cache_file_extra=",
+            \"buffer_size\": \"$cache_buffer\",
+            \"flush_interval\": \"$cache_flush\""
+  fi
   cat >> "$SB_CONF" <<EOF
     ],
     "outbounds": [
@@ -1696,9 +1758,7 @@ $route_rules
         "cache_file": {
             "enabled": true,
             "path": "$SB_HOME/cache.db",
-            "store_dns": true,
-            "buffer_size": "$cache_buffer",
-            "flush_interval": "$cache_flush"
+            "store_dns": true$cache_file_extra
         }
     }
 }
@@ -4095,8 +4155,15 @@ status_show() {
   fi
   echo ""
   if [ -x "$SB_BIN" ]; then
-    echo -e "${CYAN}[+] 版本${NC}"
-    "$SB_BIN" version 2>/dev/null | head -1
+    echo -e "${CYAN}[+] 版本与更新通道${NC}"
+    local cur_ch="${sbrel:-pre}"
+    [ -f "$SB_HOME/sbrel" ] && cur_ch=$(cat "$SB_HOME/sbrel")
+    echo -e "  内核版本:     $("$SB_BIN" version 2>/dev/null | head -1)"
+    if [ "$cur_ch" = "pre" ]; then
+      echo -e "  更新通道:     ${YELLOW}pre-release (测试版，跟踪最新特性)${NC}"
+    else
+      echo -e "  更新通道:     ${GREEN}stable (官方稳定正式版)${NC}"
+    fi
   fi
 }
 
@@ -4126,7 +4193,7 @@ main() {
     list)   v4v6; load_state; gen_client; exit ;;
     status) status_show; exit ;;
     res)    sbrestart; exit ;;
-    up)     cmd_update; exit ;;
+    up)     shift; cmd_update "$@"; exit ;;
     log)    sblog "$2"; exit ;;
     tune)   shift; cmd_tune "$@"; exit ;;   # 安装期已自动 on，off 用于回滚
     cert)   shift; cert_mgmt "$@"; exit ;;
@@ -4276,41 +4343,80 @@ save_state() {
   fi
 }
 
-# 内核升级：备份 → 升级 → 用新内核校验配置 → 重启；任一步失败即回滚旧内核。
-# 新版本偶尔会收紧配置 schema（本项目就被 1.12 的 DNS 格式变更打过），
-# 没有回滚的话一次自动升级就能让所有节点掉线。
+# 内核升级与通道切换：备份 → 下载新内核 → 目标版本配置自愈适配 → 新内核校验配置 → 重启；任一步失败即回滚。
+# 支持：
+#   sbbox up            # 按当前已持久化通道更新
+#   sbbox up stable     # 切换至官方稳定正式版通道并升级/降级
+#   sbbox up pre        # 切换至最新测试版通道并升级
+#   sbrel=stable sbbox up / sbrel=pre sbbox up
 cmd_update() {
-  # 优先级：本次显式指定 > 首装时持久化的通道 > 默认值。
-  # cron 自动升级不带任何环境变量，走的就是持久化那一档。
+  local target_ch="${1:-}"
+  case "$target_ch" in
+    stable|pre)
+      sbrel="$target_ch"
+      sbrel_explicit=1
+      ;;
+    "")
+      ;;
+    *)
+      warn "未知通道参数: $target_ch（仅支持 stable 或 pre）"
+      echo "用法: sbbox up [stable|pre]"
+      return 1
+      ;;
+  esac
+
+  # 优先级：本次显式指定 > 首装时持久化的通道 > 默认值 pre
   [ -z "$sbrel_explicit" ] && [ -f "$SB_HOME/sbrel" ] && sbrel=$(cat "$SB_HOME/sbrel")
-  local bak="$SB_HOME/sing-box.bak" before after
+  sbrel="${sbrel:-pre}"
+
+  local bak="$SB_HOME/sing-box.bak" conf_bak="$SB_HOME/sb.json.bak" before after
   before=$(sb_installed_version)
   [ -x "$SB_BIN" ] && cp -f "$SB_BIN" "$bak" 2>/dev/null
+  [ -f "$SB_CONF" ] && cp -f "$SB_CONF" "$conf_bak" 2>/dev/null
 
-  upsingbox || { warn "升级未执行"; return 1; }
+  upsingbox || { warn "升级未执行"; rm -f "$bak" "$conf_bak"; return 1; }
   after=$(sb_installed_version)
+
   if [ "$before" = "$after" ]; then
-    rm -f "$bak"; return 0
+    # 若用户显式切换通道，确保通道标记落盘
+    if [ -n "$sbrel_explicit" ] && [ -n "$sbrel" ]; then
+      echo "$sbrel" > "$SB_HOME/sbrel"
+      info "当前内核已是 $after，已将更新通道锁定为：$sbrel"
+    fi
+    rm -f "$bak" "$conf_bak"
+    return 0
   fi
 
+  # 内核版本发生变化（升级或切换降级），先根据新版本自愈适配 sb.json
+  adapt_sb_conf_for_version "$after"
+
   if [ -f "$SB_CONF" ] && ! "$SB_BIN" check -c "$SB_CONF" 2>"$SB_HOME/check.err"; then
-    error "新内核 $after 校验现有配置失败，回滚到 $before："
+    error "新内核 $after 校验配置失败，回滚到 $before："
     cat "$SB_HOME/check.err" >&2
     [ -s "$bak" ] && mv -f "$bak" "$SB_BIN" && chmod +x "$SB_BIN"
+    [ -f "$conf_bak" ] && mv -f "$conf_bak" "$SB_CONF"
     sbrestart
     error "已回滚。配置可能需要按新版本调整后再升级"
+    rm -f "$bak" "$conf_bak"
     return 1
   fi
 
   sbrestart
   sleep 2
   if pgrep -f "sing-box run -c $SB_CONF" >/dev/null 2>&1; then
-    info "升级完成：${before:-无} → $after"
-    rm -f "$bak"
+    # 更新成功，固化本次通道选择，确保后续 cron 自动升级遵守该通道
+    echo "$sbrel" > "$SB_HOME/sbrel"
+    # 同步更新客户端配置以保持兼容
+    load_state >/dev/null 2>&1
+    gen_client >/dev/null 2>&1
+    info "内核更新完成：${before:-无} → $after [通道: $sbrel]"
+    rm -f "$bak" "$conf_bak"
   else
     error "新内核启动失败，回滚到 $before"
     [ -s "$bak" ] && mv -f "$bak" "$SB_BIN" && chmod +x "$SB_BIN"
+    [ -f "$conf_bak" ] && mv -f "$conf_bak" "$SB_CONF"
     sbrestart
+    rm -f "$bak" "$conf_bak"
     return 1
   fi
 }
