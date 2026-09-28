@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.28"
+SBBOX_VERSION="v2.7.29"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -2170,6 +2170,11 @@ class SubHandler(BaseHTTPRequestHandler):
 
         # 默认下发全量 6 大协议节点，不擅自剔除任何已启用节点
         selected_links = list(raw_links)
+        # Shadowrocket 只认 http3:// / http2:// 形式的 naive 链接（v2.7.28 起订阅只存 naive+ 写法），按 UA 现场转换
+        if "shadowrocket" in ua:
+            selected_links = [("http3://" + l[len("naive+quic://"):]) if l.startswith("naive+quic://")
+                              else ("http2://" + l[len("naive+https://"):]) if l.startswith("naive+https://")
+                              else l for l in selected_links]
         if not selected_links:
             with open(token_file, "rb") as f: content = f.read()
             self.send_response(200)

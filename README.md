@@ -39,7 +39,7 @@
 - [七、内核版本管理](#七内核版本管理)
 - [八、v2rayN 订阅与客户端配置](#八v2rayn-订阅与客户端配置)
 - [九、四条节点实测吞吐](#九四条节点实测吞吐)
-- [十、版本迭代与核心调优演进记录 (v2.1 - v2.7.28)](#十版本迭代与核心调优演进记录-v21---v2728)
+- [十、版本迭代与核心调优演进记录 (v2.1 - v2.7.29)](#十版本迭代与核心调优演进记录-v21---v2729)
 - [十一、免责声明](#十一免责声明)
 
 ---
@@ -336,7 +336,7 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 
 ---
 
-## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.28)
+## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.29)
 
 本项目经跨洋弱网环境（160ms+ / 1% 丢包）数十轮实测迭代，核心演进总结如下：
 
@@ -347,6 +347,7 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 | **内核双通道与配置自愈** | v2.7.7–v2.7.26 | 明确 pre（默认测试版）与 stable（稳定正式版）双通道规范；根治降级 stable 时因 1.15 专属字段（`buffer_size`/`flush_interval`）导致的校验 FATAL 回滚循环；新增 `sbbox up stable` 与 `sbbox up pre` 快捷切换与配置动态自愈适配机制；通道选择持久化至磁盘供每周自动升级严格遵守；`sbbox status` 补齐当前内核通道可视化指示 |
 | **AnyTLS ALPN 修正** | v2.7.27 | AnyTLS 为纯 TCP 协议，服务端入站、`anytls://` 链接（`alpn=h2`）、sing-box 客户端与 Mihomo 模板四处 ALPN 由 `["h3","h2"]` 收敛为 `["h2"]`，保持 TLS 1.3 不降级、不加回 `http/1.1`。验证：稳定版 sing-box 1.14.2 `check` 通过并实测走流量；`openssl s_client -alpn h2` 协商为 h2。v2rayN 需重新更新订阅。新版 v2rayN 支持 Naive（内核选 sing-box），但只识别订阅中的 `naive+https://` 与 `naive+quic://`，`http2://` / `http3://` 两条请忽略 |
 | **Naive 订阅去重** | v2.7.28 | 订阅与 `sbbox list` 不再输出 `http3://` / `http2://` 两条 Naive 链接：它们与 `naive+quic://` / `naive+https://` 指向同一入站，v2rayN 不识别、导入即 -1。验证：重新生成后 `nodes.txt` 中 Naive 仅剩 2 条 |
+| **小火箭 Naive 按 UA 下发** | v2.7.29 | 订阅服务识别 `Shadowrocket` UA，把 `naive+quic://` / `naive+https://` 现场转换为小火箭识别的 `http3://` / `http2://`；其他客户端仍只收到 `naive+` 写法。验证：以小火箭 UA 拉取得到 `http3`/`http2`，以 v2rayN UA 拉取得到 `naive+quic`/`naive+https` |
 | **流控加固与 QDoS 防御** | v2.1–v2.7.21 | 外置 Hy2 接收窗口升至 8M/20M 根治慢线上传限速；默认关闭大范围端口跳跃；Netfilter hashlimit 令牌桶抗洪；TUIC 严禁注入 uTLS |
 | **客户端生态兼容与全自动 TUN** | v2.7.16–v2.7.21 | 剔除 1.15+ FATAL 阻断项（`download_detour`/`store_rdrc`）；客户端订阅原生内置 `tun-in` + FakeIP，解决首连远程 DNS 往返延迟 |
 | **系统底层网络性能与安全** | v2.5.0–v2.7.20 | 协同 BBRv3 与 TCP Brutal；维持 64MB Socket 缓冲；网卡多队列 RPS/RFS 软中断均衡；`fs.suid_dumpable=0` 防内存转储；内置 WARP 解锁流媒体 |

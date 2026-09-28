@@ -39,7 +39,7 @@ Bundled with:
 - [7. Kernel Version Management](#7-kernel-version-management)
 - [8. Subscription & Client Configs](#8-subscription--client-configs)
 - [9. Benchmark Throughput](#9-benchmark-throughput)
-- [10. Release History & Core Tuning Evolution (v2.1 – v2.7.28)](#10-release-history--core-tuning-evolution-v21--v2728)
+- [10. Release History & Core Tuning Evolution (v2.1 – v2.7.29)](#10-release-history--core-tuning-evolution-v21--v2729)
 - [11. Disclaimer](#11-disclaimer)
 
 ---
@@ -303,7 +303,7 @@ Benchmark measured locally on VPS over 9 iterations showing median (min–max):
 
 ---
 
-## 10. Release History & Core Tuning Evolution (v2.1 – v2.7.28)
+## 10. Release History & Core Tuning Evolution (v2.1 – v2.7.29)
 
 After dozens of iterative rounds across high-latency cross-Pacific topologies (160ms+ / 1% packet loss), core technical milestones are summarized below:
 
@@ -314,6 +314,7 @@ After dozens of iterative rounds across high-latency cross-Pacific topologies (1
 | **Dual Kernel Channels & Self-Healing** | v2.7.7–v2.7.26 | Clarified `pre` (default pre-release) and `stable` (official release) dual channels; eliminated rollback loops when switching to `stable` caused by sing-box 1.15-specific fields (`buffer_size`/`flush_interval`); added `sbbox up stable` and `sbbox up pre` commands with automatic config adaptation; persisted channel selection to disk for weekly cron upgrades; added channel visibility in `sbbox status`. |
 | **AnyTLS ALPN Fix** | v2.7.27 | AnyTLS is TCP-only: ALPN in the server inbound, `anytls://` link (`alpn=h2`), sing-box client and Mihomo templates changed from `["h3","h2"]` to `["h2"]`; TLS 1.3 kept, `http/1.1` not re-added. Verified: stable sing-box 1.14.2 `check` passes with real traffic; `openssl s_client -alpn h2` negotiates h2. v2rayN users must refresh the subscription. recent v2rayN supports Naive (with the sing-box core) but only parses `naive+https://` and `naive+quic://`; ignore the `http2://` / `http3://` entries |
 | **Naive Subscription Dedup** | v2.7.28 | Subscription and `sbbox list` no longer emit the `http3://` / `http2://` Naive links: they point to the same inbound as `naive+quic://` / `naive+https://` and v2rayN cannot parse them (shows -1). Verified: after regeneration `nodes.txt` has only 2 Naive links |
+| **Shadowrocket Naive by UA** | v2.7.29 | The subscription server detects the `Shadowrocket` UA and converts `naive+quic://` / `naive+https://` to the `http3://` / `http2://` form Shadowrocket understands; other clients still get `naive+` links. Verified: Shadowrocket UA receives `http3`/`http2`, v2rayN UA receives `naive+quic`/`naive+https` |
 | **Flow Control & QDoS Hardening** | v2.1–v2.7.21 | External Hy2 receive window raised to 8M/20M curing transoceanic upload bottlenecks; port hopping disabled by default; Netfilter hashlimit anti-flood; TUIC strictly bans uTLS. |
 | **Client Ecosystem & Seamless TUN** | v2.7.16–v2.7.21 | Purged 1.15+ fatal options (`download_detour`, `store_rdrc`); subscriptions ship out-of-the-box `tun-in` + FakeIP to eliminate remote DNS round-trips before connection. |
 | **System Performance & Anti-Leak** | v2.5.0–v2.7.20 | Coordinated BBRv3 with TCP Brutal; maintained 64MB buffer ceiling; RPS/RFS softirq balancing; `fs.suid_dumpable=0`; built-in WARP streaming unlock. |

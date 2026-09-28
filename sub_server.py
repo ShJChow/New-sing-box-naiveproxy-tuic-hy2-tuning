@@ -120,6 +120,11 @@ class SubHandler(BaseHTTPRequestHandler):
 
         # 默认下发全量 6 大协议节点，不擅自剔除任何已启用节点
         selected_links = list(raw_links)
+        # Shadowrocket 只认 http3:// / http2:// 形式的 naive 链接（v2.7.28 起订阅只存 naive+ 写法），按 UA 现场转换
+        if "shadowrocket" in ua:
+            selected_links = [("http3://" + l[len("naive+quic://"):]) if l.startswith("naive+quic://")
+                              else ("http2://" + l[len("naive+https://"):]) if l.startswith("naive+https://")
+                              else l for l in selected_links]
         if not selected_links:
             with open(token_file, "rb") as f: content = f.read()
             self.send_response(200)
