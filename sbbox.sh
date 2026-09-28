@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.29"
+SBBOX_VERSION="v2.7.30"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -2431,9 +2431,10 @@ gen_client_sbox() {
         "disable_tcp_keep_alive": false,
         "tcp_keep_alive": "30s",
         "tcp_keep_alive_interval": "5s",
-        "idle_session_check_interval": "30s",
-        "idle_session_timeout": "2m",
-        "min_idle_session": 2,
+        "idle_session_check_interval": "15s",
+        "idle_session_timeout": "5m",
+        "min_idle_session": 4,
+        "bind_address_no_port": true,
         "tls": {
             "enabled": true,
             "server_name": "'"$sni"'",
@@ -2712,9 +2713,9 @@ gen_client_clash() {
       - h2
     client-fingerprint: chrome
     udp: true
-    idle-session-check-interval: 30
-    idle-session-timeout: 120
-    min-idle-session: 2"
+    idle-session-check-interval: 15
+    idle-session-timeout: 300
+    min-idle-session: 4"
 
     groups="$groups
       - anytls-$node_tag"
@@ -2784,7 +2785,6 @@ mode: rule
 log-level: info
 unified-delay: true
 tcp-concurrent: true
-global-client-fingerprint: chrome
 geodata-mode: false
 geo-auto-update: true
 geo-update-interval: 24

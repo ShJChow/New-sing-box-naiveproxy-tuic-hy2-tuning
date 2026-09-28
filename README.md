@@ -39,7 +39,7 @@
 - [七、内核版本管理](#七内核版本管理)
 - [八、v2rayN 订阅与客户端配置](#八v2rayn-订阅与客户端配置)
 - [九、四条节点实测吞吐](#九四条节点实测吞吐)
-- [十、版本迭代与核心调优演进记录 (v2.1 - v2.7.29)](#十版本迭代与核心调优演进记录-v21---v2729)
+- [十、版本迭代与核心调优演进记录 (v2.1 - v2.7.30)](#十版本迭代与核心调优演进记录-v21---v2730)
 - [十一、免责声明](#十一免责声明)
 
 ---
@@ -336,13 +336,14 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 
 ---
 
-## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.29)
+## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.30)
 
 本项目经跨洋弱网环境（160ms+ / 1% 丢包）数十轮实测迭代，核心演进总结如下：
 
 | 演进领域 | 涉及版本 | 核心技术方案与调优结论 |
 | :--- | :--- | :--- |
 | **四大主力协议收敛** | v2.7.0–v2.7.22 | 聚焦四大主力（Hysteria2 / AnyTLS / NaiveProxy / TUIC）；v2.7.22 彻底下线 Reality 并默认不安装，引入 `close_port` 自愈清理防火墙 |
+| **AnyTLS 深度扩容会话池提速** | v2.7.30 | 针对 AnyTLS 作为主力节点的首屏与并发提速：空闲会话池由 2 深度扩容至 4（`min_idle_session: 4` / `min-idle-session: 4`），保持 4 条热温 TLS 1.3 会话待命，消除网页多资源加载时的握手 RTT 与 TCP 队头阻塞，实现真正 0-RTT 极速首屏开包；空闲会话超时延长至 5 分钟（`5m` / `300s`），消除频繁断开重连；巡检间隔收敛为 15 秒（`15s` / `15`），更快剔除死连接；sing-box 客户端补齐 `bind_address_no_port: true` 减少端口碰撞；Mihomo 移除已废弃的 `global-client-fingerprint` 告警项 |
 | **AnyTLS / NaiveProxy 深度调优** | v2.7.1–v2.7.25 | AnyTLS 升级为纯 TLS 1.3，ALPN 收敛至 `["h2"]`（v2.7.27 修正：AnyTLS 走 TCP，此前误写入 QUIC 专属的 `h3`），彻底清除节点链接与模板中遗留的 HTTP/1.1 与 HTTP/1.2，杜绝队头阻塞；启用 8 级填充防 TLS-in-TLS，深度调优会话池复用；NaiveProxy 严格遵守 Cronet 禁忌；v2.7.23 对齐 klzgrad 官方规范，全面剔除 TFO（防 0.1% 罕见特征及丢包黑洞超时）；并发收敛（`insecure_concurrency=2`），根治多连接竞争缓冲与 ACK 饥饿，协同服务端 BBRv3 单流/双流精准流控与 64MB 缓冲：h2 下行飙升至 209 Mbps（+90%，0% 丢包达 391 Mbps）；h3 剥离冗余 TCP 参数，下行提速至 204 Mbps（+63%，1G 线下达 413 Mbps），上行达 92 Mbps |
 | **内核双通道与配置自愈** | v2.7.7–v2.7.26 | 明确 pre（默认测试版）与 stable（稳定正式版）双通道规范；根治降级 stable 时因 1.15 专属字段（`buffer_size`/`flush_interval`）导致的校验 FATAL 回滚循环；新增 `sbbox up stable` 与 `sbbox up pre` 快捷切换与配置动态自愈适配机制；通道选择持久化至磁盘供每周自动升级严格遵守；`sbbox status` 补齐当前内核通道可视化指示 |
 | **AnyTLS ALPN 修正** | v2.7.27 | AnyTLS 为纯 TCP 协议，服务端入站、`anytls://` 链接（`alpn=h2`）、sing-box 客户端与 Mihomo 模板四处 ALPN 由 `["h3","h2"]` 收敛为 `["h2"]`，保持 TLS 1.3 不降级、不加回 `http/1.1`。验证：稳定版 sing-box 1.14.2 `check` 通过并实测走流量；`openssl s_client -alpn h2` 协商为 h2。v2rayN 需重新更新订阅。新版 v2rayN 支持 Naive（内核选 sing-box），但只识别订阅中的 `naive+https://` 与 `naive+quic://`，`http2://` / `http3://` 两条请忽略 |
