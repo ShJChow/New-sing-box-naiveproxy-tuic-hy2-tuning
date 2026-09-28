@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.31"
+SBBOX_VERSION="v2.7.32"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -816,6 +816,84 @@ default_nic() {
 # 网卡层调优：全部 best-effort，失败只告警。
 #   1) fq：QUIC 强依赖 pacing，sysctl 的 default_qdisc 不会改已存在的网卡
 #   2) GRO/GSO：让内核合并/分片 UDP 段，高速 QUIC 下显著降低 CPU 占用
+#   3) 收发环形队列拉满、txqueuelen、MTU 下限、RPS/RFS 多核均衡
+# v2.7.32：这些都不是 sysctl，此前只在 tune on 时执行一次，**重启即丢**——网卡在
+# initramfs 阶段、sysctl.d 加载前就已建好，实测重启后出口网卡是 mq + pfifo_fast。
+# 现改为写开机脚本 + systemd oneshot（sbbox-nic.service），此处先执行一次，开机再执行一次。
+# fq 写法与同机 Xray（v4.9.44 起的 xray-xhttp-nic.service）一致：多队列网卡 mq 下每个
+# TX 队列挂 fq（此前是单个 root fq，会把 Xray 的 mq 结构覆盖掉），谁后执行结果都相同。
+NIC_TUNE_BIN="/usr/local/sbin/sbbox-nic-tune"
+NIC_TUNE_UNIT="sbbox-nic.service"
+NIC_TUNE_OPENRC="/etc/local.d/sbbox-nic.start"
+
+write_nic_tune_script() {
+  mkdir -p "$(dirname "$NIC_TUNE_BIN")" 2>/dev/null || true
+  cat > "$NIC_TUNE_BIN" <<'NICTUNEEOF' || return 1
+#!/usr/bin/env bash
+# 由 sbbox tune on 生成 / sbbox tune off 移除，开机由 sbbox-nic.service 执行。
+# 重设 sysctl 管不到、重启即丢的网卡运行时参数；全部 best-effort，可重复执行。
+nic=$(ip route show default 2>/dev/null | awk '/default/{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
+[ -n "$nic" ] || { echo "未识别到默认路由网卡，跳过"; exit 0; }
+
+# 1. fq（仅在 default_qdisc=fq 即 BBR 可用时设置）：多队列网卡 mq 下每个 TX 队列挂 fq
+if command -v tc >/dev/null 2>&1 && [ "$(sysctl -n net.core.default_qdisc 2>/dev/null)" = "fq" ]; then
+  fq_opts="limit 20480 flow_limit 4096 quantum 18028 initial_quantum 90140"
+  num_tx=$(find "/sys/class/net/$nic/queues/" -maxdepth 1 -name 'tx-*' 2>/dev/null | wc -l)
+  if [ "$num_tx" -gt 1 ]; then
+    tc qdisc replace dev "$nic" root handle 1: mq 2>/dev/null
+    for i in $(seq 1 "$num_tx"); do
+      tc qdisc replace dev "$nic" parent 1:$i fq $fq_opts 2>/dev/null
+    done
+  else
+    tc qdisc replace dev "$nic" root fq $fq_opts 2>/dev/null
+  fi
+  echo "网卡 $nic 队列规则：$(tc qdisc show dev "$nic" 2>/dev/null | awk '{print $2}' | sort | uniq -c | awk '{printf "%s×%s ", $2, $1}')（QUIC pacing 生效）"
+fi
+
+# 2. 收发环形队列拉到硬件上限：高速 QUIC 是突发型流量，默认 ring（常见 256/512）
+#    在瞬时突发下会直接 rx_dropped，而这类丢包在 sing-box 日志里完全看不见。
+#    GRO/GSO/TSO 分片卸载属于网卡通用能力，只开不关。
+if command -v ethtool >/dev/null 2>&1; then
+  rx_max=$(ethtool -g "$nic" 2>/dev/null | awk '/^RX:/{print $2; exit}')
+  tx_max=$(ethtool -g "$nic" 2>/dev/null | awk '/^TX:/{print $2; exit}')
+  if [ -n "$rx_max" ] && [ -n "$tx_max" ]; then
+    ethtool -G "$nic" rx "$rx_max" tx "$tx_max" >/dev/null 2>&1 && \
+      echo "网卡 $nic 收发队列已拉满：rx=$rx_max tx=$tx_max"
+  fi
+  ok=""
+  ethtool -K "$nic" gro on >/dev/null 2>&1 && ok="gro"
+  ethtool -K "$nic" gso on >/dev/null 2>&1 && ok="$ok gso"
+  ethtool -K "$nic" tso on >/dev/null 2>&1 && ok="$ok tso"
+  [ -n "$ok" ] && echo "网卡 $nic 已开启分片卸载：$ok"
+fi
+
+# 3. 发送队列长度；MTU 低于 1480 时抬到 1480
+ip link set dev "$nic" txqueuelen 10000 >/dev/null 2>&1
+cur_mtu=$(cat "/sys/class/net/$nic/mtu" 2>/dev/null || echo 1500)
+if [ "$cur_mtu" -lt 1480 ] && [ "$cur_mtu" -gt 0 ]; then
+  ip link set dev "$nic" mtu 1480 >/dev/null 2>&1
+fi
+
+# 4. RPS/RFS 软中断多核均衡：遍历网卡 rx 队列分配 CPU 掩码，避免单核 softirq 瓶颈
+cpu_cores=$(nproc 2>/dev/null || echo 1)
+if [ "$cpu_cores" -gt 1 ] && [ -d "/sys/class/net/$nic/queues" ]; then
+  rps_mask=$(printf '%x' $(( (1 << cpu_cores) - 1 )))
+  flow_entries=$((8192 * cpu_cores))
+  num_rx=$(find "/sys/class/net/$nic/queues/" -maxdepth 1 -name 'rx-*' 2>/dev/null | wc -l)
+  [ "$num_rx" -le 0 ] && num_rx=1
+  for rxq in /sys/class/net/"$nic"/queues/rx-*/rps_cpus; do
+    [ -f "$rxq" ] && echo "$rps_mask" > "$rxq" 2>/dev/null
+  done
+  for rxq_dir in /sys/class/net/"$nic"/queues/rx-*/; do
+    [ -f "${rxq_dir}rps_flow_cnt" ] && echo "$((flow_entries / num_rx))" > "${rxq_dir}rps_flow_cnt" 2>/dev/null
+  done
+  echo "网卡 $nic RPS/RFS 已绑定多核均衡（cores=$cpu_cores, mask=$rps_mask, flows=$flow_entries）"
+fi
+exit 0
+NICTUNEEOF
+  chmod 755 "$NIC_TUNE_BIN"
+}
+
 apply_nic_tuning() {
   local nic
   nic=$(default_nic)
@@ -824,67 +902,53 @@ apply_nic_tuning() {
     return 0
   fi
   echo "$nic" > "$SB_HOME/nic" 2>/dev/null || true
+  command -v tc >/dev/null 2>&1 || warn "未安装 tc(iproute2)，跳过 fq 队列设置"
+  command -v ethtool >/dev/null 2>&1 || warn "未安装 ethtool，跳过 GRO/GSO（apt install ethtool 后重跑 sbbox tune on 可启用）"
+  # rps_sock_flow_entries 是 sysctl，随 99-sbbox.conf 落盘；其余写进开机脚本
+  local cpu_cores; cpu_cores=$(nproc 2>/dev/null || echo 1)
+  [ "$cpu_cores" -gt 1 ] && sysctl -w net.core.rps_sock_flow_entries="$((8192 * cpu_cores))" >/dev/null 2>&1
 
-  if command -v tc >/dev/null 2>&1; then
-    local before_qd
-    before_qd=$(tc qdisc show dev "$nic" 2>/dev/null | head -1 | awk '{print $2}')
-    if tc qdisc replace dev "$nic" root fq >/dev/null 2>&1; then
-      info "网卡 $nic 队列规则：${before_qd:-未知} → fq（QUIC pacing 生效）"
+  write_nic_tune_script || { warn "写入 $NIC_TUNE_BIN 失败，跳过网卡层调优"; return 0; }
+  local line
+  "$NIC_TUNE_BIN" 2>/dev/null | while IFS= read -r line; do info "$line"; done
+
+  if [ "$SERVICE_TYPE" = "systemd" ]; then
+    cat > "/etc/systemd/system/$NIC_TUNE_UNIT" <<NICUNITEOF
+# 由 sbbox tune on 生成 / sbbox tune off 移除：开机重设 fq / 收发队列 / 分片卸载 / RPS
+[Unit]
+Description=sbbox NIC runtime tuning (fq qdisc, ring, offload, RPS)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=$NIC_TUNE_BIN
+
+[Install]
+WantedBy=multi-user.target
+NICUNITEOF
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    if systemctl enable "$NIC_TUNE_UNIT" >/dev/null 2>&1; then
+      info "网卡层调优已挂开机自启（$NIC_TUNE_UNIT）"
     else
-      warn "网卡 $nic 设置 fq 失败（容器/受限环境常见），跳过"
+      warn "启用 $NIC_TUNE_UNIT 失败，重启后网卡层调优不会自动恢复"
     fi
+  elif [ -d /etc/local.d ]; then
+    ln -sf "$NIC_TUNE_BIN" "$NIC_TUNE_OPENRC" 2>/dev/null && \
+      info "网卡层调优已挂开机自启（$NIC_TUNE_OPENRC，需 rc-update add local default）"
   else
-    warn "未安装 tc(iproute2)，跳过 fq 队列设置"
+    warn "未识别到 systemd / OpenRC local.d，网卡层调优重启后不会自动恢复"
   fi
+}
 
-  if command -v ethtool >/dev/null 2>&1; then
-    # 收发环形队列拉到硬件上限：高速 QUIC 是突发型流量，默认 ring（常见 256/512）
-    # 在瞬时突发下会直接 rx_dropped，而这类丢包在 sing-box 日志里完全看不见。
-    local rx_max tx_max
-    rx_max=$(ethtool -g "$nic" 2>/dev/null | awk '/^RX:/{print $2; exit}')
-    tx_max=$(ethtool -g "$nic" 2>/dev/null | awk '/^TX:/{print $2; exit}')
-    if [ -n "$rx_max" ] && [ -n "$tx_max" ]; then
-      ethtool -G "$nic" rx "$rx_max" tx "$tx_max" >/dev/null 2>&1 && \
-        info "网卡 $nic 收发队列已拉满：rx=$rx_max tx=$tx_max"
-    fi
-    local ok=""
-    ethtool -K "$nic" gro on  >/dev/null 2>&1 && ok="gro"
-    ethtool -K "$nic" gso on  >/dev/null 2>&1 && ok="$ok gso"
-    ethtool -K "$nic" tso on  >/dev/null 2>&1 && ok="$ok tso"
-    if [ -n "$ok" ]; then
-      info "网卡 $nic 已开启分片卸载：$ok"
-    else
-      warn "网卡 $nic 不支持或不允许修改卸载选项（虚拟网卡常见），跳过"
-    fi
-    ip link set dev "$nic" txqueuelen 10000 >/dev/null 2>&1 || true
-    local cur_mtu
-    cur_mtu=$(cat "/sys/class/net/$nic/mtu" 2>/dev/null || echo 1500)
-    if [ "$cur_mtu" -lt 1480 ] && [ "$cur_mtu" -gt 0 ]; then
-      ip link set dev "$nic" mtu 1480 >/dev/null 2>&1 || true
-    fi
-  else
-    warn "未安装 ethtool，跳过 GRO/GSO（apt install ethtool 后重跑 sbbox tune on 可启用）"
+remove_nic_tuning() {
+  if [ -f "/etc/systemd/system/$NIC_TUNE_UNIT" ]; then
+    systemctl disable "$NIC_TUNE_UNIT" >/dev/null 2>&1 || true
+    rm -f "/etc/systemd/system/$NIC_TUNE_UNIT"
+    systemctl daemon-reload >/dev/null 2>&1 || true
   fi
-
-  # RPS/RFS 软中断多核均衡：遍历网卡 rx 队列分配 CPU 掩码，避免单核 softirq 瓶颈
-  local cpu_cores rps_mask flow_entries num_rx
-  cpu_cores=$(nproc 2>/dev/null || echo 1)
-  if [ "$cpu_cores" -gt 1 ]; then
-    rps_mask=$(printf '%x' $(( (1 << cpu_cores) - 1 )))
-    flow_entries=$((8192 * cpu_cores))
-    sysctl -w net.core.rps_sock_flow_entries="$flow_entries" >/dev/null 2>&1 || true
-    if [ -d "/sys/class/net/$nic/queues" ]; then
-      num_rx=$(find "/sys/class/net/$nic/queues/" -maxdepth 1 -name 'rx-*' 2>/dev/null | wc -l)
-      [ "$num_rx" -le 0 ] && num_rx=1
-      for rxq in /sys/class/net/"$nic"/queues/rx-*/rps_cpus; do
-        [ -f "$rxq" ] && echo "$rps_mask" > "$rxq" 2>/dev/null || true
-      done
-      for rxq_dir in /sys/class/net/"$nic"/queues/rx-*/; do
-        [ -f "${rxq_dir}rps_flow_cnt" ] && echo "$((flow_entries / num_rx))" > "${rxq_dir}rps_flow_cnt" 2>/dev/null || true
-      done
-      info "网卡 $nic RPS/RFS 已绑定多核均衡（cores=$cpu_cores, mask=$rps_mask, flows=$flow_entries）"
-    fi
-  fi
+  rm -f "$NIC_TUNE_BIN" "$NIC_TUNE_OPENRC"
 }
 
 apply_tuning() {
@@ -1165,6 +1229,7 @@ tune_off() {
       info "网卡 $nic 队列规则已交还系统默认" || true
   fi
   rm -f "$SB_HOME/nic" "$SB_HOME/nic_tuned" 2>/dev/null
+  remove_nic_tuning
   rm -f "$SYSCTL_CONF" 2>/dev/null
   rm -f "$LIMITS_CONF" 2>/dev/null
   local dir="/etc/systemd/system/${SB_SERVICE}.service.d"
@@ -3026,6 +3091,7 @@ cleandel() {
     ip6tables -t nat -S OUTPUT 2>/dev/null | grep -w "$port_hy2" | sed 's/^-A/ip6tables -t nat -D/' | bash 2>/dev/null || true
   fi
   netfilter-persistent save >/dev/null 2>&1 || true
+  remove_nic_tuning
   rm -f "$SB_BINDIR/sbbox" "$SB_HOME/deps_done"
   rm -rf "$SB_HOME" 2>/dev/null
   info "sbbox 已完全卸载"

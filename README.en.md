@@ -39,7 +39,7 @@ Bundled with:
 - [7. Kernel Version Management](#7-kernel-version-management)
 - [8. Subscription & Client Configs](#8-subscription--client-configs)
 - [9. Benchmark Throughput](#9-benchmark-throughput)
-- [10. Release History & Core Tuning Evolution (v2.1 – v2.7.31)](#10-release-history--core-tuning-evolution-v21--v2731)
+- [10. Release History & Core Tuning Evolution (v2.1 – v2.7.32)](#10-release-history--core-tuning-evolution-v21--v2732)
 - [11. Disclaimer](#11-disclaimer)
 
 ---
@@ -303,7 +303,7 @@ Benchmark measured locally on VPS over 9 iterations showing median (min–max):
 
 ---
 
-## 10. Release History & Core Tuning Evolution (v2.1 – v2.7.31)
+## 10. Release History & Core Tuning Evolution (v2.1 – v2.7.32)
 
 After dozens of iterative rounds across high-latency cross-Pacific topologies (160ms+ / 1% packet loss), core technical milestones are summarized below:
 
@@ -320,6 +320,7 @@ After dozens of iterative rounds across high-latency cross-Pacific topologies (1
 | **Flow Control & QDoS Hardening** | v2.1–v2.7.21 | External Hy2 receive window raised to 8M/20M curing transoceanic upload bottlenecks; port hopping disabled by default; Netfilter hashlimit anti-flood; TUIC strictly bans uTLS. |
 | **Client Ecosystem & Seamless TUN** | v2.7.16–v2.7.21 | Purged 1.15+ fatal options (`download_detour`, `store_rdrc`); subscriptions ship out-of-the-box `tun-in` + FakeIP to eliminate remote DNS round-trips before connection. |
 | **System Performance & Anti-Leak** | v2.5.0–v2.7.20 | Coordinated BBRv3 with TCP Brutal; maintained 64MB buffer ceiling; RPS/RFS softirq balancing; `fs.suid_dumpable=0`; built-in WARP streaming unlock. |
+| **fq Qdisc Persisted Across Reboots** | v2.7.32 | Fixed fq being lost on reboot: `net.core.default_qdisc=fq` only applies to qdiscs created afterwards and the NIC exists before sysctl.d is loaded, so after a reboot the egress NIC was `mq` + `pfifo_fast` and QUIC lost fq pacing; fq, ring sizes, GRO/GSO/TSO, `txqueuelen` and RPS/RFS used to run only once during `sbbox tune on`. They now live in `/usr/local/sbin/sbbox-nic-tune` + `sbbox-nic.service` (OpenRC: `/etc/local.d`), re-applied at boot and removed by `sbbox tune off` / uninstall. fq changed from a single root fq to per-TX-queue fq under `mq` (`limit 20480 flow_limit 4096 quantum 18028 initial_quantum 90140`), matching the co-hosted Xray so whichever runs last yields the same qdisc tree. Verify with `tc qdisc show dev <nic>`, not with sysctl. The co-hosted Xray adds the same in v4.9.44. |
 
 ---
 
