@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.32"
+SBBOX_VERSION="v2.7.33"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -696,39 +696,48 @@ install_cert() {
     echo 'precedence ::ffff:0:0/96  100' >> /etc/gai.conf 2>/dev/null
   fi
 
-  # 检查 80 端口占用并临时让路
+  # v2.7.33：传入 CF_Token（Cloudflare API Token，Zone.DNS 编辑权限）时走 DNS-01。
+  # 域名开了 Cloudflare 代理（橙云）后 HTTP-01 会被 301 到 https 回源 443，
+  # 首次签发时若还是灰云能成功，60 天后自动续期必败；DNS-01 与代理状态无关，
+  # 也不用停 nginx / xray 让出 80 端口。acme.sh 会把 Token 存进 account.conf 供续期沿用。
   local stopped_nginx=0 stopped_caddy=0 stopped_apache=0 stopped_xray=0 stopped_sb=0
-  if port_listening 80 tcp; then
-    if systemctl is-active --quiet nginx 2>/dev/null; then
-      systemctl stop nginx 2>/dev/null && stopped_nginx=1
-    fi
-    if systemctl is-active --quiet caddy 2>/dev/null; then
-      systemctl stop caddy 2>/dev/null && stopped_caddy=1
-    fi
-    if systemctl is-active --quiet apache2 2>/dev/null; then
-      systemctl stop apache2 2>/dev/null && stopped_apache=1
-    fi
-    if systemctl is-active --quiet xray 2>/dev/null; then
-      systemctl stop xray 2>/dev/null && stopped_xray=1
-    fi
-    if systemctl is-active --quiet sing-box 2>/dev/null; then
-      systemctl stop sing-box 2>/dev/null && stopped_sb=1
-    fi
-  fi
-
-  info "开始申请证书：$ym (需 80 端口空闲)……"
-  if [ -n "$v6" ] && [ -z "$v4" ]; then
-    "$HOME/.acme.sh/acme.sh" --issue -d "$ym" --standalone --listen-v6 --keylength ec-256
+  if [ -n "${CF_Token:-}" ]; then
+    info "开始申请证书：$ym（Cloudflare DNS-01，CF_Token 已提供）……"
+    "$HOME/.acme.sh/acme.sh" --issue --dns dns_cf -d "$ym" --keylength ec-256
   else
-    "$HOME/.acme.sh/acme.sh" --issue -d "$ym" --standalone --listen-v4 --keylength ec-256
-  fi
+    # 检查 80 端口占用并临时让路
+    if port_listening 80 tcp; then
+      if systemctl is-active --quiet nginx 2>/dev/null; then
+        systemctl stop nginx 2>/dev/null && stopped_nginx=1
+      fi
+      if systemctl is-active --quiet caddy 2>/dev/null; then
+        systemctl stop caddy 2>/dev/null && stopped_caddy=1
+      fi
+      if systemctl is-active --quiet apache2 2>/dev/null; then
+        systemctl stop apache2 2>/dev/null && stopped_apache=1
+      fi
+      if systemctl is-active --quiet xray 2>/dev/null; then
+        systemctl stop xray 2>/dev/null && stopped_xray=1
+      fi
+      if systemctl is-active --quiet sing-box 2>/dev/null; then
+        systemctl stop sing-box 2>/dev/null && stopped_sb=1
+      fi
+    fi
 
-  # 恢复被暂停的服务
-  [ "$stopped_nginx" = 1 ] && systemctl start nginx 2>/dev/null || true
-  [ "$stopped_caddy" = 1 ] && systemctl start caddy 2>/dev/null || true
-  [ "$stopped_apache" = 1 ] && systemctl start apache2 2>/dev/null || true
-  [ "$stopped_xray" = 1 ] && systemctl start xray 2>/dev/null || true
-  [ "$stopped_sb" = 1 ] && systemctl start sing-box 2>/dev/null || true
+    info "开始申请证书：$ym (需 80 端口空闲)……"
+    if [ -n "$v6" ] && [ -z "$v4" ]; then
+      "$HOME/.acme.sh/acme.sh" --issue -d "$ym" --standalone --listen-v6 --keylength ec-256
+    else
+      "$HOME/.acme.sh/acme.sh" --issue -d "$ym" --standalone --listen-v4 --keylength ec-256
+    fi
+
+    # 恢复被暂停的服务
+    [ "$stopped_nginx" = 1 ] && systemctl start nginx 2>/dev/null || true
+    [ "$stopped_caddy" = 1 ] && systemctl start caddy 2>/dev/null || true
+    [ "$stopped_apache" = 1 ] && systemctl start apache2 2>/dev/null || true
+    [ "$stopped_xray" = 1 ] && systemctl start xray 2>/dev/null || true
+    [ "$stopped_sb" = 1 ] && systemctl start sing-box 2>/dev/null || true
+  fi
 
   local acme_home="$HOME/.acme.sh/${ym}_ecc"
   if [ ! -f "$acme_home/fullchain.cer" ]; then
@@ -892,6 +901,38 @@ fi
 exit 0
 NICTUNEEOF
   chmod 755 "$NIC_TUNE_BIN"
+}
+
+# 续期钩子是否已挂到 acme.sh 的 reloadcmd：0=已挂 1=未挂 2=无 acme 域名配置（自签等，不适用）
+cert_hook_state() {
+  [ -n "$ym" ] || return 2
+  local _conf="" _d _cur
+  for _d in "$HOME/.acme.sh/${ym}_ecc" "$HOME/.acme.sh/${ym}"; do
+    [ -f "$_d/${ym}.conf" ] && _conf="$_d/${ym}.conf" && break
+  done
+  [ -n "$_conf" ] || return 2
+  _cur=$(. "$_conf" 2>/dev/null; printf '%s' "${Le_ReloadCmd:-}")
+  case "$_cur" in
+    *__ACME_BASE64__START_*)
+      _cur=$(printf '%s' "$_cur" | sed -e 's/^__ACME_BASE64__START_//' -e 's/__ACME_BASE64__END_$//' | base64 -d 2>/dev/null) ;;
+  esac
+  case "$_cur" in *"cert sync"*) return 0 ;; esac
+  return 1
+}
+
+# v2.7.33：安装末尾自动挂续期钩子。$CERT_DIR 是 acme 证书的独立副本，不挂钩子时
+# acme.sh 续期成功也不会更新它，sbbox 各节点会用旧证书直到过期。
+# 不能挂在 install_cert 里：hook 会立即执行一次 reloadcmd，reloadcmd 里的
+# sbbox cert sync 又会调 install_cert，形成递归；且必须在 install_cmd 之后，
+# reloadcmd 引用的 $SB_BINDIR/sbbox 此时才存在。
+ensure_cert_hook() {
+  [ "$IS_ROOT" = 1 ] || return 0
+  cert_hook_state
+  case $? in
+    1) info "为 acme.sh 自动续期挂载 sbbox 证书同步钩子……"
+       cert_mgmt hook || warn "续期钩子安装失败，可稍后执行 sbbox cert hook" ;;
+  esac
+  return 0
 }
 
 apply_nic_tuning() {
@@ -4341,6 +4382,7 @@ main() {
   esac
 
   install_cmd
+  ensure_cert_hook
   setup_logrotate
   setup_autoupdate
   info "安装完成！可直接使用 sbbox 管理命令"
@@ -4722,6 +4764,14 @@ doctor() {
     fi
   fi
 
+  # 续期钩子：未挂则 acme 续期后 $CERT_DIR 不更新，证书到期当天全部 TLS 节点失效
+  cert_hook_state
+  case $? in
+    0) echo -e "证书续期钩子：${GREEN}已挂载${NC}" ;;
+    1) echo -e "证书续期钩子：${RED}未挂载${NC}（acme 续期后 sbbox 仍用旧证书直到过期）"
+       issues=$((issues+1)) ;;
+  esac
+
   check_one() { # $1=名称 $2=端口 $3=tcp|udp
     local name=$1 p=$2 proto=${3:-tcp} rc=0
     if [ -z "$p" ]; then
@@ -4765,6 +4815,13 @@ doctor() {
       echo -e "证书：${GREEN}已重新获取并匹配域名 $ym${NC}"
       fixed=$((fixed+1))
     fi
+  fi
+
+  # 续期钩子未挂 → 挂上
+  cert_hook_state
+  if [ $? = 1 ] && cert_mgmt hook; then
+    echo -e "证书续期钩子：${GREEN}已挂载${NC}"
+    fixed=$((fixed+1))
   fi
 
   # 修复订阅服务（若未运行）

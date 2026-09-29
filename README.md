@@ -39,7 +39,7 @@
 - [七、内核版本管理](#七内核版本管理)
 - [八、v2rayN 订阅与客户端配置](#八v2rayn-订阅与客户端配置)
 - [九、四条节点实测吞吐](#九四条节点实测吞吐)
-- [十、版本迭代与核心调优演进记录 (v2.1 - v2.7.32)](#十版本迭代与核心调优演进记录-v21---v2732)
+- [十、版本迭代与核心调优演进记录 (v2.1 - v2.7.33)](#十版本迭代与核心调优演进记录-v21---v2733)
 - [十一、免责声明](#十一免责声明)
 
 ---
@@ -190,6 +190,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 ```
 
 > `alns=1` 时 acme.sh 走 standalone 模式，需要 **80 端口空闲**、域名 A 记录已解析到本机。
+> 域名在 Cloudflare 上时建议追加 `CF_Token=<API Token>`（Zone.Zone 读 + Zone.DNS 编辑）：改用 DNS-01 签发与续期，不占 80 端口、不停服务；域名开了 CF 代理（橙云）时 standalone 续期必败，必须用 DNS-01。
 > 若未提供 `ym=域名`，脚本会**交互提示输入**（不写入命令行历史）。
 > `reap=1`（VLESS-Reality TCP 节点）完全**免域名、免证书**，借用官方优质 SNI 伪装抗封锁，按需显式传 `reap=1` 启用（默认精简关闭）。
 
@@ -336,7 +337,7 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 
 ---
 
-## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.32)
+## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.33)
 
 本项目经跨洋弱网环境（160ms+ / 1% 丢包）数十轮实测迭代，核心演进总结如下：
 
@@ -354,6 +355,7 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 | **客户端生态兼容与全自动 TUN** | v2.7.16–v2.7.21 | 剔除 1.15+ FATAL 阻断项（`download_detour`/`store_rdrc`）；客户端订阅原生内置 `tun-in` + FakeIP，解决首连远程 DNS 往返延迟 |
 | **系统底层网络性能与安全** | v2.5.0–v2.7.20 | 协同 BBRv3 与 TCP Brutal；维持 64MB Socket 缓冲；网卡多队列 RPS/RFS 软中断均衡；`fs.suid_dumpable=0` 防内存转储；内置 WARP 解锁流媒体 |
 | **网卡 fq 队列开机持久化** | v2.7.32 | 修复重启后 fq 失效：`net.core.default_qdisc=fq` 只对此后新建的 qdisc 生效，网卡在 sysctl 加载前就已建好，实测重启后出口网卡是 `mq` + `pfifo_fast`，QUIC 依赖的 fq pacing 丢失；此前 fq、收发环形队列、GRO/GSO/TSO、`txqueuelen`、RPS/RFS 都只在 `sbbox tune on` 时执行一次。现写成 `/usr/local/sbin/sbbox-nic-tune` + `sbbox-nic.service`（OpenRC 用 `/etc/local.d`）开机重设，`sbbox tune off` 与卸载时移除。fq 写法由单个 root fq 改为多队列网卡 `mq` 下每个 TX 队列挂 fq（参数 `limit 20480 flow_limit 4096 quantum 18028 initial_quantum 90140`），与同机 Xray 一致，谁后执行结果都相同，不再互相覆盖队列结构。核对：`tc qdisc show dev <网卡>`，不能只看 sysctl。同机 Xray 在 v4.9.44 同步加入 |
+| **证书续期钩子自动挂载与 DNS-01** | v2.7.33 | 修复续期后 sbbox 仍用旧证书：`$CERT_DIR`（`~/sbbox/cert`）是 acme 证书的独立副本，此前安装时从不挂续期钩子，acme.sh 续期成功也不会更新它，证书到期当天 Naive / AnyTLS / TUIC / 外置 Hy2 同时失效。现安装末尾自动执行 `sbbox cert hook`（reloadcmd 追加 `sbbox cert sync`，保留原有落地路径；刻意不放在 `install_cert` 里——hook 会立即执行 reloadcmd，而 sync 又调 `install_cert`，会递归），`sbbox doctor` 新增「证书续期钩子」检查并自动修复。`alns=1` 时传 `CF_Token` 即用 `dns_cf` 签发，不再停 nginx / xray 让出 80 端口。注意：续期后叶证书指纹变化，开了 pinSHA256 / pcs 的客户端需重新导入订阅。同机 Xray 在 v4.9.45 同步加入 DNS-01 与 `xh cert` |
 
 ---
 

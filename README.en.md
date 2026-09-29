@@ -39,7 +39,7 @@ Bundled with:
 - [7. Kernel Version Management](#7-kernel-version-management)
 - [8. Subscription & Client Configs](#8-subscription--client-configs)
 - [9. Benchmark Throughput](#9-benchmark-throughput)
-- [10. Release History & Core Tuning Evolution (v2.1 – v2.7.32)](#10-release-history--core-tuning-evolution-v21--v2732)
+- [10. Release History & Core Tuning Evolution (v2.1 – v2.7.33)](#10-release-history--core-tuning-evolution-v21--v2733)
 - [11. Disclaimer](#11-disclaimer)
 
 ---
@@ -179,6 +179,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 ```
 
 > `alns=1` uses acme.sh in standalone mode, requiring **port 80 to be free** and the domain's A record resolved to this host.
+> If the domain is on Cloudflare, append `CF_Token=<API Token>` (Zone.Zone read + Zone.DNS edit) to issue and renew via DNS-01 without port 80 or stopping services; when the domain is proxied (orange cloud), standalone renewal always fails and DNS-01 is required.
 > If `ym=your.domain.com` is omitted, the script prompts interactively (keeps it out of shell history).
 > `reap=1` (VLESS-Reality TCP node) requires **no domain and no certificate**, borrowing official TLS 1.3 SNI camouflage to bypass censorship; enabled on demand via `reap=1` (default is disabled for minimal overhead).
 
@@ -303,7 +304,7 @@ Benchmark measured locally on VPS over 9 iterations showing median (min–max):
 
 ---
 
-## 10. Release History & Core Tuning Evolution (v2.1 – v2.7.32)
+## 10. Release History & Core Tuning Evolution (v2.1 – v2.7.33)
 
 After dozens of iterative rounds across high-latency cross-Pacific topologies (160ms+ / 1% packet loss), core technical milestones are summarized below:
 
@@ -321,6 +322,7 @@ After dozens of iterative rounds across high-latency cross-Pacific topologies (1
 | **Client Ecosystem & Seamless TUN** | v2.7.16–v2.7.21 | Purged 1.15+ fatal options (`download_detour`, `store_rdrc`); subscriptions ship out-of-the-box `tun-in` + FakeIP to eliminate remote DNS round-trips before connection. |
 | **System Performance & Anti-Leak** | v2.5.0–v2.7.20 | Coordinated BBRv3 with TCP Brutal; maintained 64MB buffer ceiling; RPS/RFS softirq balancing; `fs.suid_dumpable=0`; built-in WARP streaming unlock. |
 | **fq Qdisc Persisted Across Reboots** | v2.7.32 | Fixed fq being lost on reboot: `net.core.default_qdisc=fq` only applies to qdiscs created afterwards and the NIC exists before sysctl.d is loaded, so after a reboot the egress NIC was `mq` + `pfifo_fast` and QUIC lost fq pacing; fq, ring sizes, GRO/GSO/TSO, `txqueuelen` and RPS/RFS used to run only once during `sbbox tune on`. They now live in `/usr/local/sbin/sbbox-nic-tune` + `sbbox-nic.service` (OpenRC: `/etc/local.d`), re-applied at boot and removed by `sbbox tune off` / uninstall. fq changed from a single root fq to per-TX-queue fq under `mq` (`limit 20480 flow_limit 4096 quantum 18028 initial_quantum 90140`), matching the co-hosted Xray so whichever runs last yields the same qdisc tree. Verify with `tc qdisc show dev <nic>`, not with sysctl. The co-hosted Xray adds the same in v4.9.44. |
+| **Auto Renewal Hook & DNS-01** | v2.7.33 | Fixed sbbox keeping the old certificate after renewal: `$CERT_DIR` (`~/sbbox/cert`) is a separate copy of the acme certificate and the installer never installed the renewal hook, so a successful acme.sh renewal never reached it and Naive / AnyTLS / TUIC / external Hy2 would all fail on expiry. The installer now runs `sbbox cert hook` at the end (appends `sbbox cert sync` to reloadcmd, keeping existing deploy paths; deliberately not inside `install_cert`, since the hook runs reloadcmd immediately and sync calls `install_cert`, which would recurse). `sbbox doctor` checks and auto-fixes a missing hook. With `alns=1`, passing `CF_Token` issues via `dns_cf` without stopping nginx / xray for port 80. Note: renewal changes the leaf fingerprint, so clients using pinSHA256 / pcs must re-import the subscription. The co-hosted Xray adds DNS-01 and `xh cert` in v4.9.45. |
 
 ---
 
