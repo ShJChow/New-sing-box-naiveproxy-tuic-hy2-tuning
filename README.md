@@ -39,7 +39,7 @@
 - [七、内核版本管理](#七内核版本管理)
 - [八、v2rayN 订阅与客户端配置](#八v2rayn-订阅与客户端配置)
 - [九、四条节点实测吞吐](#九四条节点实测吞吐)
-- [十、版本迭代与核心调优演进记录 (v2.1 - v2.7.33)](#十版本迭代与核心调优演进记录-v21---v2733)
+- [十、版本迭代与核心调优演进记录 (v2.1 - v2.7.34)](#十版本迭代与核心调优演进记录-v21---v2734)
 - [十一、免责声明](#十一免责声明)
 
 ---
@@ -224,7 +224,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 | `uuid` | 自动生成 | 自定义 UUID（Tuic / Reality 用；各协议密码独立随机，不再复用 UUID） |
 | `name` | 空 | 节点名称前缀 |
 | `noautoup` | 空 | 关闭每周内核自动升级（`noautoup=1`） |
-| `sbrel` | **`pre`（默认）** | 内核版本通道：默认跟踪最新测试版（含 alpha/beta/rc 与新特性）；只跟踪稳定正式版用 `sbrel=stable` |
+| `sbrel` | **`stable`（默认，v2.7.34 起）** | 内核版本通道：默认只跟踪官方正式版；需要测试版新特性（含 alpha/beta/rc）用 `sbrel=pre` |
 | `tuicuos` | **0（默认原生 UDP）** | Tuic UDP 中继模式：默认原生 UDP 防断流；QUIC 流用 `tuicuos=1` |
 | `tuils` | **1（默认开启）** | Tuic TLS 加固（证书公钥 SHA-256 固定）；关闭用 `tuils=0` |
 | `dns_optimistic` | **1（默认开启）** | sing-box 1.14 乐观 DNS 缓存并持久化到本地数据库，消除解析长尾延迟；关闭用 `dns_optimistic=0` |
@@ -254,7 +254,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 | `sbbox cert renew` | 强制续期证书 → 落地 → 重启 → 重生成客户端配置 |
 | `sbbox cert sync` | 只做「续期之后」那半段：把已续期的证书落地、重启服务、按新指纹重生成客户端配置。不触发签发，证书未变时直接跳过 |
 | `sbbox cert hook` | 把 `sbbox cert sync` 挂进 acme.sh 的 `reloadcmd`（保留其中原有命令，幂等）。**装完 sbbox 必做一次**，见第十一节第 1 条 |
-| `sbbox up [stable\|pre]` | 升级 sing-box 内核或切换通道（默认 pre 通道；支持 `sbbox up stable` / `pre` 一键切换，失败自动回滚） |
+| `sbbox up [stable\|pre]` | 升级 sing-box 内核或切换通道（默认 stable 通道；支持 `sbbox up stable` / `pre` 一键切换，失败自动回滚） |
 | `sbbox log [N]` | 查看最近 N 行日志（默认 20） |
 | `sbbox rotate` | 轮换全部协议密码、混淆密码与订阅令牌（端口/UUID/证书不变，客户端需重新导入） |
 | `sbbox doctor` | 自检并尝试修复 |
@@ -264,15 +264,15 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 
 ## 七、内核版本管理
 
-安装与 `sbbox up` 默认采用 **`pre` 测试版通道**，跟踪最新发布版本（含 alpha/beta/rc，当前 `v1.15.0-alpha.9`），享受最新网络特性与性能优化；如需严格锁定官方稳定正式版，可选择 **`stable` 通道**（当前 `v1.14.2`）。
+安装与 `sbbox up` 默认采用 **`stable` 正式版通道**（v2.7.34 起；当前 `v1.14.2`）；需要跟踪 alpha/beta/rc 新特性时可切换 **`pre` 测试版通道**（当前 `v1.15.0-alpha.9`）。已安装机器以 `~/sbbox/sbrel` 里落盘的通道为准，不受默认值变化影响。
 
-- **默认通道 `pre`**：获取 GitHub 仓库最新 release，不论是否预发布（正式版发布时同样会自动获取最新正式版）。
-- **稳定通道 `stable`**：仅从 `releases/latest` 获取官方稳定正式版。
+- **默认通道 `stable`**：仅从 `releases/latest` 获取官方稳定正式版。
+- **测试通道 `pre`**：获取 GitHub 仓库最新 release，不论是否预发布（正式版发布时同样会自动获取最新正式版）。
 - **一键切换与配置自愈（v2.7.26 新增）**：支持在两个通道间无缝切换，脚本自动处理 sing-box 1.14 与 1.15+ 之间的配置差异（如 `cache_file` 缓冲写入参数），避免校验 fatal 与误回滚，并持久化通道选择到磁盘：
 
 ```bash
 # 切换与升级命令
-sbbox up                  # 按当前已保存通道升级内核（默认 pre；已是最新则跳过）
+sbbox up                  # 按当前已保存通道升级内核（默认 stable；已是最新则跳过）
 sbbox up stable           # 一键切换至官方稳定正式版通道并升级/降级（自动固化为 stable）
 sbbox up pre              # 一键切换至最新测试版通道并升级（自动固化为 pre）
 
@@ -337,7 +337,7 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 
 ---
 
-## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.33)
+## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.34)
 
 本项目经跨洋弱网环境（160ms+ / 1% 丢包）数十轮实测迭代，核心演进总结如下：
 
@@ -356,6 +356,7 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 | **系统底层网络性能与安全** | v2.5.0–v2.7.20 | 协同 BBRv3 与 TCP Brutal；维持 64MB Socket 缓冲；网卡多队列 RPS/RFS 软中断均衡；`fs.suid_dumpable=0` 防内存转储；内置 WARP 解锁流媒体 |
 | **网卡 fq 队列开机持久化** | v2.7.32 | 修复重启后 fq 失效：`net.core.default_qdisc=fq` 只对此后新建的 qdisc 生效，网卡在 sysctl 加载前就已建好，实测重启后出口网卡是 `mq` + `pfifo_fast`，QUIC 依赖的 fq pacing 丢失；此前 fq、收发环形队列、GRO/GSO/TSO、`txqueuelen`、RPS/RFS 都只在 `sbbox tune on` 时执行一次。现写成 `/usr/local/sbin/sbbox-nic-tune` + `sbbox-nic.service`（OpenRC 用 `/etc/local.d`）开机重设，`sbbox tune off` 与卸载时移除。fq 写法由单个 root fq 改为多队列网卡 `mq` 下每个 TX 队列挂 fq（参数 `limit 20480 flow_limit 4096 quantum 18028 initial_quantum 90140`），与同机 Xray 一致，谁后执行结果都相同，不再互相覆盖队列结构。核对：`tc qdisc show dev <网卡>`，不能只看 sysctl。同机 Xray 在 v4.9.44 同步加入 |
 | **证书续期钩子自动挂载与 DNS-01** | v2.7.33 | 修复续期后 sbbox 仍用旧证书：`$CERT_DIR`（`~/sbbox/cert`）是 acme 证书的独立副本，此前安装时从不挂续期钩子，acme.sh 续期成功也不会更新它，证书到期当天 Naive / AnyTLS / TUIC / 外置 Hy2 同时失效。现安装末尾自动执行 `sbbox cert hook`（reloadcmd 追加 `sbbox cert sync`，保留原有落地路径；刻意不放在 `install_cert` 里——hook 会立即执行 reloadcmd，而 sync 又调 `install_cert`，会递归），`sbbox doctor` 新增「证书续期钩子」检查并自动修复。`alns=1` 时传 `CF_Token` 即用 `dns_cf` 签发，不再停 nginx / xray 让出 80 端口。注意：续期后叶证书指纹变化，开了 pinSHA256 / pcs 的客户端需重新导入订阅。同机 Xray 在 v4.9.45 同步加入 DNS-01 与 `xh cert` |
+| **默认内核通道改为 stable 与 tcp-brutal 2.0.1 适配** | v2.7.34 | `sbrel` 默认值由 `pre` 改为 `stable`：手机 SFI/SFA、v2rayN 等客户端多为正式版内核，服务端同版更稳；已安装机器以 `~/sbbox/sbrel` 落盘值为准。实测切换（1.15.0-alpha.9 → 1.14.2，客户端固定 1.14.2，160ms/1% 丢包、300↓/50↑，N=3）五节点下行 / 上行范围全部重叠无退化：AnyTLS 180→171、Naive-H3 203→201、Naive-H2 173→167、TUIC 19→20 Mbps（外置 Hy2 对照 112→101）；1.14.2 对服务端与客户端配置 `check` 均无弃用警告，`cache_file.buffer_size` / `flush_interval` 由版本自愈逻辑自动移除。tcp-brutal 上游 2.0.1 已自带 `tso_segs` 适配（`BRUTAL_HAVE_TSO_SEGS`），本项目 `patch_tcp_brutal_tso_segs` 遇到上游已适配的源码一律跳过——该补丁把新钩子接到恒返回 2 的函数上，会在 7.1+ 内核把 TSO 限成每次 2 段。同机 Xray 在 v4.9.46 同步加入 tcp-brutal 补丁跳过 |
 
 ---
 

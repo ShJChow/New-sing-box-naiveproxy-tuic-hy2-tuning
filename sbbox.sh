@@ -4,7 +4,7 @@
 #
 # 基于 yonggekkk/argosbx 架构，剥离为 sing-box 单内核，
 # 支持 VLESS-Reality / Tuic / Hysteria2 / Naiveproxy(H2+H3) 四协议。
-# 默认使用最新测试版内核（sbrel=pre，跟踪 alpha/beta/rc 最新预发布与新特性），支持一键切换官方稳定正式版（sbbox up stable）。
+# 默认使用官方最新稳定正式版内核（sbrel=stable，v2.7.34 起），需要跟踪 alpha/beta/rc 新特性时可一键切换测试版通道（sbbox up pre）。
 #
 # 集成内核级流控调优 (xh tuning on) + acme.sh 证书申请。
 #
@@ -43,7 +43,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.33"
+SBBOX_VERSION="v2.7.34"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -79,11 +79,13 @@ hydown="${hydown:-}"                        # Hysteria2 下行 Mbps
 ippz="${ippz:-}"                            # 4 / 6 / 双栈
 name="${name:-}"
 noautoup="${noautoup:-}"                    # 关闭每周内核自动升级：noautoup=1
-# 内核版本通道：默认 pre，跟踪最新测试版（alpha/beta/rc）并应用最新特性；若需只跟踪稳定正式版用 sbrel=stable 或执行 sbbox up stable。
+# 内核版本通道：默认 stable，只跟踪官方正式版（releases/latest）；需要测试版新特性用 sbrel=pre 或执行 sbbox up pre。
+# v2.7.34 起默认值由 pre 改为 stable：手机 SFI/SFA、v2rayN 等客户端多为正式版内核，服务端同版更稳；
+# 已安装机器以 $SB_HOME/sbrel 里落盘的通道为准，不受默认值变化影响。
 # 先记下用户是否显式指定，再套默认值 —— 否则「没传」与「传了 pre」无法区分，
 # 已持久化的通道选择会被默认值静默覆盖。
 sbrel_explicit="${sbrel:+1}"
-sbrel="${sbrel:-pre}"
+sbrel="${sbrel:-stable}"
 tuicuos="${tuicuos:-0}"                     # Tuic UDP 中继模式：默认原生 UDP(native，防队头阻塞断流)；QUIC流用 tuicuos=1
 tuils="${tuils:-1}"                         # Tuic TLS 加固（证书公钥 SHA-256 固定），关闭用 tuils=0
 
@@ -171,7 +173,7 @@ showmode() {
   echo "  hyup=100 hydown=1000  Hysteria2 Brutal 拥塞控制客户端带宽"
 
   echo "  sub=1    启用 v2rayN / 通用订阅服务（默认开启 1；关闭用 sub=0；subport=端口 subid=令牌 可选）"
-  echo "  sbrel=pre|stable 内核更新通道（默认 pre，跟踪测试版与新特性；只跟踪稳定正式版用 sbrel=stable）"
+  echo "  sbrel=stable|pre 内核更新通道（默认 stable，只跟踪官方正式版；跟踪测试版新特性用 sbrel=pre）"
   echo "  cache_buffer=1MB  cache_file 写缓冲（默认 1MB，sing-box 1.15 新特性）"
   echo "  cache_flush=1m   cache_file 刷盘间隔（默认 1m，sing-box 1.15 新特性）"
   echo "  uuid=自定义 UUID（Tuic 用；各协议密码独立随机，不再复用）"
@@ -3337,7 +3339,7 @@ detect_bbr_version() {
 
 patch_tcp_brutal_tso_segs() {
   # 内核 7.1 起 tcp_congestion_ops 把 min_tso_segs(sk) 改成 tso_segs(sk, mss_now)，
-  # 上游 tcp-brutal（HyNetworks/apernet）至今未适配：在 7.1+ 上 dkms 编译直接失败，
+  # 上游 tcp-brutal（HyNetworks/apernet）2.0.0 及更早未适配（2.0.1 起自带，见下方跳过判断）：在 7.1+ 上 dkms 编译直接失败，
   # 结果是 brutal 静默不可用，而本项目的 sockopt 里写着 tcpcongestion=brutal。
   # 判别式直接 grep 目标内核头文件，不用 LINUX_VERSION_CODE 猜边界。
   local src f mk
@@ -3346,6 +3348,10 @@ patch_tcp_brutal_tso_segs() {
     f="$src/brutal_cc.c"; mk="$src/Makefile"
     [ -f "$f" ] && [ -f "$mk" ] || continue
     grep -q 'HAVE_TSO_SEGS_MSS' "$f" 2>/dev/null && continue   # 已打过，幂等
+    # 上游 v2.0.1 起自带适配（BRUTAL_HAVE_TSO_SEGS）且语义正确：新钩子 tso_segs 的返回值是
+    # 「一次发送的段数」，本补丁把它接到恒返回 2 的 min_tso_segs 上，会把 TSO 限成每次 2 段。
+    # 上游已适配时一律不打，本补丁只留给 2.0.0 及更早的源码。
+    grep -q 'BRUTAL_HAVE_TSO_SEGS' "$f" 2>/dev/null && continue
 
     awk '
       /^static u32 brutal_min_tso_segs\(struct sock \*sk\)$/ {
@@ -4267,7 +4273,7 @@ status_show() {
   echo ""
   if [ -x "$SB_BIN" ]; then
     echo -e "${CYAN}[+] 版本与更新通道${NC}"
-    local cur_ch="${sbrel:-pre}"
+    local cur_ch="${sbrel:-stable}"
     [ -f "$SB_HOME/sbrel" ] && cur_ch=$(cat "$SB_HOME/sbrel")
     echo -e "  内核版本:     $("$SB_BIN" version 2>/dev/null | head -1)"
     if [ "$cur_ch" = "pre" ]; then
@@ -4477,9 +4483,9 @@ cmd_update() {
       ;;
   esac
 
-  # 优先级：本次显式指定 > 首装时持久化的通道 > 默认值 pre
+  # 优先级：本次显式指定 > 首装时持久化的通道 > 默认值 stable
   [ -z "$sbrel_explicit" ] && [ -f "$SB_HOME/sbrel" ] && sbrel=$(cat "$SB_HOME/sbrel")
-  sbrel="${sbrel:-pre}"
+  sbrel="${sbrel:-stable}"
 
   local bak="$SB_HOME/sing-box.bak" conf_bak="$SB_HOME/sb.json.bak" before after
   before=$(sb_installed_version)

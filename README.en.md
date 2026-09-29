@@ -14,7 +14,7 @@ A **sing-box 1.14 single-core** deployment script, covering the 2026 protocol ti
 | 4 **QUIC Alternative** | **TUIC v5** | Low-latency UDP acceleration / standard QUIC 0-RTT | QUIC (H3) | Real Cert / Self-signed + Pinning |
 | 5 **Legacy Compat (Optional)** | **VLESS-Reality** | Universal direct link (No domain/cert needed; enable with `reap=1`) | TCP (XTLS Vision) | **No Domain / No Cert required (SNI Steal)** |
 
-> Defaults to the **latest pre-release test core (`pre`, e.g. v1.15.0-alpha.2)**, with **QUIC and BBR congestion control** enabled by default, and backward compatibility down to **TLS 1.2 / HTTP 1.1**.
+> Defaults to the **official stable core (`stable`, since v2.7.34)**, with **QUIC and BBR congestion control** enabled by default, and backward compatibility down to **TLS 1.2 / HTTP 1.1**.
 
 Bundled with:
 - **Kernel-level flow tuning** (ported from the `xh tuning on` of [`ShJChow/Xray-core-xhttp-cdn-tuned`](https://github.com/ShJChow/Xray-core-xhttp-cdn-tuned)): BBR, memory-tiered buffers, TCP Fast Open, file-handle limits — applied automatically at install, one-command rollback
@@ -39,7 +39,7 @@ Bundled with:
 - [7. Kernel Version Management](#7-kernel-version-management)
 - [8. Subscription & Client Configs](#8-subscription--client-configs)
 - [9. Benchmark Throughput](#9-benchmark-throughput)
-- [10. Release History & Core Tuning Evolution (v2.1 – v2.7.33)](#10-release-history--core-tuning-evolution-v21--v2733)
+- [10. Release History & Core Tuning Evolution (v2.1 – v2.7.34)](#10-release-history--core-tuning-evolution-v21--v2734)
 - [11. Disclaimer](#11-disclaimer)
 
 ---
@@ -213,7 +213,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 | `uuid` | auto-generated | custom UUID for Tuic and Reality |
 | `name` | empty | node name prefix |
 | `noautoup` | empty | disable weekly automatic kernel update (`noautoup=1`) |
-| `sbrel` | **`pre` (default)** | kernel release channel: default latest pre-release (`pre`, e.g. `v1.15.0-alpha.2`); official stable with `sbrel=stable` |
+| `sbrel` | **`stable` (default since v2.7.34)** | kernel release channel: official stable releases by default; `sbrel=pre` tracks pre-releases (alpha/beta/rc) |
 | `tuicuos` | **0 (default native UDP)** | Tuic UDP relay mode: native UDP (default); QUIC stream with `tuicuos=1` |
 | `tuils` | **1 (default)** | Tuic TLS hardening (certificate SHA-256 pinning); disable with `tuils=0` |
 | `dns_optimistic` | **1 (default)** | sing-box 1.14 optimistic DNS cache with persistent storage |
@@ -238,7 +238,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 | `sbbox port [tu] [hy2] [nv]` | Change node ports (no args assigns random ports 10000-65535 and syncs configs & subscription) |
 | `sbbox cert status` | Show certificate validity |
 | `sbbox cert renew` | Renew certificate and restart |
-| `sbbox up [stable\|pre]` | Update sing-box kernel or switch channels (default pre channel; support `sbbox up stable` / `pre` one-command switch, rollback on failure) |
+| `sbbox up [stable\|pre]` | Update sing-box kernel or switch channels (default stable channel; support `sbbox up stable` / `pre` one-command switch, rollback on failure) |
 | `sbbox log [N]` | Show the last N log lines (default 20) |
 | `sbbox rotate` | Rotate all protocol passwords and subscription token |
 | `sbbox doctor` | Health-check and auto-repair |
@@ -248,15 +248,15 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 
 ## 7. Kernel Version Management
 
-Install and `sbbox up` follow the **`pre` release channel** by default, tracking the newest releases (including alpha/beta/rc, currently `v1.15.0-alpha.9`) to leverage the latest network features and performance improvements. If you prefer to strictly follow official stable releases, you can select the **`stable` channel** (currently `v1.14.2`).
+Install and `sbbox up` follow the **`stable` channel** by default (since v2.7.34; currently `v1.14.2`). Switch to the **`pre` channel** (currently `v1.15.0-alpha.9`) to track alpha/beta/rc features. Existing installs keep the channel persisted in `~/sbbox/sbrel`.
 
-- **Default channel `pre`**: Pulls the newest release from the GitHub repository, regardless of pre-release tag (automatically acquires the newest stable on release day as well).
-- **Stable channel `stable`**: Only pulls official stable releases from `releases/latest`.
+- **Default channel `stable`**: Only pulls official stable releases from `releases/latest`.
+- **Test channel `pre`**: Pulls the newest release from the GitHub repository, regardless of pre-release tag (automatically acquires the newest stable on release day as well).
 - **One-Command Channel Switch & Self-Healing (New in v2.7.26)**: Seamlessly switch between channels. The script automatically handles schema differences between sing-box 1.14 and 1.15+ (such as `cache_file` buffer settings) to prevent validation fatal errors and erroneous rollbacks, and persists your channel selection to disk:
 
 ```bash
 # Upgrade and switch commands
-sbbox up                  # update kernel on currently saved channel (default pre; skip if latest)
+sbbox up                  # update kernel on currently saved channel (default stable; skip if latest)
 sbbox up stable           # switch to official stable channel and update/downgrade (persists stable)
 sbbox up pre              # switch to newest pre-release channel and update (persists pre)
 
@@ -304,7 +304,7 @@ Benchmark measured locally on VPS over 9 iterations showing median (min–max):
 
 ---
 
-## 10. Release History & Core Tuning Evolution (v2.1 – v2.7.33)
+## 10. Release History & Core Tuning Evolution (v2.1 – v2.7.34)
 
 After dozens of iterative rounds across high-latency cross-Pacific topologies (160ms+ / 1% packet loss), core technical milestones are summarized below:
 
@@ -323,6 +323,7 @@ After dozens of iterative rounds across high-latency cross-Pacific topologies (1
 | **System Performance & Anti-Leak** | v2.5.0–v2.7.20 | Coordinated BBRv3 with TCP Brutal; maintained 64MB buffer ceiling; RPS/RFS softirq balancing; `fs.suid_dumpable=0`; built-in WARP streaming unlock. |
 | **fq Qdisc Persisted Across Reboots** | v2.7.32 | Fixed fq being lost on reboot: `net.core.default_qdisc=fq` only applies to qdiscs created afterwards and the NIC exists before sysctl.d is loaded, so after a reboot the egress NIC was `mq` + `pfifo_fast` and QUIC lost fq pacing; fq, ring sizes, GRO/GSO/TSO, `txqueuelen` and RPS/RFS used to run only once during `sbbox tune on`. They now live in `/usr/local/sbin/sbbox-nic-tune` + `sbbox-nic.service` (OpenRC: `/etc/local.d`), re-applied at boot and removed by `sbbox tune off` / uninstall. fq changed from a single root fq to per-TX-queue fq under `mq` (`limit 20480 flow_limit 4096 quantum 18028 initial_quantum 90140`), matching the co-hosted Xray so whichever runs last yields the same qdisc tree. Verify with `tc qdisc show dev <nic>`, not with sysctl. The co-hosted Xray adds the same in v4.9.44. |
 | **Auto Renewal Hook & DNS-01** | v2.7.33 | Fixed sbbox keeping the old certificate after renewal: `$CERT_DIR` (`~/sbbox/cert`) is a separate copy of the acme certificate and the installer never installed the renewal hook, so a successful acme.sh renewal never reached it and Naive / AnyTLS / TUIC / external Hy2 would all fail on expiry. The installer now runs `sbbox cert hook` at the end (appends `sbbox cert sync` to reloadcmd, keeping existing deploy paths; deliberately not inside `install_cert`, since the hook runs reloadcmd immediately and sync calls `install_cert`, which would recurse). `sbbox doctor` checks and auto-fixes a missing hook. With `alns=1`, passing `CF_Token` issues via `dns_cf` without stopping nginx / xray for port 80. Note: renewal changes the leaf fingerprint, so clients using pinSHA256 / pcs must re-import the subscription. The co-hosted Xray adds DNS-01 and `xh cert` in v4.9.45. |
+| **Default Channel `stable` & tcp-brutal 2.0.1** | v2.7.34 | `sbrel` now defaults to `stable` instead of `pre`: mobile SFI/SFA and v2rayN mostly run stable cores, so a matching server is the safer default; existing installs keep the channel persisted in `~/sbbox/sbrel`. Measured switch (1.15.0-alpha.9 → 1.14.2, client fixed at 1.14.2, 160ms / 1% loss, 300↓/50↑, N=3): all five nodes overlap with no regression — AnyTLS 180→171, Naive-H3 203→201, Naive-H2 173→167, TUIC 19→20 Mbps (external Hy2 control 112→101). 1.14.2 `check` shows no deprecation warnings for server or client configs; `cache_file.buffer_size` / `flush_interval` are removed by the version self-heal. Upstream tcp-brutal 2.0.1 handles the `tso_segs` hook itself (`BRUTAL_HAVE_TSO_SEGS`), so `patch_tcp_brutal_tso_segs` now skips such sources — the patch wired the new hook to a function that always returns 2, capping TSO at 2 segments on 7.1+ kernels. The co-hosted Xray adds the same skip in v4.9.46. |
 
 ---
 
