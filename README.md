@@ -39,7 +39,7 @@
 - [七、内核版本管理](#七内核版本管理)
 - [八、v2rayN 订阅与客户端配置](#八v2rayn-订阅与客户端配置)
 - [九、四条节点实测吞吐](#九四条节点实测吞吐)
-- [十、版本迭代与核心调优演进记录 (v2.1 - v2.7.34)](#十版本迭代与核心调优演进记录-v21---v2734)
+- [十、版本迭代与核心调优演进记录 (v2.1 - v2.7.35)](#十版本迭代与核心调优演进记录-v21---v2735)
 - [十一、免责声明](#十一免责声明)
 
 ---
@@ -337,7 +337,7 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 
 ---
 
-## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.34)
+## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.35)
 
 本项目经跨洋弱网环境（160ms+ / 1% 丢包）数十轮实测迭代，核心演进总结如下：
 
@@ -357,6 +357,7 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 | **网卡 fq 队列开机持久化** | v2.7.32 | 修复重启后 fq 失效：`net.core.default_qdisc=fq` 只对此后新建的 qdisc 生效，网卡在 sysctl 加载前就已建好，实测重启后出口网卡是 `mq` + `pfifo_fast`，QUIC 依赖的 fq pacing 丢失；此前 fq、收发环形队列、GRO/GSO/TSO、`txqueuelen`、RPS/RFS 都只在 `sbbox tune on` 时执行一次。现写成 `/usr/local/sbin/sbbox-nic-tune` + `sbbox-nic.service`（OpenRC 用 `/etc/local.d`）开机重设，`sbbox tune off` 与卸载时移除。fq 写法由单个 root fq 改为多队列网卡 `mq` 下每个 TX 队列挂 fq（参数 `limit 20480 flow_limit 4096 quantum 18028 initial_quantum 90140`），与同机 Xray 一致，谁后执行结果都相同，不再互相覆盖队列结构。核对：`tc qdisc show dev <网卡>`，不能只看 sysctl。同机 Xray 在 v4.9.44 同步加入 |
 | **证书续期钩子自动挂载与 DNS-01** | v2.7.33 | 修复续期后 sbbox 仍用旧证书：`$CERT_DIR`（`~/sbbox/cert`）是 acme 证书的独立副本，此前安装时从不挂续期钩子，acme.sh 续期成功也不会更新它，证书到期当天 Naive / AnyTLS / TUIC / 外置 Hy2 同时失效。现安装末尾自动执行 `sbbox cert hook`（reloadcmd 追加 `sbbox cert sync`，保留原有落地路径；刻意不放在 `install_cert` 里——hook 会立即执行 reloadcmd，而 sync 又调 `install_cert`，会递归），`sbbox doctor` 新增「证书续期钩子」检查并自动修复。`alns=1` 时传 `CF_Token` 即用 `dns_cf` 签发，不再停 nginx / xray 让出 80 端口。注意：续期后叶证书指纹变化，开了 pinSHA256 / pcs 的客户端需重新导入订阅。同机 Xray 在 v4.9.45 同步加入 DNS-01 与 `xh cert` |
 | **默认内核通道改为 stable 与 tcp-brutal 2.0.1 适配** | v2.7.34 | `sbrel` 默认值由 `pre` 改为 `stable`：手机 SFI/SFA、v2rayN 等客户端多为正式版内核，服务端同版更稳；已安装机器以 `~/sbbox/sbrel` 落盘值为准。实测切换（1.15.0-alpha.9 → 1.14.2，客户端固定 1.14.2，160ms/1% 丢包、300↓/50↑，N=3）五节点下行 / 上行范围全部重叠无退化：AnyTLS 180→171、Naive-H3 203→201、Naive-H2 173→167、TUIC 19→20 Mbps（外置 Hy2 对照 112→101）；1.14.2 对服务端与客户端配置 `check` 均无弃用警告，`cache_file.buffer_size` / `flush_interval` 由版本自愈逻辑自动移除。tcp-brutal 上游 2.0.1 已自带 `tso_segs` 适配（`BRUTAL_HAVE_TSO_SEGS`），本项目 `patch_tcp_brutal_tso_segs` 遇到上游已适配的源码一律跳过——该补丁把新钩子接到恒返回 2 的函数上，会在 7.1+ 内核把 TSO 限成每次 2 段。同机 Xray 在 v4.9.46 同步加入 tcp-brutal 补丁跳过 |
+| **外置 Hysteria2 / tcp-brutal 新版本提醒与校验更新** | v2.7.35 | 每周 `sbbox up` 顺带**只检查**外置 Hysteria2（hysteria-sbbox）与 tcp-brutal 新版本：写入 `~/sbbox/updates-available`，root 登录时与 `sbbox status` 显示，**不自动安装**；日志 `journalctl -t sbbox-autoupdate`。手动更新：`sbbox hy2 update`——二进制 sha256 必须同时等于发布者 `hashes.txt` 与 GitHub 独立计算的资产 digest，新二进制自报版本须与目标一致，替换后重启 hysteria-sbbox（同一二进制若被 hysteria-server 使用则一并重启）并复核 UDP 端口，失败回滚；`sbbox brutal update`——同样双重校验，只编译进 DKMS（下次开机生效），与同机 xh 共用锁。实测（隔离路径模拟旧版）：正常更新、端口复核失败回滚、下载被篡改拒绝三种情况均符合预期。同机 Xray 在 v4.9.47 同步加入 nginx / tcp-brutal 的提醒与校验更新 |
 
 ---
 

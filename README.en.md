@@ -39,7 +39,7 @@ Bundled with:
 - [7. Kernel Version Management](#7-kernel-version-management)
 - [8. Subscription & Client Configs](#8-subscription--client-configs)
 - [9. Benchmark Throughput](#9-benchmark-throughput)
-- [10. Release History & Core Tuning Evolution (v2.1 – v2.7.34)](#10-release-history--core-tuning-evolution-v21--v2734)
+- [10. Release History & Core Tuning Evolution (v2.1 – v2.7.35)](#10-release-history--core-tuning-evolution-v21--v2735)
 - [11. Disclaimer](#11-disclaimer)
 
 ---
@@ -304,7 +304,7 @@ Benchmark measured locally on VPS over 9 iterations showing median (min–max):
 
 ---
 
-## 10. Release History & Core Tuning Evolution (v2.1 – v2.7.34)
+## 10. Release History & Core Tuning Evolution (v2.1 – v2.7.35)
 
 After dozens of iterative rounds across high-latency cross-Pacific topologies (160ms+ / 1% packet loss), core technical milestones are summarized below:
 
@@ -324,6 +324,7 @@ After dozens of iterative rounds across high-latency cross-Pacific topologies (1
 | **fq Qdisc Persisted Across Reboots** | v2.7.32 | Fixed fq being lost on reboot: `net.core.default_qdisc=fq` only applies to qdiscs created afterwards and the NIC exists before sysctl.d is loaded, so after a reboot the egress NIC was `mq` + `pfifo_fast` and QUIC lost fq pacing; fq, ring sizes, GRO/GSO/TSO, `txqueuelen` and RPS/RFS used to run only once during `sbbox tune on`. They now live in `/usr/local/sbin/sbbox-nic-tune` + `sbbox-nic.service` (OpenRC: `/etc/local.d`), re-applied at boot and removed by `sbbox tune off` / uninstall. fq changed from a single root fq to per-TX-queue fq under `mq` (`limit 20480 flow_limit 4096 quantum 18028 initial_quantum 90140`), matching the co-hosted Xray so whichever runs last yields the same qdisc tree. Verify with `tc qdisc show dev <nic>`, not with sysctl. The co-hosted Xray adds the same in v4.9.44. |
 | **Auto Renewal Hook & DNS-01** | v2.7.33 | Fixed sbbox keeping the old certificate after renewal: `$CERT_DIR` (`~/sbbox/cert`) is a separate copy of the acme certificate and the installer never installed the renewal hook, so a successful acme.sh renewal never reached it and Naive / AnyTLS / TUIC / external Hy2 would all fail on expiry. The installer now runs `sbbox cert hook` at the end (appends `sbbox cert sync` to reloadcmd, keeping existing deploy paths; deliberately not inside `install_cert`, since the hook runs reloadcmd immediately and sync calls `install_cert`, which would recurse). `sbbox doctor` checks and auto-fixes a missing hook. With `alns=1`, passing `CF_Token` issues via `dns_cf` without stopping nginx / xray for port 80. Note: renewal changes the leaf fingerprint, so clients using pinSHA256 / pcs must re-import the subscription. The co-hosted Xray adds DNS-01 and `xh cert` in v4.9.45. |
 | **Default Channel `stable` & tcp-brutal 2.0.1** | v2.7.34 | `sbrel` now defaults to `stable` instead of `pre`: mobile SFI/SFA and v2rayN mostly run stable cores, so a matching server is the safer default; existing installs keep the channel persisted in `~/sbbox/sbrel`. Measured switch (1.15.0-alpha.9 → 1.14.2, client fixed at 1.14.2, 160ms / 1% loss, 300↓/50↑, N=3): all five nodes overlap with no regression — AnyTLS 180→171, Naive-H3 203→201, Naive-H2 173→167, TUIC 19→20 Mbps (external Hy2 control 112→101). 1.14.2 `check` shows no deprecation warnings for server or client configs; `cache_file.buffer_size` / `flush_interval` are removed by the version self-heal. Upstream tcp-brutal 2.0.1 handles the `tso_segs` hook itself (`BRUTAL_HAVE_TSO_SEGS`), so `patch_tcp_brutal_tso_segs` now skips such sources — the patch wired the new hook to a function that always returns 2, capping TSO at 2 segments on 7.1+ kernels. The co-hosted Xray adds the same skip in v4.9.46. |
+| **Update Notices & Verified Manual Updates (Hysteria2 / tcp-brutal)** | v2.7.35 | The weekly `sbbox up` now also **checks only** for new external Hysteria2 (hysteria-sbbox) and tcp-brutal releases: notices go to `~/sbbox/updates-available` and are shown at root login and in `sbbox status`; **nothing is installed automatically** (log: `journalctl -t sbbox-autoupdate`). Manual updates: `sbbox hy2 update` requires the binary's sha256 to match both the publisher's `hashes.txt` and GitHub's independently computed asset digest, checks the new binary reports the target version, restarts hysteria-sbbox (and hysteria-server if it shares the binary) and re-checks the UDP port, rolling back on failure. `sbbox brutal update` uses the same double check and only builds into DKMS (active on next boot), sharing a lock with the co-hosted xh. Tested in a sandbox path: normal update, rollback on failed port check, and rejection of a tampered download. The co-hosted Xray adds notices and verified updates for nginx / tcp-brutal in v4.9.47. |
 
 ---
 

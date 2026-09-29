@@ -21,6 +21,7 @@
 #   sbbox tune [show|off]             # 流控调优管理
 #   sbbox cert [status|renew|sync|hook] # 证书管理（sync=续期后落地+重生成，hook=挂到 acme 自动续期）
 #   sbbox up [stable|pre]             # 更新内核或切换稳定版/测试版通道
+#   sbbox hy2 [check|update]          # 外置 Hysteria2 新版本检查 / 手动更新（校验 sha256）
 #   sbbox log [N]                     # 查看最近 N 行日志
 #   sbbox del                         # 卸载
 #
@@ -43,7 +44,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.34"
+SBBOX_VERSION="v2.7.35"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -151,6 +152,7 @@ showmode() {
   echo "更新内核：sbbox up [stable|pre]（无参数按当前通道更新；可指定 stable 切稳定版或 pre 切测试版）"
   echo "流控调优：sbbox tune show | sbbox tune off"
   echo "证书管理：sbbox cert status | renew | sync | hook"
+  echo "外置 Hy2：sbbox hy2 check | update（每周 sbbox up 只检查并提醒，更新需手动执行并校验 sha256）"
   echo "订阅地址：sbbox sub 【开启】 sbbox sub on 【关闭】 sbbox sub off"
   echo "端口跳跃：sbbox hop 25000:38000 【默认关闭】 sbbox hop off"
   echo "极速优化：sbbox speed 100 1000（设置客户端上/下行并激活 Hy2 与 TCP Brutal 极速拥塞控制）"
@@ -3135,6 +3137,7 @@ cleandel() {
   fi
   netfilter-persistent save >/dev/null 2>&1 || true
   remove_nic_tuning
+  rm -f "$SB_UPDATE_PROFILE" 2>/dev/null
   rm -f "$SB_BINDIR/sbbox" "$SB_HOME/deps_done"
   rm -rf "$SB_HOME" 2>/dev/null
   info "sbbox 已完全卸载"
@@ -3715,6 +3718,191 @@ cmd_speed() {
 }
 
 # sbbox brutal [show|on|off|speed|add|del]
+# ---------- 更新提醒与 GitHub 资产校验（v2.7.35）----------
+# 外置 Hysteria2 与 tcp-brutal：每周 `sbbox up` 只「检查并提醒」，不自动安装；
+# 实际更新由管理员手动执行（sbbox hy2 update / sbbox brutal update），下载物必须通过校验。
+SB_UPDATE_NOTICE="$SB_HOME/updates-available"
+SB_UPDATE_PROFILE="/etc/profile.d/sbbox-updates.sh"
+
+# sb_update_notice <组件> [提醒文本]：有文本则写入 / 替换该组件的提醒，无文本则清除
+sb_update_notice() {
+  local comp="$1" msg="${2:-}" f="$SB_UPDATE_NOTICE"
+  { grep -v "^\[${comp}\] " "$f" 2>/dev/null; [ -n "$msg" ] && echo "[${comp}] ${msg}"; } > "${f}.tmp" 2>/dev/null || return 0
+  mv -f "${f}.tmp" "$f"
+  if [ -s "$f" ]; then
+    [ "$IS_ROOT" = 1 ] && printf '%s\n' "# 由 sbbox 生成：检查到新版本时在 root 登录时提醒；无待更新项时自动删除" \
+      "[ -s ${f} ] && [ \"\$(id -u)\" = 0 ] && case \$- in *i*) printf '\\033[33m[sbbox] 有可用更新（手动执行对应命令）：\\033[0m\\n'; sed 's/^/  /' ${f};; esac" \
+      > "$SB_UPDATE_PROFILE" 2>/dev/null
+  else
+    rm -f "$f" "$SB_UPDATE_PROFILE" 2>/dev/null
+  fi
+  return 0
+}
+
+# sb_gh_latest_tag <owner/repo>：GitHub releases/latest 的 tag（只含正式版）
+sb_gh_latest_tag() {
+  curl -fsSL --max-time 20 "https://api.github.com/repos/$1/releases/latest" 2>/dev/null \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin).get("tag_name",""))' 2>/dev/null
+}
+
+# sb_fetch_verified_github_asset <owner/repo> <tag> <资产名> <输出文件>
+# 双重校验：文件 sha256 必须同时等于① 发布者上传的 hashes.txt 中的值，② GitHub 在上传时
+# 独立计算并通过 API 返回的资产 digest。任一缺失或不符即删除文件并返回失败。
+sb_fetch_verified_github_asset() {
+  local repo="$1" tag="$2" asset="$3" out="$4" base api_sum list_sum got
+  base="https://github.com/${repo}/releases/download/${tag}"
+  api_sum=$(curl -fsSL --max-time 20 "https://api.github.com/repos/${repo}/releases/tags/${tag//\//%2F}" 2>/dev/null \
+    | python3 -c 'import json,sys
+a=sys.argv[1]
+for x in json.load(sys.stdin).get("assets",[]):
+    if x.get("name")==a: print((x.get("digest") or "").replace("sha256:",""))' "$asset" 2>/dev/null)
+  list_sum=$(curl -fsSL --max-time 20 "${base}/hashes.txt" 2>/dev/null \
+    | awk -v a="$asset" '{n=$2; sub(/.*\//,"",n); if (n==a) {print $1; exit}}')
+  if [ -z "$api_sum" ] || [ -z "$list_sum" ]; then
+    warn "缺少校验数据（GitHub digest: ${api_sum:-无}，hashes.txt: ${list_sum:-无}），拒绝使用 ${asset}"; return 1
+  fi
+  [ "$api_sum" = "$list_sum" ] || { warn "GitHub digest 与 hashes.txt 不一致，拒绝使用 ${asset}"; return 1; }
+  curl -fsSL --max-time 120 "${base}/${asset}" -o "$out" || { warn "下载 ${asset} 失败"; return 1; }
+  got=$(sha256sum "$out" | cut -d' ' -f1)
+  if [ "$got" != "$api_sum" ]; then
+    rm -f "$out"; warn "${asset} sha256 校验失败（期望 ${api_sum:0:16}…，实际 ${got:0:16}…）"; return 1
+  fi
+  info "${asset} ${tag} sha256 校验通过（hashes.txt 与 GitHub digest 一致）：${got:0:16}…"
+}
+
+# ---------- 外置 Hysteria2 更新（v2.7.35，手动）----------
+hy2_bin_path() {
+  systemctl cat hysteria-sbbox 2>/dev/null | sed -n 's/^ExecStart=\([^ ]*\).*/\1/p' | tail -1
+}
+
+check_hy2_update() {
+  hy2_external || return 0
+  local bin cur tag
+  bin=$(hy2_bin_path); [ -x "$bin" ] || return 0
+  cur=$("$bin" version 2>/dev/null | awk '/^Version/{print $2}')
+  tag=$(sb_gh_latest_tag apernet/hysteria)
+  [ -n "$tag" ] || { warn "查询 Hysteria2 最新版本失败"; return 0; }
+  if sb_version_ge "${cur#v}" "${tag#app/v}"; then
+    sb_update_notice hysteria2 ""
+    info "外置 Hysteria2 已是最新：${cur}"
+  else
+    sb_update_notice hysteria2 "${cur} → ${tag#app/}（手动更新：sbbox hy2 update）"
+    info "外置 Hysteria2 有新版本：${cur} → ${tag#app/}"
+  fi
+}
+
+update_hy2_external() {
+  hy2_external || { info "未使用外置 Hysteria2（hysteria-sbbox），跳过"; return 0; }
+  local bin cur tag latest asset tmp bak port a
+  bin=$(hy2_bin_path); [ -x "$bin" ] || { error "未找到 hysteria-sbbox 使用的二进制"; return 1; }
+  cur=$("$bin" version 2>/dev/null | awk '/^Version/{print $2}')
+  tag=$(sb_gh_latest_tag apernet/hysteria); latest="${tag#app/}"
+  [ -n "$tag" ] || { error "查询 Hysteria2 最新版本失败"; return 1; }
+  if sb_version_ge "${cur#v}" "${latest#v}"; then
+    info "外置 Hysteria2 已是最新：${cur}"; sb_update_notice hysteria2 ""; return 0
+  fi
+  info "外置 Hysteria2 ${cur} → ${latest}"
+  if [ "${1:-}" != "-y" ]; then
+    printf '%s' "下载并校验 sha256、替换 ${bin} 并重启 hysteria-sbbox？[y/N] " >&2
+    read -r a; case "$a" in y|Y) ;; *) info "已取消"; return 0 ;; esac
+  fi
+  asset="hysteria-linux-${cpu}"
+  tmp=$(mktemp -d) || return 1
+  sb_fetch_verified_github_asset apernet/hysteria "$tag" "$asset" "$tmp/hysteria" || { rm -rf "$tmp"; return 1; }
+  chmod 755 "$tmp/hysteria"
+  if [ "$("$tmp/hysteria" version 2>/dev/null | awk '/^Version/{print $2}')" != "$latest" ]; then
+    error "新二进制自报版本与 ${latest} 不符，已中止"; rm -rf "$tmp"; return 1
+  fi
+  bak="${bin}.bak-${cur}"
+  cp -a "$bin" "$bak" || { rm -rf "$tmp"; error "备份失败，已中止"; return 1; }
+  install -m 755 "$tmp/hysteria" "${bin}.new" && mv -f "${bin}.new" "$bin"
+  rm -rf "$tmp"
+  # 同一二进制若也被 hysteria-server 使用（同机 Xray 的外置 Hy2），一并重启
+  systemctl is-active --quiet hysteria-server 2>/dev/null && systemctl restart hysteria-server 2>/dev/null
+  systemctl restart hysteria-sbbox 2>/dev/null; sleep 2
+  port=$(sed -n 's/^listen: *[^:]*:\([0-9][0-9]*\).*/\1/p' /etc/hysteria/sbbox.yaml 2>/dev/null | head -1)
+  if systemctl is-active --quiet hysteria-sbbox && { [ -z "$port" ] || ss -lun 2>/dev/null | grep -q ":${port} "; }; then
+    local o; for o in "${bin}".bak-*; do [ "$o" = "$bak" ] || rm -f "$o"; done
+    sb_update_notice hysteria2 ""
+    info "外置 Hysteria2 已更新：${cur} → ${latest}（旧二进制备份 ${bak}）"
+  else
+    error "hysteria-sbbox 启动或端口复核失败，回滚到 ${cur}"
+    cp -a "$bak" "$bin"; systemctl restart hysteria-sbbox 2>/dev/null
+    systemctl is-active --quiet hysteria-server 2>/dev/null && systemctl restart hysteria-server 2>/dev/null
+    return 1
+  fi
+}
+
+cmd_hy2() {
+  case "${1:-check}" in
+    check) check_hy2_update ;;
+    update|up) shift; update_hy2_external "$@" ;;
+    *) echo "用法: sbbox hy2 [check|update [-y]]" ;;
+  esac
+}
+
+# ---------- tcp-brutal 模块更新（v2.7.35，手动）----------
+# 只把新版编译进 DKMS（下次开机自动加载），不动运行中的模块（卸载需先断开所有 brutal
+# 连接）。同机 Xray（v4.9.47 起 xh brutal update / reload）共用一把锁，避免并发跑 dkms。
+BRUTAL_UPDATE_LOCK="/run/tcp-brutal-update.lock"
+
+brutal_dkms_installed_ver() {
+  dkms status 2>/dev/null | sed -n 's|^tcp-brutal/\([^,]*\),.*: installed.*|\1|p' | sort -V | tail -1
+}
+
+check_tcp_brutal_update() {
+  command -v dkms >/dev/null 2>&1 || return 0
+  local inst latest
+  inst=$(brutal_dkms_installed_ver); [ -n "$inst" ] || return 0
+  latest=$(sb_gh_latest_tag apernet/tcp-brutal); latest="${latest#v}"
+  [ -n "$latest" ] || { warn "查询 tcp-brutal 最新版本失败"; return 0; }
+  if sb_version_ge "$inst" "$latest"; then
+    sb_update_notice tcp-brutal ""
+    info "tcp-brutal 已是最新：${inst}"
+  else
+    sb_update_notice tcp-brutal "${inst} → ${latest}（手动更新：sbbox brutal update）"
+    info "tcp-brutal 有新版本：${inst} → ${latest}"
+  fi
+}
+
+update_tcp_brutal() {
+  command -v dkms >/dev/null 2>&1 || { info "未安装 dkms，跳过 tcp-brutal 更新"; return 0; }
+  [ -n "$(dkms status 2>/dev/null | grep '^tcp-brutal/')" ] || { info "未安装 tcp-brutal，跳过"; return 0; }
+  exec 9>"$BRUTAL_UPDATE_LOCK"
+  flock -w 900 9 || { warn "另一个 tcp-brutal 更新正在进行，跳过"; return 0; }
+  local tag ver inst tmp v
+  inst=$(brutal_dkms_installed_ver)
+  tag=$(sb_gh_latest_tag apernet/tcp-brutal); ver="${tag#v}"
+  [ -n "$ver" ] || { error "查询 tcp-brutal 最新版本失败"; flock -u 9; return 1; }
+  if [ -n "$inst" ] && sb_version_ge "$inst" "$ver"; then
+    info "tcp-brutal 已是最新：DKMS ${inst}，运行中 $(cat /sys/module/brutal/version 2>/dev/null || echo 未加载)"
+    sb_update_notice tcp-brutal ""; flock -u 9; return 0
+  fi
+  tmp=$(mktemp -d) || { flock -u 9; return 1; }
+  if ! sb_fetch_verified_github_asset apernet/tcp-brutal "$tag" tcp-brutal.dkms.tar.gz "$tmp/t.tgz"; then
+    rm -rf "$tmp"; flock -u 9; return 1
+  fi
+  tar -xzf "$tmp/t.tgz" -C "$tmp" 2>/dev/null
+  if [ "$(sed -n 's/^PACKAGE_VERSION="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$tmp"/*/dkms.conf 2>/dev/null | head -1)" != "$ver" ]; then
+    error "源码包内版本与 ${tag} 不符，已中止"; rm -rf "$tmp"; flock -u 9; return 1
+  fi
+  info "tcp-brutal ${inst:-无} → ${ver}：编译进 DKMS ..."
+  [ -d "/usr/src/tcp-brutal-${ver}" ] || dkms ldtarball "$tmp/t.tgz" >/dev/null 2>&1
+  patch_tcp_brutal_tso_segs
+  if dkms install "tcp-brutal/${ver}" -k "$(uname -r)" --force >/dev/null 2>&1 && \
+     [ "$(brutal_dkms_installed_ver)" = "$ver" ]; then
+    for v in $(dkms status 2>/dev/null | sed -n 's|^tcp-brutal/\([^,]*\),.*|\1|p' | sort -u); do
+      [ "$v" = "$ver" ] || dkms remove "tcp-brutal/${v}" --all >/dev/null 2>&1 || true
+    done
+    sb_update_notice tcp-brutal ""
+    info "tcp-brutal ${ver} 已编译安装，下次开机生效（同机装有 xh 时可 xh brutal reload 立即生效）"
+  else
+    error "tcp-brutal ${ver} 编译失败，保留现有 ${inst:-版本}"
+    dkms remove "tcp-brutal/${ver}" --all >/dev/null 2>&1 || true
+  fi
+  rm -rf "$tmp"; flock -u 9
+}
+
 cmd_brutal() {
   local action="${1:-show}"
   shift || true
@@ -3773,6 +3961,12 @@ cmd_brutal() {
       [ -n "$ip" ] || { echo "用法: sbbox brutal del <目标IP/网段>"; return 1; }
       del_tcp_brutal_rule "$ip"
       ;;
+    check)
+      check_tcp_brutal_update
+      ;;
+    update|up)
+      update_tcp_brutal
+      ;;
     *)
       echo "用法: sbbox brutal [show|on|off|speed|add|del]"
       echo "  sbbox brutal show          查看 TCP Brutal 状态与活跃连接"
@@ -3781,6 +3975,8 @@ cmd_brutal() {
       echo "  sbbox brutal speed [mbps]  修改全局默认下发速率（不填则自动设为本机 95% 速率）"
       echo "  sbbox brutal add <IP> [M]  为指定客户端 IP 设定独立下发速率"
       echo "  sbbox brutal del <IP>      删除指定客户端 IP 规则"
+      echo "  sbbox brutal check         检查内核模块新版本（只提醒）"
+      echo "  sbbox brutal update        更新内核模块到上游最新版（校验 sha256，下次开机生效）"
       ;;
   esac
 }
@@ -4232,6 +4428,11 @@ cmd_warp() {
 }
 
 status_show() {
+  if [ -s "$SB_UPDATE_NOTICE" ]; then
+    echo -e "${YELLOW}[!] 有可用更新（每周检查，需手动执行）：${NC}"
+    sed 's/^/  /' "$SB_UPDATE_NOTICE"
+    echo ""
+  fi
   echo "========= sbbox 服务状态 ========="
   if pgrep -f "sing-box run -c $SB_CONF" >/dev/null 2>&1; then
     echo -e "sing-box: ${GREEN}运行中${NC}"
@@ -4310,7 +4511,13 @@ main() {
     list)   v4v6; load_state; gen_client; exit ;;
     status) status_show; exit ;;
     res)    sbrestart; exit ;;
-    up)     shift; cmd_update "$@"; exit ;;
+    up)
+      shift; cmd_update "$@"
+      # v2.7.35：顺带检查外置 Hysteria2 与 tcp-brutal 新版本——只写提醒（登录时与
+      # sbbox status 显示），不自动安装；每周 cron 的输出同时写入 syslog。
+      { check_hy2_update; check_tcp_brutal_update; } 2>&1 | tee >(logger -t sbbox-autoupdate)
+      exit ;;
+    hy2)    shift; cmd_hy2 "$@"; exit ;;
     log)    sblog "$2"; exit ;;
     tune)   shift; cmd_tune "$@"; exit ;;   # 安装期已自动 on，off 用于回滚
     cert)   shift; cert_mgmt "$@"; exit ;;
