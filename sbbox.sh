@@ -44,7 +44,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.35"
+SBBOX_VERSION="v2.7.36"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -2041,7 +2041,8 @@ gen_client() {
     case "$tuech" in
       1|on|yes|true) [ -n "$tuech_config" ] && tuic_ech="&ech=$(printf %s "$tuech_config" | base64 | tr -d '\n')" ;;
     esac
-    tuic_link="tuic://$uuid:$pw_tu@$add:$port_tu?congestion_control=bbr&udp_relay_mode=native&alpn=h3&sni=$sni&insecure=$jhins&allowInsecure=$jhins&allow_insecure=$jhins$tuic_pcs$tuic_pin$tuic_ech#tuic-$node_tag"
+    # v2.7.36：客户端拥塞控制用 cubic（TUIC 默认值），见下方 sbox_client 的 tuic 出站注释
+    tuic_link="tuic://$uuid:$pw_tu@$add:$port_tu?congestion_control=cubic&udp_relay_mode=native&alpn=h3&sni=$sni&insecure=$jhins&allowInsecure=$jhins&allow_insecure=$jhins$tuic_pcs$tuic_pin$tuic_ech#tuic-$node_tag"
     echo "$tuic_link" >> "$SB_LINK"
     echo "💣【 4 Tuic (QUIC 备选) 】节点信息如下："
     echo "$tuic_link"; echo
@@ -2609,6 +2610,11 @@ gen_client_sbox() {
   fi
 
   # 5. TUIC (Hysteria2 的 QUIC 备选)
+  # v2.7.36：TUIC 客户端拥塞控制由 bbr 改回 cubic（TUIC 默认）。实测（160ms/1% 丢包、300↓/50↑）
+  # 客户端 bbr 在同一条连接上大量上传后，后续下载塌到 ~20 Mbps（上传前 ~95），直到连接重建——
+  # sing-quic / Mihomo 的 BBR 把纯 ACK 包也计入 pacing，发送方状态拖慢 ACK，拖垮对端的下行；
+  # TUIC 有 10s 心跳，连接长期存活，故障会一直持续。sing-box 客户端 cubic：下 121 / 上 39；
+  # Mihomo 客户端 cubic：下 113~158 / 上 8~15（bbr 为 19 / 35）。服务端 tuic-in 仍用 bbr（改 cubic 下行只剩 6）。
   if [ -n "$tup" ]; then
     ob+=('{
         "type": "tuic",
@@ -2617,7 +2623,7 @@ gen_client_sbox() {
         "server_port": '"$port_tu"',
         "uuid": "'"$uuid"'",
         "password": "'"$pw_tu"'",
-        "congestion_control": "bbr",
+        "congestion_control": "cubic",
         '"$tuic_udp"'
         "zero_rtt_handshake": true,
         "heartbeat": "10s",
@@ -2854,7 +2860,7 @@ gen_client_clash() {
     heartbeat-interval: 10000
     request-timeout: 8000
     udp-relay-mode: native
-    congestion-controller: bbr
+    congestion-controller: cubic
     sni: $sni
     skip-cert-verify: $msins"
 
