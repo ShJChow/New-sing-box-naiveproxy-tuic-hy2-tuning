@@ -39,7 +39,7 @@
 - [七、内核版本管理](#七内核版本管理)
 - [八、v2rayN 订阅与客户端配置](#八v2rayn-订阅与客户端配置)
 - [九、四条节点实测吞吐](#九四条节点实测吞吐)
-- [十、版本迭代与核心调优演进记录 (v2.1 - v2.7.37)](#十版本迭代与核心调优演进记录-v21---v2737)
+- [十、版本迭代与核心调优演进记录 (v2.1 - v2.7.38)](#十版本迭代与核心调优演进记录-v21---v2738)
 - [十一、免责声明](#十一免责声明)
 
 ---
@@ -337,7 +337,7 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 
 ---
 
-## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.37)
+## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.38)
 
 本项目经跨洋弱网环境（160ms+ / 1% 丢包）数十轮实测迭代，核心演进总结如下：
 
@@ -359,6 +359,7 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 | **默认内核通道改为 stable 与 tcp-brutal 2.0.1 适配** | v2.7.34 | `sbrel` 默认值由 `pre` 改为 `stable`：手机 SFI/SFA、v2rayN 等客户端多为正式版内核，服务端同版更稳；已安装机器以 `~/sbbox/sbrel` 落盘值为准。实测切换（1.15.0-alpha.9 → 1.14.2，客户端固定 1.14.2，160ms/1% 丢包、300↓/50↑，N=3）五节点下行 / 上行范围全部重叠无退化：AnyTLS 180→171、Naive-H3 203→201、Naive-H2 173→167、TUIC 19→20 Mbps（外置 Hy2 对照 112→101）；1.14.2 对服务端与客户端配置 `check` 均无弃用警告，`cache_file.buffer_size` / `flush_interval` 由版本自愈逻辑自动移除。tcp-brutal 上游 2.0.1 已自带 `tso_segs` 适配（`BRUTAL_HAVE_TSO_SEGS`），本项目 `patch_tcp_brutal_tso_segs` 遇到上游已适配的源码一律跳过——该补丁把新钩子接到恒返回 2 的函数上，会在 7.1+ 内核把 TSO 限成每次 2 段。同机 Xray 在 v4.9.46 同步加入 tcp-brutal 补丁跳过 |
 | **外置 Hysteria2 / tcp-brutal 新版本提醒与校验更新** | v2.7.35 | 每周 `sbbox up` 顺带**只检查**外置 Hysteria2（hysteria-sbbox）与 tcp-brutal 新版本：写入 `~/sbbox/updates-available`，root 登录时与 `sbbox status` 显示，**不自动安装**；日志 `journalctl -t sbbox-autoupdate`。手动更新：`sbbox hy2 update`——二进制 sha256 必须同时等于发布者 `hashes.txt` 与 GitHub 独立计算的资产 digest，新二进制自报版本须与目标一致，替换后重启 hysteria-sbbox（同一二进制若被 hysteria-server 使用则一并重启）并复核 UDP 端口，失败回滚；`sbbox brutal update`——同样双重校验，只编译进 DKMS（下次开机生效），与同机 xh 共用锁。实测（隔离路径模拟旧版）：正常更新、端口复核失败回滚、下载被篡改拒绝三种情况均符合预期。同机 Xray 在 v4.9.47 同步加入 nginx / tcp-brutal 的提醒与校验更新 |
 | **TUIC 客户端拥塞控制改回 cubic** | v2.7.36 | 修复 TUIC 在同一条连接上大量上传后**下载塌到 ~20 Mbps 且一直不恢复**：此前客户端（`sbox_client.json` / `tuic://` 链接 / Mihomo）写死 `bbr`。sing-quic 与 Mihomo 的 BBR 把纯 ACK 包也计入 pacing，客户端做过大量发送后，其 BBR 状态拖慢回给服务端的 ACK，服务端下行被拖垮；TUIC 有 10s 心跳、连接长期存活，所以故障一直持续到重连。排查：与丢包无关（160ms/0% 也塌到 22），与测速顺序无关，服务端换 cubic / new_reno 下行只剩 6 / 25（按丢包降速），问题只随**客户端**算法变化。实测（160ms/1% 丢包、300↓/50↑，每轮下载 60MB 与上传 20MB 交替）：sing-box 客户端 bbr 下 19 / 上 8 → **cubic 下 111~121 / 上 39~41**（new_reno 114 / 39）；Mihomo 客户端 bbr 下 112→19→18 / 上 33~41 → **cubic 下 110 / 160 / 138 / 上 8~15**。客户端统一改回 TUIC 默认 `cubic`（Mihomo 的代价是高 RTT 丢包线路上传偏慢，但不会出现持续性的下行崩塌）；服务端 `tuic-in` 保持 `bbr`。已用 sing-box 1.14.2 `check` 与 `mihomo -t` 校验，并按 UA 核对订阅下发内容。**已导入订阅的客户端需更新订阅** |
+| **网卡 MTU 高于 1500 时自动降到 1500（PMTU 黑洞兜底）** | v2.7.38 | 部分云厂商网卡默认 MTU 9000（巨帧），公网路径却只有 1500：服务端发出超过 1500 字节的 TCP 段（如 3.7KB 的 TLS 证书链）在公网出口被静默丢弃，表现为 TCP 握手成功、TLS 阶段超时或 RST，AnyTLS / Naive-H2 / Reality 全断，而 QUIC 节点（单包 <1280）完全正常。开机网卡调优脚本 `sbbox-nic-tune` 现在会在 MTU 大于 1500 时降到 1500，并补一条 `TCPMSS --clamp-mss-to-pmtu`（mangle POSTROUTING，v4/v6，已存在则不重复，落盘 `netfilter-persistent save`）；只在真的降过 MTU 时才动防火墙。本机 `enp0s6` 为 1480，不触发，行为不变（1480 至 1500 之间不动）。验证：netns 内 veth MTU 9000 → 1500，规则一条，二次执行不重复；MTU 1400 不被改动。 |
 | **服务端 DNS 按 CDN 边缘远近重排 · 外置 Hysteria2 指定解析器 · 吸收第三方调优中的有效项** | v2.7.37 | **DNS**：sing-box 服务端 `dns-secure` 改为 `9.9.9.10`（Quad9 不拦截版，DoT），`dns-backup` 改为 `1.1.1.1`。解析耗时只在每个域名首次查询时付一次，返回的 CDN 边缘远近却决定之后每条连接的延迟：本机 32 个常用域名 × 各 3 次，比最优边缘慢 3ms 以上的，8.8.8.8 有 10 个、1.1.1.1 有 5 个、9.9.9.10 只有 1 个（Apple / iCloud / Microsoft 等 Akamai 系差 10~50ms）。**外置 Hysteria2**：`/etc/hysteria/sbbox.yaml` 原先没有 `resolver`，走系统 resolved（本机首选 8.8.8.8）。同一 sing-box 客户端经它取 generate_204，每次都比 Xray 内置 Hy2 慢约 28ms，抓包确认是服务端到目标的 RTT：拿到的是 14ms 外的 Google 边缘，Xray 那边是 0.8ms。现由 `hy2_external_sync_resolver` 追加 `resolver: udp 9.9.9.10:53`（已有 resolver 段原样保留），`sbbox doctor` 会检测并自动补上、重启 hysteria-sbbox。改后热连接 190 → 164ms（1.2 → 1.0 RTT，160ms 下），闲置 65s / 120s 后仍为 1.0 RTT。**系统调优**：`net.core.rmem_max / wmem_max` 由 128MB 收敛为 64MB（含千兆链路分支，与 `tcp_rmem / wmem` 上限一致）；新增 `vm.min_free_kbytes`（large 档 64MB / medium 档 32MB）与 `kernel.sched_autogroup_enabled = 0`；`nf_conntrack` 登记进 `/etc/modules-load.d/sbbox-conntrack.conf`——开机时 systemd-sysctl 早于 iptables / Docker 加载该模块，`nf_conntrack_max` 会被静默跳过（`tune off` 一并删除）；`kernel.core_pattern = core` 改由调优代码写入（此前只在注释里提到、靠手工补写，重跑 `tune on` 就会丢）。这几项吸收自第三方一键脚本（vps-tcp-tune）中与本项目不冲突的部分，其余因与已有取值冲突或实测无收益而不采纳（明细见同机 Xray v4.9.48）。**测过不采纳**：naive `insecure_concurrency` 取 1 与 2 的握手耗时无差异，维持 2；naive-h3 闲置约 30s 后 Cronet 会关掉 QUIC 连接，下次请求多 1 RTT，属客户端行为，服务端不可调。握手测量工具与全节点数据见同机 Xray 仓库 `tools/xray_handshake_bench.py`。同机 Xray 在 v4.9.48 同步加入 64MB 与三项系统调优，并把内置 DNS 同样改为 9.9.9.10 |
 
 ---

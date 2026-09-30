@@ -44,7 +44,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.37"
+SBBOX_VERSION="v2.7.38"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -880,11 +880,26 @@ if command -v ethtool >/dev/null 2>&1; then
   [ -n "$ok" ] && echo "网卡 $nic 已开启分片卸载：$ok"
 fi
 
-# 3. 发送队列长度；MTU 低于 1480 时抬到 1480
+# 3. 发送队列长度；MTU 低于 1480 时抬到 1480、高于 1500 时降到 1500
 ip link set dev "$nic" txqueuelen 10000 >/dev/null 2>&1
 cur_mtu=$(cat "/sys/class/net/$nic/mtu" 2>/dev/null || echo 1500)
 if [ "$cur_mtu" -lt 1480 ] && [ "$cur_mtu" -gt 0 ]; then
   ip link set dev "$nic" mtu 1480 >/dev/null 2>&1
+fi
+# v2.7.38：MTU 高于公网路径的 1500（如部分云厂商默认 9000 巨帧）会发出超大 TCP 段，
+# 在公网出口被静默丢弃（PMTU 黑洞）：TCP 握手成功，但 TLS 证书链等大包到不了，
+# AnyTLS / Naive-H2 / Reality 表现为超时或 RST，QUIC 节点（单包 <1280）不受影响。
+# 降到 1500，并补一条 MSS 钳制兜底（已存在则不重复加；只在真的降过 MTU 时才动防火墙）。
+if [ "$cur_mtu" -gt 1500 ]; then
+  if ip link set dev "$nic" mtu 1500 >/dev/null 2>&1; then
+    echo "网卡 $nic MTU $cur_mtu → 1500（避免 PMTU 黑洞）"
+    for ipt in iptables ip6tables; do
+      command -v "$ipt" >/dev/null 2>&1 || continue
+      "$ipt" -t mangle -C POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || \
+        "$ipt" -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null
+    done
+    command -v netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save >/dev/null 2>&1
+  fi
 fi
 
 # 4. RPS/RFS 软中断多核均衡：遍历网卡 rx 队列分配 CPU 掩码，避免单核 softirq 瓶颈
