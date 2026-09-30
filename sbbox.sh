@@ -44,7 +44,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.36"
+SBBOX_VERSION="v2.7.37"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -1029,7 +1029,7 @@ apply_tuning() {
   local SOCK_MEM_DEF UDP_MEM_MIN
   if [ "$MEM_MB" -ge 16384 ]; then
     # 大内存档 (>= 16GB)
-    TUNE_TIER="large";  SOCK_MEM_MAX=134217728; TCP_MEM_MAX=67108864; NETDEV_BACKLOG=65536; CONNTRACK_MAX=1048576; NETDEV_BUDGET=6000
+    TUNE_TIER="large";  SOCK_MEM_MAX=67108864;  TCP_MEM_MAX=67108864; NETDEV_BACKLOG=65536; CONNTRACK_MAX=1048576; NETDEV_BUDGET=6000
     SOCK_MEM_DEF=2097152; UDP_MEM_MIN=131072
   elif [ "$MEM_MB" -ge 4096 ]; then
     # 标准档 (4GB - 16GB)
@@ -1046,7 +1046,7 @@ apply_tuning() {
   fi
   # 千兆以上链路在 16GB+ 内存机型上可放宽缓冲上限
   if [ "$NIC_SPEED" -ge 1000 ] && [ "$MEM_MB" -ge 16384 ]; then
-    SOCK_MEM_MAX=134217728; TCP_MEM_MAX=67108864; NETDEV_BACKLOG=131072; NETDEV_BUDGET=8000
+    SOCK_MEM_MAX=67108864; TCP_MEM_MAX=67108864; NETDEV_BACKLOG=131072; NETDEV_BUDGET=8000
     TUNE_TIER="large+${NIC_SPEED}M"
   fi
   info "机型: ${CPU_CORES} 核 / ${MEM_MB} MB / ${ARCH} / 链路 ${NIC_SPEED:-未知}Mb → 调优档位 ${TUNE_TIER}"
@@ -1112,7 +1112,12 @@ apply_tuning() {
   try_sysctl net.ipv4.ip_local_port_range "1024 65535"
   try_sysctl net.ipv4.ip_local_reserved_ports "8001,8003,8443,8445,8446,10489,10800-10809,11801-11806,18793,23106,27295,28443"
 
-  # conntrack 仅在模块已加载时调整
+  # conntrack 仅在模块已加载时调整。
+  # 开机时 systemd-sysctl 早于 iptables / Docker 加载 nf_conntrack，键还不存在就被静默跳过，
+  # 连接表上限退回内核按内存算的默认值。登记进 modules-load.d（systemd-sysctl 排在它之后）。
+  if [ "$CONNTRACK_MAX" -gt 0 ] && modprobe nf_conntrack 2>/dev/null; then
+    echo "nf_conntrack" > /etc/modules-load.d/sbbox-conntrack.conf 2>/dev/null || true
+  fi
   if [ "$CONNTRACK_MAX" -gt 0 ] && [ -r /proc/sys/net/netfilter/nf_conntrack_max ]; then
     try_sysctl net.netfilter.nf_conntrack_max "$CONNTRACK_MAX"
     try_sysctl net.netfilter.nf_conntrack_tcp_timeout_established 3600
@@ -1141,6 +1146,8 @@ apply_tuning() {
   # 代理进程内存里有私钥、UUID、解密后的流量，默认值 2（suidsafe）仍会 dump 到 core_pattern 指定处；
   # 0 则一律不 dump。配合 limits.conf 的 `* hard core 0` 与 core_pattern = core。
   try_sysctl fs.suid_dumpable 0
+  # core_pattern = core：不交给 apport / systemd-coredump 这类会把 core 另存到系统目录的处理器（此前只在注释里提到、靠手工写入）。
+  try_sysctl kernel.core_pattern core
   # 不发送 ICMP 重定向（本机不是路由器；装了 Docker 时 ip_forward=1，会对「同口进同口出」的转发包发重定向）。
   # 发送侧按「all 与网卡任一为 1 即生效」计算，只写 all/default 不够：开机前就已存在的出口网卡
   # 不受 default 影响，线上 enp0s6 即为 1，实测（netns + 网桥负对照）all=0、网卡=1 时仍发出重定向，网卡=0 后为 0。
@@ -1161,6 +1168,13 @@ apply_tuning() {
   # ---------- 内存行为 ----------
   if [ "$MEM_MB" -ge 4096 ]; then try_sysctl vm.swappiness 10; else try_sysctl vm.swappiness 30; fi
   try_sysctl vm.vfs_cache_pressure 50
+  # 高速率收包时 skb 在软中断里做原子分配，不能等回收；给保留页留余量，防突发下 page allocation failure 丢包。
+  case "$TUNE_TIER" in
+    large*) try_sysctl vm.min_free_kbytes 65536 ;;
+    medium) try_sysctl vm.min_free_kbytes 32768 ;;
+  esac
+  # 自动分组按会话均分 CPU，是给桌面交互用的；服务器上关掉，代理进程按线程公平调度。
+  try_sysctl kernel.sched_autogroup_enabled 0
 
   # ---------- 文件句柄 ----------
   try_sysctl fs.file-max 1048576
@@ -1277,6 +1291,7 @@ tune_off() {
   remove_nic_tuning
   rm -f "$SYSCTL_CONF" 2>/dev/null
   rm -f "$LIMITS_CONF" 2>/dev/null
+  rm -f /etc/modules-load.d/sbbox-conntrack.conf 2>/dev/null
   local dir="/etc/systemd/system/${SB_SERVICE}.service.d"
   rm -f "${dir}/10-sbbox.conf"
   local legacy="${dir}/override.conf"
@@ -1544,12 +1559,16 @@ installsb() {
   esac
 
   # ---------- 1.14 乐观 DNS 与缓存 ----------
+  # v2.7.37：首选 9.9.9.10（Quad9 不拦截版，DoT）。解析耗时只在每个域名首次查询时付一次，
+  # 返回的 CDN 边缘远近却决定之后每条连接的延迟。2026-09-30 本机 32 个常用域名 × 各 3 次：
+  # 比最优边缘慢 3ms 以上的，8.8.8.8 有 10 个、1.1.1.1 有 5 个、9.9.9.10 只有 1 个
+  # （Apple / iCloud / Microsoft 等 Akamai 系差 10~50ms）；未缓存解析 9.9.9.10 与 1.1.1.1 相当（2~9ms）。
   local dns_block
   if [ "$dns_optimistic" != "0" ]; then
     dns_block='    "dns": {
         "servers": [
-            { "type": "tls", "tag": "dns-secure", "server": "1.1.1.1" },
-            { "type": "tls", "tag": "dns-backup", "server": "9.9.9.9" },
+            { "type": "tls", "tag": "dns-secure", "server": "9.9.9.10" },
+            { "type": "tls", "tag": "dns-backup", "server": "1.1.1.1" },
             { "type": "https", "tag": "dns-doh", "server": "1.1.1.1" },
             { "type": "local", "tag": "dns-local", "detour": "direct" }
         ],
@@ -1562,8 +1581,8 @@ installsb() {
   else
     dns_block='    "dns": {
         "servers": [
-            { "type": "tls", "tag": "dns-secure", "server": "1.1.1.1" },
-            { "type": "tls", "tag": "dns-backup", "server": "9.9.9.9" },
+            { "type": "tls", "tag": "dns-secure", "server": "9.9.9.10" },
+            { "type": "tls", "tag": "dns-backup", "server": "1.1.1.1" },
             { "type": "https", "tag": "dns-doh", "server": "1.1.1.1" },
             { "type": "local", "tag": "dns-local", "detour": "direct" }
         ],
@@ -3088,10 +3107,24 @@ hy2_external_sync_secrets() {
   sed -i -E 's/^(  initStreamReceiveWindow: )524288$/\18388608/; s/^(  initConnReceiveWindow: )1048576$/\120971520/' "$f" 2>/dev/null || true
   sed -i -E 's/^(  maxStreamReceiveWindow: )8388608$/\116777216/; s/^(  maxConnReceiveWindow: )20971520$/\167108864/' "$f" 2>/dev/null || true
   grep -q "ignoreClientBandwidth" "$f" 2>/dev/null || echo "ignoreClientBandwidth: true" >> "$f"
+  hy2_external_sync_resolver || true
   info "已同步新密钥与 QDoS 防护参数到外置 Hysteria2 配置（$f）"
 }
 
 # 重启外置 hysteria（若存在）。证书轮换后必须重启才会加载新证书。
+# 外置 Hysteria2 的出站 DNS（v2.7.37）。yaml 不写 resolver 时走系统 resolved，
+# 本机上游首选 8.8.8.8：它带 ECS，对 gstatic / Apple / Microsoft 等返回 8~14ms 外的边缘，
+# 同一客户端经外置 Hy2 取 generate_204 每次比 Xray 内置 Hy2 慢 ~28ms（抓包确认是服务端→目标 RTT）。
+# 与 sb.json 的 dns-secure 对齐到 9.9.9.10。只在缺 resolver 段时追加，用户自己写的原样保留。
+# 返回 0 表示改动了文件（调用方负责重启 hysteria-sbbox）。
+hy2_external_sync_resolver() {
+  local f=/etc/hysteria/sbbox.yaml
+  [ -f "$f" ] || return 1
+  grep -q '^resolver:' "$f" 2>/dev/null && return 1
+  cp -a "$f" "$f.bak" 2>/dev/null
+  printf '\n# 出站 DNS：与 sing-box 服务端一致，选近端 CDN 边缘（sbbox v2.7.37）\nresolver:\n  type: udp\n  udp:\n    addr: 9.9.9.10:53\n    timeout: 4s\n' >> "$f"
+}
+
 hy2_external_restart() {
   hy2_external || return 0
   if systemctl restart hysteria-sbbox >/dev/null 2>&1; then
@@ -4983,6 +5016,12 @@ doctor() {
     fi
   fi
 
+  # 外置 Hysteria2 未指定 resolver → 走系统 DNS，可能连到远端 CDN 边缘（见 hy2_external_sync_resolver）
+  if hy2_external && [ -f /etc/hysteria/sbbox.yaml ] && ! grep -q '^resolver:' /etc/hysteria/sbbox.yaml; then
+    echo -e "外置 Hysteria2 出站 DNS：${RED}未指定${NC}（走系统解析，可能连到远端 CDN 边缘）"
+    issues=$((issues+1))
+  fi
+
   # 续期钩子：未挂则 acme 续期后 $CERT_DIR 不更新，证书到期当天全部 TLS 节点失效
   cert_hook_state
   case $? in
@@ -5034,6 +5073,12 @@ doctor() {
       echo -e "证书：${GREEN}已重新获取并匹配域名 $ym${NC}"
       fixed=$((fixed+1))
     fi
+  fi
+
+  # 外置 Hysteria2 出站 DNS 未指定 → 补上并重启
+  if hy2_external && hy2_external_sync_resolver; then
+    systemctl restart hysteria-sbbox >/dev/null 2>&1 && {
+      echo -e "外置 Hysteria2 出站 DNS：${GREEN}已指定 9.9.9.10${NC}"; fixed=$((fixed+1)); }
   fi
 
   # 续期钩子未挂 → 挂上
