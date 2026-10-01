@@ -18,7 +18,7 @@
 #   sbbox list                        # 显示节点信息
 #   sbbox status                      # 服务状态 + 流控状态
 #   sbbox res                         # 重启 sing-box
-#   sbbox tune [show|off]             # 流控调优管理
+#   sbbox tune [show|off|client|win|mac|linux] # 流控调优管理 / 客户端（Windows、macOS、Linux）调优指南
 #   sbbox cert [status|renew|sync|hook] # 证书管理（sync=续期后落地+重生成，hook=挂到 acme 自动续期）
 #   sbbox up [stable|pre]             # 更新内核或切换稳定版/测试版通道
 #   sbbox hy2 [check|update]          # 外置 Hysteria2 新版本检查 / 手动更新（校验 sha256）
@@ -44,7 +44,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.38"
+SBBOX_VERSION="v2.7.39"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -150,7 +150,7 @@ showmode() {
   echo "服务与流控状态：sbbox status"
   echo "重启 sing-box：sbbox res"
   echo "更新内核：sbbox up [stable|pre]（无参数按当前通道更新；可指定 stable 切稳定版或 pre 切测试版）"
-  echo "流控调优：sbbox tune show | sbbox tune off"
+  echo "流控调优：sbbox tune show | sbbox tune off | sbbox tune win|mac|linux（客户端本机调优指南）"
   echo "证书管理：sbbox cert status | renew | sync | hook"
   echo "外置 Hy2：sbbox hy2 check | update（每周 sbbox up 只检查并提醒，更新需手动执行并校验 sha256）"
   echo "订阅地址：sbbox sub 【开启】 sbbox sub on 【关闭】 sbbox sub off"
@@ -4834,6 +4834,141 @@ setup_autoupdate() {
   [ -z "$noautoup" ] && info "已开启每周内核自动升级（关闭：noautoup=1 重装，或 crontab -e 删除该行）"
 }
 
+tune_client_win() {
+  echo -e "${CYAN}======================================================${NC}"
+  echo -e "${CYAN}   Windows 10 / 11 客户端千兆 TCP 栈与网络解限指南     ${NC}"
+  echo -e "${CYAN}======================================================${NC}"
+  echo ""
+  echo -e "${YELLOW}[+] 请以管理员身份打开 PowerShell 执行以下命令:${NC}"
+  cat <<'EOF'
+# 1. 开启 TCP 窗口自动调优（释放 16MB~64MB 接收窗口，跑满千兆 BDP）
+netsh int tcp set global autotuninglevel=normal
+
+# 2. 启用网卡多核接收侧缩放（RSS：防止千兆速率下单 CPU 核心被软中断占满）
+netsh int tcp set global rss=enabled
+
+# 3. 启用硬件接收分段合并（RSC：大幅降低 CPU 占用）
+netsh int tcp set global rsc=enabled
+
+# 4. 启用显式拥塞通知（ECN）与 TCP 快速打开（Fast Open 节省 1 次握手 RTT）
+netsh int tcp set global ecncapability=enabled
+netsh int tcp set global fastopen=enabled
+netsh int tcp set global fastopenfallback=enabled
+
+# 5. 允许 TCP 时间戳（防回绕序号 PAWS 与准确 RTT 采样）
+netsh int tcp set global timestamps=allowed
+
+# 6. 设置拥塞控制算法为 BBR2 / CUBIC（仅 Windows 11 22H2 及以上支持 bbr2；
+#    netsh 失败不会抛异常，try/catch 捕获不到，必须检查 $LASTEXITCODE 才能回退到 CUBIC）
+foreach ($t in 'internet','internetcustom','datacenter','datacentercustom','compat') {
+    netsh int tcp set supplemental template=$t congestionprovider=bbr2 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        netsh int tcp set supplemental template=$t congestionprovider=cubic | Out-Null
+    }
+}
+# 若个别软件在开启 BBR2 后无法联网，改回: netsh int tcp set supplemental template=internet congestionprovider=cubic
+
+# 7. 解除 Windows 系统级多媒体网络节流限制（NetworkThrottlingIndex = 0xffffffff）
+Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "NetworkThrottlingIndex" -Type DWord -Value 0xffffffff
+Set-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia\SystemProfile" -Name "SystemResponsiveness" -Type DWord -Value 0
+
+# 8. 禁用 Nagle 算法（降低小包延迟，提升游戏与交互响应）
+Get-ChildItem -Path "HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces" | ForEach-Object {
+    Set-ItemProperty -Path $_.PSPath -Name "TcpAckFrequency" -Type DWord -Value 1 -ErrorAction SilentlyContinue
+    Set-ItemProperty -Path $_.PSPath -Name "TCPNoDelay" -Type DWord -Value 1 -ErrorAction SilentlyContinue
+}
+EOF
+  echo ""
+  echo -e "${GREEN}[+] 客户端软件建议:${NC}"
+  echo "  - 优先选择支持 Wintun 驱动的客户端（如 Clash Verge Rev / Sing-box / Mihomo Party / v2rayN）"
+  echo "  - TUN 协议栈建议选 Mixed 或 System（避开 gVisor 用户态单核瓶颈）"
+  echo ""
+}
+
+tune_client_mac() {
+  echo -e "${CYAN}======================================================${NC}"
+  echo -e "${CYAN}   macOS 客户端千兆 TCP 缓冲区与 TFO 调优指南         ${NC}"
+  echo -e "${CYAN}======================================================${NC}"
+  echo ""
+  echo -e "${GREEN}[1] 终端即时生效命令:${NC}"
+  cat <<'EOF'
+sudo sysctl -w kern.ipc.maxsockbuf=33554432
+sudo sysctl -w net.inet.tcp.recvspace=4194304
+sudo sysctl -w net.inet.tcp.sendspace=4194304
+sudo sysctl -w net.inet.tcp.doautorcvbuf=1
+sudo sysctl -w net.inet.tcp.autorcvbufmax=33554432
+sudo sysctl -w net.inet.tcp.doautosndbuf=1
+sudo sysctl -w net.inet.tcp.autosndbufmax=33554432
+sudo sysctl -w net.inet.tcp.fastopen=3
+sudo sysctl -w net.inet.tcp.rfc1323=1
+sudo sysctl -w net.inet.tcp.win_scale_factor=8
+EOF
+  echo ""
+  echo -e "${GREEN}[2] 开机自动守护 (LaunchDaemon):${NC}"
+  cat <<'EOF'
+sudo tee /Library/LaunchDaemons/com.user.sysctl.plist << 'PLISTEOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.user.sysctl</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/sbin/sysctl</string>
+        <string>-w</string>
+        <string>kern.ipc.maxsockbuf=33554432</string>
+        <string>net.inet.tcp.recvspace=4194304</string>
+        <string>net.inet.tcp.sendspace=4194304</string>
+        <string>net.inet.tcp.doautorcvbuf=1</string>
+        <string>net.inet.tcp.autorcvbufmax=33554432</string>
+        <string>net.inet.tcp.doautosndbuf=1</string>
+        <string>net.inet.tcp.autosndbufmax=33554432</string>
+        <string>net.inet.tcp.fastopen=3</string>
+        <string>net.inet.tcp.rfc1323=1</string>
+        <string>net.inet.tcp.win_scale_factor=8</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>
+PLISTEOF
+sudo chown root:wheel /Library/LaunchDaemons/com.user.sysctl.plist
+sudo chmod 644 /Library/LaunchDaemons/com.user.sysctl.plist
+sudo launchctl load -w /Library/LaunchDaemons/com.user.sysctl.plist 2>/dev/null || true
+EOF
+  echo ""
+}
+
+tune_client_linux() {
+  echo -e "${CYAN}======================================================${NC}"
+  echo -e "${CYAN}   Linux 客户端千兆 TCP 缓冲区与 BDP 调优指南         ${NC}"
+  echo -e "${CYAN}======================================================${NC}"
+  cat <<'EOF'
+sudo sysctl -w net.core.rmem_max=67108864
+sudo sysctl -w net.core.wmem_max=67108864
+sudo sysctl -w net.ipv4.tcp_rmem="4096 87380 67108864"
+sudo sysctl -w net.ipv4.tcp_wmem="4096 65536 67108864"
+sudo sysctl -w net.ipv4.tcp_limit_output_bytes=4194304
+sudo sysctl -w net.ipv4.tcp_slow_start_after_idle=0
+sudo sysctl -w net.ipv4.tcp_adv_win_scale=1
+sudo sysctl -w net.ipv4.tcp_fastopen=3
+sudo sysctl -w net.core.default_qdisc=fq
+sudo sysctl -w net.ipv4.tcp_congestion_control=bbr
+EOF
+  echo ""
+}
+
+# 客户端调优指南（Windows / macOS / Linux 客户端本机执行，非服务端）
+tune_client() {
+  case "${1:-all}" in
+    win|windows) tune_client_win ;;
+    mac|macos)   tune_client_mac ;;
+    linux)       tune_client_linux ;;
+    *)           tune_client_win; tune_client_mac; tune_client_linux ;;
+  esac
+}
+
 # 流控调优管理命令
 cmd_tune() {
   local action="${1:-show}"
@@ -4841,7 +4976,8 @@ cmd_tune() {
     show)        tune_show ;;
     on)          apply_tuning ;;
     off|rollback) tune_off ;;
-    *) echo "用法: sbbox tune [show|on|off]" ;;
+    client|win|windows|mac|macos|linux) tune_client "$action" ;;
+    *) echo "用法: sbbox tune [show|on|off|client|win|mac|linux]" ;;
   esac
 }
 
