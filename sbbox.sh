@@ -46,7 +46,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.45"
+SBBOX_VERSION="v2.7.46"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -152,6 +152,8 @@ showmode() {
   echo "主脚本（四大主力）：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) hyp=1 anyp=1 nvp=1 tup=1 alns=1 ym=你的域名"
   echo "全五协议（含老客户端）：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) hyp=1 anyp=1 nvp=1 tup=1 reap=1 alns=1 ym=你的域名"
   echo "管理菜单：sbbox（终端中直接输入）【或】 sbbox menu"
+  echo "云端放行端口清单：sbbox ports（连不上但本机自检正常时，先核对云厂商安全组）"
+  echo "节点本机自测：sbbox selftest（逐个节点在服务器本机真实握手，区分服务端问题与网络问题）"
   echo "出站分流：sbbox block cn|ads on|off（屏蔽回国 IP / 广告域名，默认关闭）| sbbox block show | sbbox block update"
   echo "显示节点信息：sbbox list 【或】 bash sbbox.sh list"
   echo "服务与流控状态：sbbox status"
@@ -4685,6 +4687,68 @@ PYEOF
   esac
 }
 
+# 本机自测（v2.7.46）：在服务器上用自己的订阅配置起一个 sing-box 客户端，逐个节点经 127.0.0.1 真实走一遍
+# 握手并取 http://www.apple.com，判断「服务端配置 / 证书 / Reality 密钥」本身是否通。
+#   全部通过 → 服务端没问题，问题在服务器之外：云安全组、运营商 / 客户端网络（含 TFO 被中间设备丢弃）、客户端配置。
+#   某个失败 → 附上去掉 IP / UUID 后的客户端错误，直接定位到该协议。
+# 走回环，所以测不到 TFO 与外部网络；它回答的只是「服务端自己能不能完成这个协议」。
+cmd_selftest() {
+  [ -x "$SB_BIN" ] && [ -f "$SB_HOME/sbox_client.json" ] || { error "未安装或缺少客户端配置（先 sbbox list 生成）"; return 1; }
+  command -v python3 >/dev/null 2>&1 && command -v curl >/dev/null 2>&1 || { error "需要 python3 与 curl"; return 1; }
+  local tmp tags tag port i=0 pass=0 fail=0 pid code n
+  tmp=$(mktemp -d "$SB_HOME/.selftest.XXXXXX") || return 1
+  chmod 700 "$tmp"
+  tags=$(python3 - "$SB_HOME/sbox_client.json" <<'PY'
+import json, sys
+c = json.load(open(sys.argv[1]))
+print(' '.join(o['tag'] for o in c['outbounds'] if o.get('type') in ('hysteria2', 'anytls', 'naive', 'tuic', 'vless')))
+PY
+)
+  echo ""
+  echo -e "${CYAN}=== 节点本机自测（经 127.0.0.1，真实握手并请求 http://www.apple.com）===${NC}"
+  for tag in $tags; do
+    port=$((19600 + i)); i=$((i + 1))
+    python3 - "$SB_HOME/sbox_client.json" "$tag" "$port" "$tmp/c.json" <<'PY' || { echo -e "  ${tag}：${RED}无法生成测试配置${NC}"; fail=$((fail+1)); continue; }
+import json, sys
+src, tag, port, dst = sys.argv[1:5]
+c = json.load(open(src))
+ob = dict([o for o in c['outbounds'] if o['tag'] == tag][0])
+ob['server'] = '127.0.0.1'
+ob.pop('detour', None); ob.pop('domain_resolver', None)
+cfg = {"log": {"level": "warn"},
+       "inbounds": [{"type": "socks", "listen": "127.0.0.1", "listen_port": int(port)}],
+       "outbounds": [ob, {"type": "direct", "tag": "direct"}],
+       "route": {"final": tag}}
+json.dump(cfg, open(dst, 'w'))
+PY
+    if ! "$SB_BIN" check -c "$tmp/c.json" >"$tmp/check.err" 2>&1; then
+      echo -e "  ${tag}：${RED}客户端配置校验失败${NC}  $(sed -E 's/\x1b\[[0-9;]*m//g' "$tmp/check.err" | tail -1 | cut -c1-140)"
+      fail=$((fail+1)); continue
+    fi
+    ( cd "$SB_HOME" && exec "$SB_BIN" run -c "$tmp/c.json" ) >"$tmp/run.log" 2>&1 &
+    pid=$!
+    for n in 1 2 3 4 5 6; do port_listening "$port" tcp && break; sleep 0.5; done
+    code=$(curl -s -m 15 -o /dev/null -w '%{http_code}' --socks5-hostname "127.0.0.1:$port" http://www.apple.com/ 2>/dev/null || true)
+    kill "$pid" >/dev/null 2>&1; wait "$pid" 2>/dev/null || true
+    case "$code" in
+      200|301|302) echo -e "  ${tag}：${GREEN}通过${NC}（HTTP $code）"; pass=$((pass+1)) ;;
+      *) echo -e "  ${tag}：${RED}失败${NC}（HTTP ${code:-无响应}）"
+         sed -E 's/\x1b\[[0-9;]*m//g; s/[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/<ip>/g; s/[0-9a-f]{8}-[0-9a-f-]{27}/<uuid>/g' "$tmp/run.log" | tail -3 | cut -c1-160 | sed 's/^/      /'
+         fail=$((fail+1)) ;;
+    esac
+  done
+  rm -rf "$tmp"
+  echo ""
+  echo "===== 自测完成：通过 $pass，失败 $fail ====="
+  if [ "$fail" -eq 0 ]; then
+    echo -e "${GREEN}服务端各协议都能完成握手。${NC}客户端仍连不上的话，问题在服务器之外：先核对云安全组（sbbox ports），"
+    echo "再看客户端所在网络——TFO 会被部分运营商 / 中间设备丢弃，可在客户端关闭 TCP Fast Open 对比。"
+  else
+    echo -e "${YELLOW}失败的协议请把上面的错误行（已去掉 IP / UUID）发出来，或执行 sbbox doctor 尝试自动修复。${NC}"
+  fi
+  [ "$fail" -eq 0 ]
+}
+
 # 交互式管理菜单（v2.7.40）：已安装后直接输入 sbbox（在终端里）进入，风格同 xray-xhttp 的 xh。
 # 每个动作都在子 shell 里执行，子命令内部的 exit / 失败只会回到菜单，不会把菜单一起带走。
 cmd_menu() {
@@ -4710,6 +4774,8 @@ cmd_menu() {
     echo " 16) 轮换全部凭据 rotate（需确认）"
     echo " 17) 卸载（需确认）"
     echo " 18) 出站分流开关 屏蔽回国 IP / 广告域名 block"
+    echo " 19) 云端需放行的端口清单 ports"
+    echo " 20) 节点本机自测 selftest（区分服务端问题与网络问题）"
     echo "  0) 退出"
     read -rp "请选择: " choice || break
     case "$choice" in
@@ -4731,6 +4797,8 @@ cmd_menu() {
       16) ( cmd_rotate ) ;;
       17) ( cleandel ) ;;
       18) read -rp "  show / cn on|off / ads on|off / update: " a; ( cmd_block ${a:-show} ) ;;
+      19) ( load_state; cloud_ports_hint ) ;;
+      20) ( cmd_selftest ) ;;
       0|q|Q) break ;;
       *) warn "无效选择" ;;
     esac
@@ -4775,6 +4843,8 @@ main() {
     warp)   shift; cmd_warp "$@"; exit ;;
     block)  shift; cmd_block "$@"; exit ;;
     doctor) doctor; exit ;;
+    ports)  load_state; cloud_ports_hint; exit ;;
+    selftest) cmd_selftest; exit ;;
     rotate) cmd_rotate; exit ;;
     del)    cleandel; exit ;;
     help|-h|--help) showmode; exit ;;
@@ -5331,6 +5401,25 @@ tcp_reachable() {
   timeout 3 bash -c "echo >/dev/tcp/::1/$1" >/dev/null 2>&1
 }
 
+# 需要在云厂商安全组 / 防火墙（Oracle VCN 安全列表、AWS 安全组等）放行的端口清单（v2.7.46）。
+# 本机 iptables 由脚本自动放行，但云厂商那一层在机器外面，脚本查不到也改不了：
+# 本机自检全部「正常」而客户端仍连不上，最常见的原因就是这里漏放行。
+cloud_ports_hint() {
+  local lines=""
+  [ "$hyp" = yes ] && [ -n "$port_hy2" ] && lines="$lines\n  UDP $port_hy2   Hysteria2"
+  [ "$tup" = yes ] && [ -n "$port_tu" ]  && lines="$lines\n  UDP $port_tu   Tuic"
+  [ "$nvp" = yes ] && [ -n "$port_nv" ]  && lines="$lines\n  TCP+UDP $port_nv   Naiveproxy（h2 走 TCP，h3 走 UDP）"
+  [ "$anyp" = yes ] && [ -n "$port_any" ] && lines="$lines\n  TCP $port_any   AnyTLS"
+  [ "$reap" = yes ] && [ -n "$port_rea" ] && lines="$lines\n  TCP $port_rea   VLESS-Reality"
+  [ "$sub" = 1 ] && [ -n "${subport:-}" ] && lines="$lines\n  TCP $subport   订阅服务"
+  if [ "${CERT_OK:-0}" = 1 ] || [ -n "${alns:-}" ]; then lines="$lines\n  TCP 80   证书申请 / 续期（acme HTTP-01，不放行则证书到期后失效）"; fi
+  [ -n "$lines" ] || return 0
+  echo ""
+  echo -e "${YELLOW}[!] 云厂商安全组 / 防火墙需放行（入站，来源 0.0.0.0/0）：${NC}"
+  echo -e "$lines"
+  echo "  本机自检「正常」只代表进程在监听；如果客户端仍连不上，先核对上面这些端口在云控制台是否放行。"
+}
+
 doctor() {
   detect_env
   load_state
@@ -5407,6 +5496,7 @@ doctor() {
   if [ "$issues" -eq 0 ] && [ "$svc_down" -eq 0 ]; then
     echo ""
     echo -e "${GREEN}全部节点与服务正常${NC}"
+    cloud_ports_hint
     return 0
   fi
 
@@ -5482,8 +5572,11 @@ doctor() {
   fi
 
   echo ""
-  echo "===== 修复完成：$fixed 项已处理，剩余 $((issues-fixed)) 项未解决 ====="
-  [ "$issues" -le "$fixed" ] && echo -e "${GREEN}建议执行 sbbox list 核对节点信息${NC}"
+  # 「已处理」按动作计数（重启后每个协议恢复都算一次），可能多于发现的问题数，剩余数不能为负
+  local remain=$((issues-fixed)); [ "$remain" -lt 0 ] && remain=0
+  echo "===== 修复完成：$fixed 项已处理，剩余 $remain 项未解决 ====="
+  [ "$remain" -eq 0 ] && echo -e "${GREEN}建议执行 sbbox list 核对节点信息${NC}"
+  cloud_ports_hint
 }
 
 # 从磁盘恢复已保存状态（用于 list）

@@ -39,7 +39,7 @@
 - [七、内核版本管理](#七内核版本管理)
 - [八、v2rayN 订阅与客户端配置](#八v2rayn-订阅与客户端配置)
 - [九、四条节点实测吞吐](#九四条节点实测吞吐)
-- [十、版本迭代与核心调优演进记录 (v2.1 - v2.7.45)](#十版本迭代与核心调优演进记录-v21---v2745)
+- [十、版本迭代与核心调优演进记录 (v2.1 - v2.7.46)](#十版本迭代与核心调优演进记录-v21---v2746)
 - [十一、免责声明](#十一免责声明)
 
 ---
@@ -340,7 +340,7 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 
 ---
 
-## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.45)
+## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.46)
 
 本项目经跨洋弱网环境（160ms+ / 1% 丢包）数十轮实测迭代，核心演进总结如下：
 
@@ -370,6 +370,7 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 | **Reality 时间差校验改为默认关闭** | v2.7.43 | v2.7.42 起服务端 Reality 默认带 `max_time_difference: 1m`，客户端系统时间偏差超过 1 分钟就会连不上；改为默认**不设**，需要时安装期加 `reatd=1m`（时长，如 `30s` / `1m` / `5m`）。已安装机器的现有配置不受影响 |
 | **Reality 入站只开 tcp_fast_open（关闭 tcp_multi_path）** | v2.7.44 | 服务端 Reality 入站此前同时开了 `tcp_fast_open` 与 `tcp_multi_path`：监听 MPTCP 对普通 TCP 客户端没有收益，而 v2.7.15 记录过 MPTCP + TFO 同时协商成功时建连超时的组合。改为只保留 `tcp_fast_open`。已安装机器重新生成配置（`sbbox rotate` / `sbbox port` 或重新运行安装）后生效 |
 | **全部 TCP 节点统一为只开 TFO（不开 MPTCP）** | v2.7.45 | 对比测速（Reality 入站 4 种 tfo / mptcp 组合 × 客户端 3 种，延迟 160ms、每向 0.5% 丢包，经代理请求 `http://www.apple.com`）：服务端与客户端都开 `tfo+mptcp` 时 16/16 次超时；服务端含 `tfo` 的真连接延迟约 331ms，不含的约 491ms（差一个 RTT）；吞吐无可信差异，近距离下客户端开 MPTCP 更慢。据此 AnyTLS / Naive 入站由 `tcp_multi_path` 改为 `tcp_fast_open`，sing-box 客户端的 Naive-h2 出站同样只开 TFO（AnyTLS 出站不支持 TFO，两项都不设），mihomo 的 Reality 节点去掉 `mptcp: true`。已安装机器重新生成配置（`sbbox rotate` / `sbbox port` / `sbbox list`）后生效 |
+| **云端端口清单与节点本机自测（`sbbox ports` / `sbbox selftest`）** | v2.7.46 | 新增 `sbbox ports`（列出需要在云厂商安全组放行的端口与协议，`sbbox doctor` 结束时也会列出）和 `sbbox selftest`（在服务器本机用自己的订阅配置起 sing-box 客户端，逐个节点经 127.0.0.1 真实握手并请求 `http://www.apple.com`，区分「服务端配置 / 证书 / Reality 密钥」问题与「云安全组、客户端网络」问题；失败时附去掉 IP / UUID 的客户端错误）；管理菜单新增第 19、20 项；修复 `sbbox doctor` 修复完成后「剩余 -N 项」出现负数。本机自检「正常」只代表进程在监听，不代表云端已放行 |
 | **服务端 DNS 按 CDN 边缘远近重排 · 外置 Hysteria2 指定解析器 · 吸收第三方调优中的有效项** | v2.7.37 | **DNS**：sing-box 服务端 `dns-secure` 改为 `9.9.9.10`（Quad9 不拦截版，DoT），`dns-backup` 改为 `1.1.1.1`。解析耗时只在每个域名首次查询时付一次，返回的 CDN 边缘远近却决定之后每条连接的延迟：本机 32 个常用域名 × 各 3 次，比最优边缘慢 3ms 以上的，8.8.8.8 有 10 个、1.1.1.1 有 5 个、9.9.9.10 只有 1 个（Apple / iCloud / Microsoft 等 Akamai 系差 10~50ms）。**外置 Hysteria2**：`/etc/hysteria/sbbox.yaml` 原先没有 `resolver`，走系统 resolved（本机首选 8.8.8.8）。同一 sing-box 客户端经它取 generate_204，每次都比 Xray 内置 Hy2 慢约 28ms，抓包确认是服务端到目标的 RTT：拿到的是 14ms 外的 Google 边缘，Xray 那边是 0.8ms。现由 `hy2_external_sync_resolver` 追加 `resolver: udp 9.9.9.10:53`（已有 resolver 段原样保留），`sbbox doctor` 会检测并自动补上、重启 hysteria-sbbox。改后热连接 190 → 164ms（1.2 → 1.0 RTT，160ms 下），闲置 65s / 120s 后仍为 1.0 RTT。**系统调优**：`net.core.rmem_max / wmem_max` 由 128MB 收敛为 64MB（含千兆链路分支，与 `tcp_rmem / wmem` 上限一致）；新增 `vm.min_free_kbytes`（large 档 64MB / medium 档 32MB）与 `kernel.sched_autogroup_enabled = 0`；`nf_conntrack` 登记进 `/etc/modules-load.d/sbbox-conntrack.conf`——开机时 systemd-sysctl 早于 iptables / Docker 加载该模块，`nf_conntrack_max` 会被静默跳过（`tune off` 一并删除）；`kernel.core_pattern = core` 改由调优代码写入（此前只在注释里提到、靠手工补写，重跑 `tune on` 就会丢）。这几项吸收自第三方一键脚本（vps-tcp-tune）中与本项目不冲突的部分，其余因与已有取值冲突或实测无收益而不采纳（明细见同机 Xray v4.9.48）。**测过不采纳**：naive `insecure_concurrency` 取 1 与 2 的握手耗时无差异，维持 2；naive-h3 闲置约 30s 后 Cronet 会关掉 QUIC 连接，下次请求多 1 RTT，属客户端行为，服务端不可调。握手测量工具与全节点数据见同机 Xray 仓库 `tools/xray_handshake_bench.py`。同机 Xray 在 v4.9.48 同步加入 64MB 与三项系统调优，并把内置 DNS 同样改为 9.9.9.10 |
 
 ---
