@@ -46,7 +46,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.46"
+SBBOX_VERSION="v2.7.47"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -113,6 +113,61 @@ api="${api:-1}"                             # sing-box 原生 API 服务 (sing-b
 api_port="${api_port:-}"                    # sing-box 原生 API 端口（默认 10000-29999 五位数低位随机端口）
 cache_buffer="${cache_buffer:-1MB}"         # cache_file 写缓冲 (sing-box 1.15 新特性)：默认 1MB，批量落盘提速 I/O
 cache_flush="${cache_flush:-1m}"            # cache_file 刷盘间隔 (sing-box 1.15 新特性)：默认 1m 定时刷盘
+
+# ---------- 平台识别（v2.7.47）：ARM / AMD(x86_64) 与云厂商、内存档位自动选默认 ----------
+# 云厂商：读 DMI（无需联网、无需凭据）；识别不了就是 other。
+platform_cloud() {
+  local asset sysv prod
+  asset=$(cat /sys/class/dmi/id/chassis_asset_tag 2>/dev/null || true)
+  sysv=$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null || true)
+  prod=$(cat /sys/class/dmi/id/product_name 2>/dev/null || true)
+  case "$asset $sysv $prod" in
+    *OracleCloud*|*"Oracle Cloud"*) echo oracle ;;
+    *Amazon*|*"Amazon EC2"*)        echo aws ;;
+    *Google*)                       echo gcp ;;
+    *Microsoft*|*"Virtual Machine"*Hyper-V*) echo azure ;;
+    *Alibaba*)                      echo aliyun ;;
+    *DigitalOcean*)                 echo digitalocean ;;
+    *Vultr*)                        echo vultr ;;
+    *) echo other ;;
+  esac
+}
+
+platform_profile() {
+  local arch model cores mem virt cloud lowmem=0
+  arch=$(uname -m)
+  model=$(awk -F': *' '/^(model name|Model name|Hardware|Processor)/{print $2; exit}' /proc/cpuinfo 2>/dev/null)
+  [ -n "$model" ] || model=$(lscpu 2>/dev/null | awk -F': *' '/Model name/{print $2; exit}')
+  [ -n "$model" ] || model="未知"
+  cores=$(nproc 2>/dev/null || echo 1)
+  mem=$(awk '/^MemTotal:/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo 0)
+  virt=$(systemd-detect-virt 2>/dev/null || echo 未知)
+  cloud=$(platform_cloud)
+  PLATFORM_CLOUD="$cloud"; PLATFORM_ARCH="$arch"
+  [ "$mem" -gt 0 ] && [ "$mem" -lt 1536 ] && lowmem=1
+  PLATFORM_LOWMEM="$lowmem"
+  info "平台识别：$arch ($model)，$cores 核 / ${mem} MB 内存，内核 $(uname -r)，虚拟化 $virt，云厂商 $cloud"
+  # 小内存机（< 1.5GB，如 Oracle 免费 AMD 1GB）：TCP Brutal 要现场编译内核模块，既占内存又拖慢安装，默认不装；
+  # 用户显式传 FEATURE_BRUTAL=true 仍然尊重。
+  if [ "$lowmem" = 1 ] && [ -z "${FEATURE_BRUTAL:-}" ]; then
+    FEATURE_BRUTAL=false
+    info "内存 ${mem} MB < 1536 MB：默认不安装 TCP Brutal（需要时 FEATURE_BRUTAL=true，或之后 sbbox brutal on）"
+  fi
+  if [ "$lowmem" = 1 ] && ! swapon --show --noheadings 2>/dev/null | grep -q .; then
+    warn "内存只有 ${mem} MB 且没有 swap：多协议同时运行可能被 OOM 杀进程，建议加 1GB swap（fallocate -l 1G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile）"
+  fi
+}
+
+# 必需命令自检：依赖安装失败（apt 锁、网络）时 deps_done 仍会被标记，之后永远不再重试，
+# 缺了 python3 / curl 会让订阅服务、sbbox block / selftest / warp 静默失效。
+check_required_cmds() {
+  local c miss=""
+  for c in curl openssl python3 iptables; do command -v "$c" >/dev/null 2>&1 || miss="$miss $c"; done
+  if [ -n "$miss" ]; then
+    warn "缺少必需命令：$miss —— 订阅服务 / sbbox block / selftest / WARP 等功能会受影响。请手动安装后重新运行（apt install -y$miss）"
+    return 1
+  fi
+}
 
 # ---------- 架构 / 系统探测 ----------
 detect_env() {
@@ -205,14 +260,14 @@ install_deps() {
   if [ ! -f "$SB_HOME/deps_done" ]; then
     info "安装系统依赖……"
     if command -v apk >/dev/null 2>&1; then
-      apk update >/dev/null 2>&1 && apk add --no-cache bash coreutils curl wget openssl iptables ip6tables ca-certificates ethtool iproute2 qrencode >/dev/null 2>&1
+      apk update >/dev/null 2>&1 && apk add --no-cache bash coreutils curl wget openssl iptables ip6tables ca-certificates ethtool iproute2 qrencode python3 >/dev/null 2>&1
     elif command -v apt >/dev/null 2>&1; then
       export DEBIAN_FRONTEND=noninteractive
-      apt update >/dev/null 2>&1 && apt install -y curl wget openssl ca-certificates iptables iptables-persistent net-tools ethtool iproute2 qrencode >/dev/null 2>&1
+      apt update >/dev/null 2>&1 && apt install -y curl wget openssl ca-certificates iptables iptables-persistent net-tools ethtool iproute2 qrencode python3 >/dev/null 2>&1
     elif command -v dnf >/dev/null 2>&1; then
-      dnf install -y curl wget openssl ca-certificates iptables ethtool iproute qrencode >/dev/null 2>&1
+      dnf install -y curl wget openssl ca-certificates iptables ethtool iproute qrencode python3 >/dev/null 2>&1
     fi
-    touch "$SB_HOME/deps_done"
+    check_required_cmds && touch "$SB_HOME/deps_done"
   fi
   # 检查并修正 systemd-resolved 强制 DoT 导致的云厂商内网 DNS 死锁
   if [ "$IS_ROOT" = 1 ] && [ -f /etc/systemd/resolved.conf ] && grep -q '^DNSOverTLS=yes' /etc/systemd/resolved.conf 2>/dev/null; then
@@ -1245,6 +1300,9 @@ LIMITSEOF
   if [ "$SERVICE_TYPE" = "systemd" ]; then
     local dropin="10-sbbox.conf"
     local dir="/etc/systemd/system/${SB_SERVICE}.service.d"
+    # 小内存机给 Go 运行时设软上限（物理内存的 60%）：接近上限时更积极 GC，而不是长到被 OOM 杀掉
+    local GOMEM_LINE=""
+    [ "${MEM_MB:-0}" -gt 0 ] && [ "$MEM_MB" -lt 2048 ] && GOMEM_LINE="Environment=\"GOMEMLIMIT=$((MEM_MB * 60 / 100))MiB\""
     install -d -m 755 "$dir" 2>/dev/null || true
     cat > "${dir}/${dropin}" <<DROPINEOF 2>/dev/null || warn "写入 ${SB_SERVICE} drop-in 失败"
 [Service]
@@ -1253,6 +1311,7 @@ LimitNPROC=infinity
 Environment="GOGC=200"
 Environment="GOMAXPROCS=${CPU_CORES}"
 Environment="GODEBUG=madvdontneed=1"
+${GOMEM_LINE}
 DROPINEOF
     local legacy="${dir}/override.conf"
     if [ -f "$legacy" ]; then
@@ -1808,7 +1867,7 @@ EOF
             "tag": "naive-in",
             "listen": "::",
             "listen_port": $port_nv,
-            "tcp_fast_open": true,
+            "tcp_multi_path": true,
             "udp_fragment": true,
             "udp_timeout": "300s",
             "quic_congestion_control": "bbr",
@@ -1839,7 +1898,7 @@ EOF
             "tag": "anytls-in",
             "listen": "::",
             "listen_port": $port_any,
-            "tcp_fast_open": true,
+            "tcp_multi_path": true,
             "udp_fragment": true,
             "disable_tcp_keep_alive": false,
             "tcp_keep_alive": "30s",
@@ -2604,6 +2663,7 @@ gen_client_sbox() {
         "server": "'"$add"'",
         "server_port": '"$port_any"',
         "password": "'"$pw_any"'",
+        "tcp_multi_path": true,
         "udp_fragment": true,
         "disable_tcp_keep_alive": false,
         "tcp_keep_alive": "30s",
@@ -2665,7 +2725,7 @@ gen_client_sbox() {
         "username": "'"$nv_user"'",
         "password": "'"$nv_pw"'",
         "insecure_concurrency": 2,
-        "tcp_fast_open": true,
+        "tcp_multi_path": true,
         "udp_over_tcp": true,
         "bind_address_no_port": true,
         "tls": { "enabled": true, "insecure": false, "server_name": "'"$sni"'" }
@@ -2703,12 +2763,13 @@ gen_client_sbox() {
   # MPTCP（服务端 vless-reality-in 开着 tcp_multi_path），建连就超时（netns 直连 3/3 失败）。
   # 走公网时 NAT 常剥掉 MPTCP 选项、退回普通 TCP，所以回归测试一直 PASS，没暴露出来。
   # 只去一项的实测（160ms / 1% 丢包，下/上 Mbps）：去 MPTCP 144/69，去 TFO 126/60 → 保留 TFO。
-  # v2.7.45 对比测速（Reality 入站 × 客户端各 4×3 组合，160ms / 每向 0.5% 丢包，经代理取 http://www.apple.com 的真连接延迟）：
+  # v2.7.45 对比测速只针对 Reality 入站（4 种 tfo / mptcp 组合 × 客户端 3 种，160ms / 每向 0.5% 丢包，
+  # 经代理取 http://www.apple.com 的真连接延迟）：
   #   服务端 tfo+mptcp × 客户端 tfo+mptcp：16/16 次超时（线路上建连直接失败）；
-  #   服务端含 tfo、客户端含 tfo：真连接延迟约 331ms；服务端不含 tfo（仅 mptcp 或都关）：约 491ms，差一个 RTT；
-  #   吞吐在噪声范围内没有差异，近距离下客户端开 mptcp 反而更慢（下行约 2.6 vs 3.0 Gbps）。
-  # 结论：全部 TCP 入站（Reality / AnyTLS / Naive）只开 tcp_fast_open；客户端出站同样只开 tfo，不开 mptcp。
-  # 例外：sing-box 的 AnyTLS 出站不支持 tcp_fast_open（sing-box check 会报错），该出站两项都不设。
+  #   服务端含 tfo、客户端含 tfo：真连接延迟约 331ms；服务端不含 tfo（仅 mptcp 或都关）：约 491ms，差一个 RTT。
+  # 因此只有 Reality 入站改成「只开 tfo」。AnyTLS / Naive 没有做过这组测速，v2.7.45 曾按同样理由顺带改动，
+  # v2.7.47 已撤回：Naive 的 TFO 在 v2.7.23 被有意剔除（Chromium 源码级已移除 TFO，丢包时会触发内核
+  # tcp_fastopen_blackhole 惩罚），没有新数据不应推翻；AnyTLS 的 sing-box 出站本身就不支持 tcp_fast_open。
   if [ -n "$reap" ]; then
     ob+=('{
         "type": "vless",
@@ -4883,6 +4944,7 @@ main() {
   # 目录内含证书私钥、uuid（即各协议连接密码）与订阅令牌，收敛到仅属主可读
   chmod 700 "$SB_HOME" 2>/dev/null
   v4v6
+  platform_profile
   install_deps
   # 重装即升级：upsingbox 内部会比对版本，已是最新则直接跳过，不会重复下载
   upsingbox
@@ -4920,6 +4982,7 @@ main() {
   setup_logrotate
   setup_autoupdate
   info "安装完成！可直接使用 sbbox 管理命令"
+  ( load_state; cloud_ports_hint ) || true
   echo ""
   showmode
 }
@@ -5417,6 +5480,13 @@ cloud_ports_hint() {
   echo ""
   echo -e "${YELLOW}[!] 云厂商安全组 / 防火墙需放行（入站，来源 0.0.0.0/0）：${NC}"
   echo -e "$lines"
+  case "$(platform_cloud)" in
+    oracle) echo "  Oracle Cloud：控制台 → 网络 → 虚拟云网络 → 子网 → 安全列表 → 添加入站规则（来源 0.0.0.0/0，TCP / UDP 分别添加）" ;;
+    aws)    echo "  AWS：EC2 → 安全组 → 入站规则" ;;
+    gcp)    echo "  GCP：VPC 网络 → 防火墙规则（入站）" ;;
+    azure)  echo "  Azure：网络安全组 → 入站安全规则" ;;
+    aliyun) echo "  阿里云：ECS → 安全组 → 入方向规则" ;;
+  esac
   echo "  本机自检「正常」只代表进程在监听；如果客户端仍连不上，先核对上面这些端口在云控制台是否放行。"
 }
 
