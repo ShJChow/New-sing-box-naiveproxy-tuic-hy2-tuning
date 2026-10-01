@@ -15,6 +15,7 @@
 #
 # 用法：
 #   bash sbbox.sh                     # 安装（需前置协议变量，见 README）
+#   sbbox                             # 已安装时在终端直接进入管理菜单（也可 sbbox menu）
 #   sbbox list                        # 显示节点信息
 #   sbbox status                      # 服务状态 + 流控状态
 #   sbbox res                         # 重启 sing-box
@@ -44,7 +45,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.39"
+SBBOX_VERSION="v2.7.40"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -146,6 +147,7 @@ showmode() {
   echo "支持协议（2026梯队）：Hysteria2 / AnyTLS / Naiveproxy / Tuic（可选：VLESS-Reality）"
   echo "主脚本（四大主力）：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) hyp=1 anyp=1 nvp=1 tup=1 alns=1 ym=你的域名"
   echo "全五协议（含老客户端）：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) hyp=1 anyp=1 nvp=1 tup=1 reap=1 alns=1 ym=你的域名"
+  echo "管理菜单：sbbox（终端中直接输入）【或】 sbbox menu"
   echo "显示节点信息：sbbox list 【或】 bash sbbox.sh list"
   echo "服务与流控状态：sbbox status"
   echo "重启 sing-box：sbbox res"
@@ -4548,6 +4550,58 @@ sblog() {
   fi
 }
 
+# 交互式管理菜单（v2.7.40）：已安装后直接输入 sbbox（在终端里）进入，风格同 xray-xhttp 的 xh。
+# 每个动作都在子 shell 里执行，子命令内部的 exit / 失败只会回到菜单，不会把菜单一起带走。
+cmd_menu() {
+  local choice a
+  while true; do
+    echo ""
+    echo -e "${CYAN}=== sbbox $SBBOX_VERSION 管理菜单 ===${NC}"
+    echo "  1) 查看服务与流控状态"
+    echo "  2) 查看节点信息与客户端配置"
+    echo "  3) 订阅链接与二维码 / 开关"
+    echo "  4) 重启 sing-box"
+    echo "  5) 查看日志"
+    echo "  6) 更新 sing-box 内核 (stable / pre)"
+    echo "  7) 系统流控调优 show / on / off / client"
+    echo "  8) TCP Brutal show / on / off / speed"
+    echo "  9) 极速优化 speed（设置客户端上/下行带宽）"
+    echo " 10) 证书管理 status / renew / sync / hook"
+    echo " 11) 端口跳跃 hop"
+    echo " 12) 更换端口 port"
+    echo " 13) WARP 出站解锁 on / off / status / rotate"
+    echo " 14) 外置 Hy2 检查 / 更新"
+    echo " 15) 自检修复 doctor"
+    echo " 16) 轮换全部凭据 rotate（需确认）"
+    echo " 17) 卸载（需确认）"
+    echo "  0) 退出"
+    read -rp "请选择: " choice || break
+    case "$choice" in
+      1) ( status_show ) ;;
+      2) ( v4v6; load_state; gen_client ) ;;
+      3) read -rp "  直接回车查看 / on 开启 / off 关闭: " a; ( cmd_sub "${a:-show}" ) ;;
+      4) ( sbrestart ) ;;
+      5) read -rp "  显示最近多少行 (默认 20): " a; ( sblog "${a:-20}" ) ;;
+      6) read -rp "  直接回车按当前通道更新，或输入 stable / pre: " a; ( cmd_update $a ) ;;
+      7) read -rp "  show / on / off / client / win / mac / linux: " a; ( cmd_tune "${a:-show}" ) ;;
+      8) read -rp "  show / on / off / speed [Mbps]: " a; ( cmd_brutal ${a:-show} ) ;;
+      9) read -rp "  输入 上行 下行 (Mbps，如 100 1000): " a; ( cmd_speed $a ) ;;
+      10) read -rp "  status / renew / sync / hook (默认 status): " a; ( cert_mgmt "${a:-status}" ) ;;
+      11) read -rp "  端口范围 (如 25000:38000) 或 off: " a; ( cmd_hop $a ) ;;
+      12) read -rp "  [tu] [hy2] [nv] [rea] [any] 端口，回车=自动分配: " a; ( cmd_port $a ) ;;
+      13) read -rp "  on / off / status / rotate (默认 status): " a; ( cmd_warp ${a:-status} ) ;;
+      14) read -rp "  check / update (默认 check): " a; ( cmd_hy2 "${a:-check}" ) ;;
+      15) ( doctor ) ;;
+      16) ( cmd_rotate ) ;;
+      17) ( cleandel ) ;;
+      0|q|Q) break ;;
+      *) warn "无效选择" ;;
+    esac
+    [ "$choice" = "17" ] && [ ! -x "$SB_BIN" ] && break
+    read -rp "按回车返回菜单…" _ || break
+  done
+}
+
 # ======================================================
 # 主流程 / 管理命令分发
 # ======================================================
@@ -4562,6 +4616,7 @@ main() {
   done
   local cmd="${1:-}"
   case "$cmd" in
+    menu)   cmd_menu; exit ;;
     list)   v4v6; load_state; gen_client; exit ;;
     status) status_show; exit ;;
     res)    sbrestart; exit ;;
@@ -4600,7 +4655,11 @@ main() {
 
   if [ -z "$tup" ] && [ -z "$hyp" ] && [ -z "$nvp" ] && [ -z "$reap" ] && [ -z "$anyp" ] && [ -z "$stlp" ]; then
     if [ -x "$SB_BIN" ]; then
-      # 已安装但未指定协议 → 显示帮助
+      # 已安装但未指定协议：在终端里直接进入管理菜单（v2.7.40）；非交互（管道 / cron）仍显示帮助与状态
+      if [ -t 0 ] && [ -t 1 ]; then
+        cmd_menu
+        exit
+      fi
       showmode
       status_show
       exit
