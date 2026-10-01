@@ -39,7 +39,7 @@
 - [七、内核版本管理](#七内核版本管理)
 - [八、v2rayN 订阅与客户端配置](#八v2rayn-订阅与客户端配置)
 - [九、四条节点实测吞吐](#九四条节点实测吞吐)
-- [十、版本迭代与核心调优演进记录 (v2.1 - v2.7.42)](#十版本迭代与核心调优演进记录-v21---v2742)
+- [十、版本迭代与核心调优演进记录 (v2.1 - v2.7.44)](#十版本迭代与核心调优演进记录-v21---v2744)
 - [十一、免责声明](#十一免责声明)
 
 ---
@@ -340,7 +340,7 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 
 ---
 
-## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.42)
+## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.44)
 
 本项目经跨洋弱网环境（160ms+ / 1% 丢包）数十轮实测迭代，核心演进总结如下：
 
@@ -367,6 +367,8 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 | **管理菜单（`sbbox`）** | v2.7.40 | 已安装后在终端直接输入 `sbbox`（或 `sbbox menu`）进入交互式管理菜单，风格同 xray-xhttp 的 `xh`：状态 / 节点 / 订阅 / 重启 / 日志 / 内核更新 / 流控调优 / TCP Brutal / 极速优化 / 证书 / 端口跳跃 / 更换端口 / WARP / 外置 Hy2 / 自检 / 凭据轮换 / 卸载。每个动作在子 shell 里执行，子命令内部的 exit 或失败只会回到菜单；轮换与卸载保留原有确认；非交互场景（管道、cron）仍输出帮助与状态，不会卡在菜单上 |
 | **出站分流开关（`sbbox block`）** | v2.7.41 | 参考 zxcvos/Xray-script 的可选规则，新增默认**关闭**的 `sbbox block cn on\|off`（出站拒绝回国 IP，geoip-cn）与 `sbbox block ads on\|off`（拒绝广告域名，category-ads-all），`sbbox block show` 查看、`sbbox block update` 重新下载规则集；安装期也可用 `blockcn=1` / `blockads=1`。规则集下载到 `$SB_HOME/rules/` 并以 local 方式引用，不依赖启动时联网；下载或 `sing-box check` 校验失败即回滚，不写出坏配置。回国 IP 屏蔽会让依赖本代理访问国内站点的客户端断流，仅在落地机不需要回国流量时开启 |
 | **Reality 对照 XTLS/REALITY README 设置** | v2.7.42 | 服务端 Reality 入站增加 `max_time_difference: 1m`（防重放；客户端系统时间偏差超过 1 分钟会连不上，需开启自动校时）。握手目标 `gateway.icloud.com` 核对符合 README 要求（境外、TLS 1.3、h2、不跳转）。启用方式：`sbbox.sh` 追加 `reap=1`（已安装机器用原有协议参数重跑即可，各协议密钥与端口沿用）；本机已启用 VLESS-Reality 节点 |
+| **Reality 时间差校验改为默认关闭** | v2.7.43 | v2.7.42 起服务端 Reality 默认带 `max_time_difference: 1m`，客户端系统时间偏差超过 1 分钟就会连不上；改为默认**不设**，需要时安装期加 `reatd=1m`（时长，如 `30s` / `1m` / `5m`）。已安装机器的现有配置不受影响 |
+| **Reality 入站只开 tcp_fast_open（关闭 tcp_multi_path）** | v2.7.44 | 服务端 Reality 入站此前同时开了 `tcp_fast_open` 与 `tcp_multi_path`：监听 MPTCP 对普通 TCP 客户端没有收益，而 v2.7.15 记录过 MPTCP + TFO 同时协商成功时建连超时的组合。改为只保留 `tcp_fast_open`。已安装机器重新生成配置（`sbbox rotate` / `sbbox port` 或重新运行安装）后生效 |
 | **服务端 DNS 按 CDN 边缘远近重排 · 外置 Hysteria2 指定解析器 · 吸收第三方调优中的有效项** | v2.7.37 | **DNS**：sing-box 服务端 `dns-secure` 改为 `9.9.9.10`（Quad9 不拦截版，DoT），`dns-backup` 改为 `1.1.1.1`。解析耗时只在每个域名首次查询时付一次，返回的 CDN 边缘远近却决定之后每条连接的延迟：本机 32 个常用域名 × 各 3 次，比最优边缘慢 3ms 以上的，8.8.8.8 有 10 个、1.1.1.1 有 5 个、9.9.9.10 只有 1 个（Apple / iCloud / Microsoft 等 Akamai 系差 10~50ms）。**外置 Hysteria2**：`/etc/hysteria/sbbox.yaml` 原先没有 `resolver`，走系统 resolved（本机首选 8.8.8.8）。同一 sing-box 客户端经它取 generate_204，每次都比 Xray 内置 Hy2 慢约 28ms，抓包确认是服务端到目标的 RTT：拿到的是 14ms 外的 Google 边缘，Xray 那边是 0.8ms。现由 `hy2_external_sync_resolver` 追加 `resolver: udp 9.9.9.10:53`（已有 resolver 段原样保留），`sbbox doctor` 会检测并自动补上、重启 hysteria-sbbox。改后热连接 190 → 164ms（1.2 → 1.0 RTT，160ms 下），闲置 65s / 120s 后仍为 1.0 RTT。**系统调优**：`net.core.rmem_max / wmem_max` 由 128MB 收敛为 64MB（含千兆链路分支，与 `tcp_rmem / wmem` 上限一致）；新增 `vm.min_free_kbytes`（large 档 64MB / medium 档 32MB）与 `kernel.sched_autogroup_enabled = 0`；`nf_conntrack` 登记进 `/etc/modules-load.d/sbbox-conntrack.conf`——开机时 systemd-sysctl 早于 iptables / Docker 加载该模块，`nf_conntrack_max` 会被静默跳过（`tune off` 一并删除）；`kernel.core_pattern = core` 改由调优代码写入（此前只在注释里提到、靠手工补写，重跑 `tune on` 就会丢）。这几项吸收自第三方一键脚本（vps-tcp-tune）中与本项目不冲突的部分，其余因与已有取值冲突或实测无收益而不采纳（明细见同机 Xray v4.9.48）。**测过不采纳**：naive `insecure_concurrency` 取 1 与 2 的握手耗时无差异，维持 2；naive-h3 闲置约 30s 后 Cronet 会关掉 QUIC 连接，下次请求多 1 RTT，属客户端行为，服务端不可调。握手测量工具与全节点数据见同机 Xray 仓库 `tools/xray_handshake_bench.py`。同机 Xray 在 v4.9.48 同步加入 64MB 与三项系统调优，并把内置 DNS 同样改为 9.9.9.10 |
 
 ---

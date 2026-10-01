@@ -46,7 +46,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.42"
+SBBOX_VERSION="v2.7.44"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -77,6 +77,7 @@ hyobfs_pw="${hyobfs_pw:-}"                  # 混淆密码（默认独立随机�
 hymask="${hymask:-https://www.bing.com}"    # Hysteria2 伪装：反代真实站点；静态 404 用 hymask=none
 sblevel="${sblevel:-error}"                 # 服务端日志级别：error（默认，少留痕）/ warn / info / off
 blkport="${blkport:-1}"                     # 阻断出站邮件/SMB 端口（防凭据外泄后被拿去发垃圾邮件），关闭用 blkport=0
+reatd="${reatd:-}"                       # Reality max_time_difference（默认不设；如 reatd=1m。客户端时间偏差超过它会连不上）
 blockcn="${blockcn:-}"                   # 出站拒绝回国 IP（geoip-cn，默认关闭；安装期 blockcn=1 或 sbbox block cn on）
 blockads="${blockads:-}"                 # 出站拒绝广告域名（category-ads-all，默认关闭；安装期 blockads=1 或 sbbox block ads on）
 hyup="${hyup:-}"                            # Hysteria2 上行 Mbps（与 hydown 同时设置才启用 Brutal CC）
@@ -1622,6 +1623,13 @@ $api_block
 EOF
 
   # VLESS-Reality (TCP + Vision)
+  # v2.7.44：Reality 入站只开 tcp_fast_open，不开 tcp_multi_path——监听 MPTCP 对普通 TCP 客户端没有收益，
+  # 且 v2.7.15 记录过 MPTCP + TFO 同时协商成功时建连超时的组合；对比测速结果见 README v2.7.44。
+  # max_time_difference（防重放，XTLS/REALITY README 可选项）默认不设：客户端系统时间偏差超过它会连不上。
+  # 需要时安装期加 reatd=1m（时长，如 30s / 1m / 5m）。
+  local reality_td_json=""
+  [ -n "${reatd:-}" ] && reality_td_json=",
+                    \"max_time_difference\": \"$reatd\""
   if [ -n "$reap" ]; then
     cat >> "$SB_CONF" <<EOF
         {
@@ -1630,7 +1638,6 @@ EOF
             "listen": "::",
             "listen_port": $port_rea,
             "tcp_fast_open": true,
-            "tcp_multi_path": true,
             "udp_fragment": true,
             "tcp_keep_alive": "30s",
             "tcp_keep_alive_interval": "5s",
@@ -1654,8 +1661,7 @@ EOF
                     "private_key": "$reality_priv",
                     "short_id": [
                         "$reality_sid"
-                    ],
-                    "max_time_difference": "1m"
+                    ]$reality_td_json
                 }
             }
         },
