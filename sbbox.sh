@@ -16,6 +16,7 @@
 # 用法：
 #   bash sbbox.sh                     # 安装（需前置协议变量，见 README）
 #   sbbox                             # 已安装时在终端直接进入管理菜单（也可 sbbox menu）
+#   sbbox block [cn|ads on|off|show|update] # 出站屏蔽回国 IP / 广告域名（默认关闭）
 #   sbbox list                        # 显示节点信息
 #   sbbox status                      # 服务状态 + 流控状态
 #   sbbox res                         # 重启 sing-box
@@ -45,7 +46,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.40"
+SBBOX_VERSION="v2.7.41"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -76,6 +77,8 @@ hyobfs_pw="${hyobfs_pw:-}"                  # 混淆密码（默认独立随机�
 hymask="${hymask:-https://www.bing.com}"    # Hysteria2 伪装：反代真实站点；静态 404 用 hymask=none
 sblevel="${sblevel:-error}"                 # 服务端日志级别：error（默认，少留痕）/ warn / info / off
 blkport="${blkport:-1}"                     # 阻断出站邮件/SMB 端口（防凭据外泄后被拿去发垃圾邮件），关闭用 blkport=0
+blockcn="${blockcn:-}"                   # 出站拒绝回国 IP（geoip-cn，默认关闭；安装期 blockcn=1 或 sbbox block cn on）
+blockads="${blockads:-}"                 # 出站拒绝广告域名（category-ads-all，默认关闭；安装期 blockads=1 或 sbbox block ads on）
 hyup="${hyup:-}"                            # Hysteria2 上行 Mbps（与 hydown 同时设置才启用 Brutal CC）
 hydown="${hydown:-}"                        # Hysteria2 下行 Mbps
 ippz="${ippz:-}"                            # 4 / 6 / 双栈
@@ -148,6 +151,7 @@ showmode() {
   echo "主脚本（四大主力）：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) hyp=1 anyp=1 nvp=1 tup=1 alns=1 ym=你的域名"
   echo "全五协议（含老客户端）：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) hyp=1 anyp=1 nvp=1 tup=1 reap=1 alns=1 ym=你的域名"
   echo "管理菜单：sbbox（终端中直接输入）【或】 sbbox menu"
+  echo "出站分流：sbbox block cn|ads on|off（屏蔽回国 IP / 广告域名，默认关闭）| sbbox block show | sbbox block update"
   echo "显示节点信息：sbbox list 【或】 bash sbbox.sh list"
   echo "服务与流控状态：sbbox status"
   echo "重启 sing-box：sbbox res"
@@ -1880,6 +1884,22 @@ EOF
   esac
   route_rules="$route_rules,
             { \"action\": \"reject\", \"protocol\": [ \"bittorrent\" ] }"
+  # 可选：屏蔽回国 IP / 广告域名（默认关闭）。规则集先下载到本地，失败则跳过该项，不写出坏配置。
+  local route_rule_set="" _bk
+  for _bk in cn ads; do
+    block_state "$_bk" || continue
+    if [ -s "$(block_rule_file "$_bk")" ] || block_fetch "$_bk"; then
+      route_rules="$route_rules,
+            { \"action\": \"reject\", \"rule_set\": \"$(block_rule_tag "$_bk")\" }"
+      route_rule_set="$route_rule_set${route_rule_set:+,}
+            { \"tag\": \"$(block_rule_tag "$_bk")\", \"type\": \"local\", \"format\": \"binary\", \"path\": \"$(block_rule_file "$_bk")\" }"
+    else
+      warn "规则集 $(block_rule_tag "$_bk") 下载失败，已跳过（稍后可执行 sbbox block $_bk on）"
+    fi
+  done
+  [ -n "$route_rule_set" ] && route_rule_set=",
+        \"rule_set\": [$route_rule_set
+        ]"
   sed -i '${s/,$//}' "$SB_CONF"
   local cache_file_extra=""
   if sb_version_ge "$(sb_installed_version)" "1.15"; then
@@ -1895,7 +1915,7 @@ EOF
     "route": {
         "rules": [
 $route_rules
-        ],
+        ]$route_rule_set,
         "final": "direct",
         "default_domain_resolver": { "server": "dns-secure", "strategy": "$sb_strategy" }
     },
@@ -4550,6 +4570,110 @@ sblog() {
   fi
 }
 
+# ======================================================
+# 出站分流开关：屏蔽回国 IP / 广告域名（v2.7.41，默认关闭）
+# 参考 zxcvos/Xray-script 的可选规则（cn-ip / ad-domain），用 sing-box 的 reject + 本地 rule_set 实现。
+# 规则集下载到 $SB_HOME/rules/ 并以 local 方式引用：不依赖启动时联网，下载失败时不会写出坏配置。
+# ======================================================
+BLOCK_RULE_DIR="$SB_HOME/rules"
+block_rule_url() {
+  case "$1" in
+    cn)  echo "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geoip/cn.srs" ;;
+    ads) echo "https://cdn.jsdelivr.net/gh/MetaCubeX/meta-rules-dat@sing/geo/geosite/category-ads-all.srs" ;;
+  esac
+}
+block_rule_tag()  { case "$1" in cn) echo "geoip-cn" ;; ads) echo "geosite-category-ads-all" ;; esac; }
+block_rule_file() { echo "$BLOCK_RULE_DIR/$(block_rule_tag "$1").srs"; }
+block_state() { # $1=cn|ads → 0 表示已开启（环境变量优先，其次状态文件）
+  local v
+  case "$1" in cn) v="${blockcn:-}" ;; ads) v="${blockads:-}" ;; esac
+  [ -n "$v" ] || v=$(cat "$SB_HOME/block_$1" 2>/dev/null || true)
+  case "$v" in 1|yes|on|true|YES|ON|TRUE) return 0 ;; *) return 1 ;; esac
+}
+block_fetch() { # $1=cn|ads：下载并校验 .srs（魔数 SRS），失败返回 1，不动旧文件
+  local kind="$1" url dst tmp
+  url=$(block_rule_url "$kind"); dst=$(block_rule_file "$kind")
+  mkdir -p "$BLOCK_RULE_DIR"; tmp="$dst.tmp"
+  if ! curl -fsSL -m 60 -o "$tmp" "$url" 2>/dev/null || [ "$(wc -c < "$tmp" 2>/dev/null || echo 0)" -lt 1000 ] \
+     || [ "$(head -c3 "$tmp" 2>/dev/null)" != "SRS" ]; then
+    rm -f "$tmp"; return 1
+  fi
+  mv -f "$tmp" "$dst"
+}
+
+cmd_block() {
+  local what="${1:-show}" act="${2:-}"
+  case "$what" in
+    show|status)
+      echo ""; echo -e "${CYAN}=== 出站分流开关 ===${NC}"
+      local k
+      for k in cn ads; do
+        local name; [ "$k" = cn ] && name="屏蔽回国 IP (geoip-cn)" || name="屏蔽广告域名 (category-ads-all)"
+        if block_state "$k"; then
+          echo -e "  $name：${GREEN}已开启${NC}  规则集：$( [ -s "$(block_rule_file "$k")" ] && echo "$(wc -c < "$(block_rule_file "$k")") 字节，更新于 $(date -r "$(block_rule_file "$k")" +%F)" || echo "缺失，请执行 sbbox block update" )"
+        else
+          echo -e "  $name：${YELLOW}未开启${NC}"
+        fi
+      done
+      echo ""
+      echo "用法：sbbox block cn|ads on|off   |  sbbox block update（重新下载规则集并重启）"
+      echo "说明：回国 IP 屏蔽会让依赖本代理访问国内站点的客户端断流，仅在落地机不需要回国流量时开启。"
+      ;;
+    cn|ads)
+      case "$act" in
+        on|off) : ;;
+        *) echo "用法: sbbox block $what on|off"; return 1 ;;
+      esac
+      [ -f "$SB_CONF" ] || { error "配置文件不存在：$SB_CONF"; return 1; }
+      local tag file; tag=$(block_rule_tag "$what"); file=$(block_rule_file "$what")
+      if [ "$act" = on ]; then
+        info "下载规则集 $tag ……"
+        block_fetch "$what" || { error "规则集下载或校验失败，未做任何修改"; return 1; }
+      fi
+      local res
+      res=$(python3 - "$SB_CONF" "$tag" "$file" "$act" <<'PYEOF' 2>&1
+import json, sys
+conf, tag, path, act = sys.argv[1:5]
+d = json.load(open(conf))
+route = d.setdefault('route', {})
+rules = [r for r in route.get('rules', []) if r.get('rule_set') != tag]
+rsets = [x for x in route.get('rule_set', []) if x.get('tag') != tag]
+if act == 'on':
+    rsets.append({'tag': tag, 'type': 'local', 'format': 'binary', 'path': path})
+    idx = 0
+    for i, r in enumerate(rules):
+        if r.get('action') == 'reject':
+            idx = i + 1
+    rules.insert(idx, {'action': 'reject', 'rule_set': tag})
+route['rules'] = rules
+if rsets: route['rule_set'] = rsets
+else: route.pop('rule_set', None)
+json.dump(d, open(conf + '.tmp', 'w'), indent=2)
+print('OK')
+PYEOF
+)
+      if [ "$res" = "OK" ] && "$SB_BIN" check -c "${SB_CONF}.tmp" >/dev/null 2>&1; then
+        mv -f "${SB_CONF}.tmp" "$SB_CONF"; chmod 600 "$SB_CONF"
+        if [ "$act" = on ]; then echo 1 > "$SB_HOME/block_$what"; else rm -f "$SB_HOME/block_$what"; fi
+        sbrestart
+        if [ "$act" = on ]; then info "已开启：$tag"; else info "已关闭：$tag"; fi
+      else
+        rm -f "${SB_CONF}.tmp"; error "sing-box 校验新配置失败，已回滚（未做修改）：$res"; return 1
+      fi
+      ;;
+    update)
+      local k any=0
+      for k in cn ads; do
+        block_state "$k" || continue
+        any=1
+        block_fetch "$k" && info "已更新 $(block_rule_tag "$k")" || warn "更新失败，保留旧规则集：$(block_rule_tag "$k")"
+      done
+      [ "$any" = 1 ] && sbrestart || info "没有已开启的规则集，无需更新"
+      ;;
+    *) echo "用法: sbbox block [show|cn on|off|ads on|off|update]" ;;
+  esac
+}
+
 # 交互式管理菜单（v2.7.40）：已安装后直接输入 sbbox（在终端里）进入，风格同 xray-xhttp 的 xh。
 # 每个动作都在子 shell 里执行，子命令内部的 exit / 失败只会回到菜单，不会把菜单一起带走。
 cmd_menu() {
@@ -4574,6 +4698,7 @@ cmd_menu() {
     echo " 15) 自检修复 doctor"
     echo " 16) 轮换全部凭据 rotate（需确认）"
     echo " 17) 卸载（需确认）"
+    echo " 18) 出站分流开关 屏蔽回国 IP / 广告域名 block"
     echo "  0) 退出"
     read -rp "请选择: " choice || break
     case "$choice" in
@@ -4594,6 +4719,7 @@ cmd_menu() {
       15) ( doctor ) ;;
       16) ( cmd_rotate ) ;;
       17) ( cleandel ) ;;
+      18) read -rp "  show / cn on|off / ads on|off / update: " a; ( cmd_block ${a:-show} ) ;;
       0|q|Q) break ;;
       *) warn "无效选择" ;;
     esac
@@ -4636,6 +4762,7 @@ main() {
     brutal) shift; cmd_brutal "$@"; exit ;;
     port)   shift; cmd_port "$@"; exit ;;
     warp)   shift; cmd_warp "$@"; exit ;;
+    block)  shift; cmd_block "$@"; exit ;;
     doctor) doctor; exit ;;
     rotate) cmd_rotate; exit ;;
     del)    cleandel; exit ;;
