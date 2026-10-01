@@ -46,7 +46,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.44"
+SBBOX_VERSION="v2.7.45"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -1806,7 +1806,7 @@ EOF
             "tag": "naive-in",
             "listen": "::",
             "listen_port": $port_nv,
-            "tcp_multi_path": true,
+            "tcp_fast_open": true,
             "udp_fragment": true,
             "udp_timeout": "300s",
             "quic_congestion_control": "bbr",
@@ -1837,7 +1837,7 @@ EOF
             "tag": "anytls-in",
             "listen": "::",
             "listen_port": $port_any,
-            "tcp_multi_path": true,
+            "tcp_fast_open": true,
             "udp_fragment": true,
             "disable_tcp_keep_alive": false,
             "tcp_keep_alive": "30s",
@@ -2602,7 +2602,6 @@ gen_client_sbox() {
         "server": "'"$add"'",
         "server_port": '"$port_any"',
         "password": "'"$pw_any"'",
-        "tcp_multi_path": true,
         "udp_fragment": true,
         "disable_tcp_keep_alive": false,
         "tcp_keep_alive": "30s",
@@ -2664,7 +2663,7 @@ gen_client_sbox() {
         "username": "'"$nv_user"'",
         "password": "'"$nv_pw"'",
         "insecure_concurrency": 2,
-        "tcp_multi_path": true,
+        "tcp_fast_open": true,
         "udp_over_tcp": true,
         "bind_address_no_port": true,
         "tls": { "enabled": true, "insecure": false, "server_name": "'"$sni"'" }
@@ -2702,6 +2701,12 @@ gen_client_sbox() {
   # MPTCP（服务端 vless-reality-in 开着 tcp_multi_path），建连就超时（netns 直连 3/3 失败）。
   # 走公网时 NAT 常剥掉 MPTCP 选项、退回普通 TCP，所以回归测试一直 PASS，没暴露出来。
   # 只去一项的实测（160ms / 1% 丢包，下/上 Mbps）：去 MPTCP 144/69，去 TFO 126/60 → 保留 TFO。
+  # v2.7.45 对比测速（Reality 入站 × 客户端各 4×3 组合，160ms / 每向 0.5% 丢包，经代理取 http://www.apple.com 的真连接延迟）：
+  #   服务端 tfo+mptcp × 客户端 tfo+mptcp：16/16 次超时（线路上建连直接失败）；
+  #   服务端含 tfo、客户端含 tfo：真连接延迟约 331ms；服务端不含 tfo（仅 mptcp 或都关）：约 491ms，差一个 RTT；
+  #   吞吐在噪声范围内没有差异，近距离下客户端开 mptcp 反而更慢（下行约 2.6 vs 3.0 Gbps）。
+  # 结论：全部 TCP 入站（Reality / AnyTLS / Naive）只开 tcp_fast_open；客户端出站同样只开 tfo，不开 mptcp。
+  # 例外：sing-box 的 AnyTLS 出站不支持 tcp_fast_open（sing-box check 会报错），该出站两项都不设。
   if [ -n "$reap" ]; then
     ob+=('{
         "type": "vless",
@@ -2951,7 +2956,6 @@ gen_client_clash() {
     client-fingerprint: chrome
     packet-encoding: xudp
     tfo: true
-    mptcp: true
     alpn:
       - h2"
 
