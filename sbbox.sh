@@ -46,7 +46,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.48"
+SBBOX_VERSION="v2.7.49"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -2129,7 +2129,7 @@ gen_client() {
 
     # v2.7.28：去掉 http3:// / http2:// 两条同入站的重复写法（v2rayN 不识别，导入即 -1）
     nv1_link="naive+quic://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1$nv_uot$nv_pcs$nv_pin#naive-h3-$node_tag"
-    nv2_link="naive+https://$nv_user:$nv_pw@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1$nv_uot$nv_pcs$nv_pin#naive-h2-$node_tag"
+    nv2_link="naive+quic://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1$nv_uot$nv_pcs$nv_pin#naive-h2-$node_tag"
 
     for l in "$nv1_link" "$nv2_link"; do
       echo "$l" >> "$SB_LINK"
@@ -2689,8 +2689,11 @@ gen_client_sbox() {
         "username": "'"$nv_user"'",
         "password": "'"$nv_pw"'",
         "insecure_concurrency": 2,
-        "tcp_multi_path": true,
+        "stream_receive_window": 33554432,
+        "quic_session_receive_window": 67108864,
         "udp_over_tcp": true,
+        "quic": true,
+        "quic_congestion_control": "bbr",
         "bind_address_no_port": true,
         "tls": { "enabled": true, "insecure": false, "server_name": "'"$sni"'" }
     }')
