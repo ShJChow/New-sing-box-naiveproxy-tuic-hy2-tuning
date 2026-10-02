@@ -2055,6 +2055,9 @@ gen_client() {
   else
     node_tag="$clean_host"
   fi
+  # 节点名称仅允许英文、数字、中划线和下划线，禁止中文以保证各大客户端兼容性
+  node_tag=$(printf '%s' "$node_tag" | LC_ALL=C tr -cd 'A-Za-z0-9._-')
+  [ -z "$node_tag" ] && node_tag="node"
 
   # Hysteria2 混淆（支持 salamander 与 1.14 新增的 gecko）：服务端开了客户端就必须跟着开，
   # 这里按服务端落盘的密码文件与类型推导各客户端格式的片段。
@@ -2969,6 +2972,9 @@ gen_client_clash() {
   else
     node_tag="$clean_host"
   fi
+  # 节点名称仅允许英文、数字、中划线和下划线，禁止中文以保证各大客户端兼容性
+  node_tag=$(printf '%s' "$node_tag" | LC_ALL=C tr -cd 'A-Za-z0-9._-')
+  [ -z "$node_tag" ] && node_tag="node"
 
   # 1. 🥇 Hysteria2 (高速主力)
   if [ -n "$hyp" ]; then
