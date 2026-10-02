@@ -1,13 +1,6 @@
 #!/usr/bin/env python3
-import sys, os, re, base64
-try:
-    from http.server import ThreadingHTTPServer as ServerClass
-except ImportError:
-    from socketserver import ThreadingMixIn
-    from http.server import HTTPServer
-    class ServerClass(ThreadingMixIn, HTTPServer):
-        daemon_threads = True
-from http.server import BaseHTTPRequestHandler
+import sys, os, re, base64, json
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import unquote
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 50934
@@ -98,6 +91,35 @@ class SubHandler(BaseHTTPRequestHandler):
             sb_file = os.path.join(SB_HOME, "sbox_client.json")
             if os.path.isfile(sb_file):
                 with open(sb_file, "rb") as f: content = f.read()
+                # TUN 按客户端平台自适应：?os=windows|linux|macos|android|ios，缺省时看 User-Agent；识别不出则原样下发
+                plat = ""
+                m = re.search(r"(?:^|&)os=([a-z]+)", q_lower)
+                hint = m.group(1) if m else ua
+                for key, name in (("android", "android"), ("sfa", "android"), ("iphone", "ios"), ("ios", "ios"), ("sfi", "ios"),
+                                  ("darwin", "macos"), ("macos", "macos"), ("sfm", "macos"), ("mac", "macos"),
+                                  ("windows", "windows"), ("win", "windows"), ("linux", "linux")):
+                    if key in hint:
+                        plat = name
+                        break
+                if plat:
+                    try:
+                        cfg = json.loads(content)
+                        for ib in cfg.get("inbounds", []):
+                            if ib.get("type") != "tun":
+                                continue
+                            ib["stack"] = "mixed"
+                            if plat == "windows":
+                                ib["strict_route"] = True
+                            elif plat == "linux":
+                                ib["strict_route"] = True
+                                ib["auto_redirect"] = True
+                            else:
+                                # macOS 不支持 strict_route；Android / iOS 由系统 VPN 接管路由，不需要
+                                ib["strict_route"] = False
+                                ib.pop("auto_redirect", None)
+                        content = json.dumps(cfg, indent=4, ensure_ascii=False).encode("utf-8")
+                    except Exception:
+                        pass
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.send_header("content-disposition", 'attachment; filename="sbox_client.json"')
@@ -146,14 +168,8 @@ class SubHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 def run():
-    httpd = ServerClass(("0.0.0.0", PORT), SubHandler)
-    httpd.daemon_threads = True
-    try:
-        httpd.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        httpd.server_close()
+    httpd = HTTPServer(("0.0.0.0", PORT), SubHandler)
+    httpd.serve_forever()
 
 if __name__ == "__main__":
     run()

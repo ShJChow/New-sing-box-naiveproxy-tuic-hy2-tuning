@@ -340,12 +340,13 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 
 ---
 
-## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.51)
+## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.52)
 
 本项目经跨洋弱网环境（160ms+ / 1% 丢包）数十轮实测迭代，核心演进总结如下：
 
 | 演进领域 | 涉及版本 | 核心技术方案与调优结论 |
 | :--- | :--- | :--- |
+| **Hysteria 2 多机型自适应分级（PC / Mobile / Auto BBR）· 修复重复字段** | v2.7.52 | 1. **配置自愈与修复**：修复服务端 `hy2-in` 模板中硬编码冗余的 `ignore_client_bandwidth: true`，消除与 `$hy_bw` 产生的重复 JSON 键问题；2. **多机型自适应节点**：客户端配置与订阅生成中，Hysteria 2 提供多场景自适应分级：默认纯 BBR 自适应（软路由/挂机/防单端口 QoS，不设带宽上限）、PC 有线稳态 Brutal 档（下行 300M / 上行 50M，压在承载 60%~70% 避免顶格被断）、移动端轻量 Brutal 档（下行 100M / 上行 20M，防无线环境 Bufferbloat）；3. **同步独立订阅服务**：同步 `sub_server.py` 的 TUN 平台自适应代码 |
 | **四大主力协议收敛** | v2.7.0–v2.7.22 | 聚焦四大主力（Hysteria2 / AnyTLS / NaiveProxy / TUIC）；v2.7.22 彻底下线 Reality 并默认不安装，引入 `close_port` 自愈清理防火墙 |
 | **AnyTLS 客户端链接协议规范加固** | v2.7.31 | 针对 v2rayN（sing-box 内核）导入 AnyTLS 断连修复：在 `anytls://` 节点链接参数中显式补齐 `security=tls`，满足 v2rayN 内部 `_node.StreamSecurity` 强校验规则，彻底根治此前因缺少该参数导致客户端生成空 TLS 配置触发 `FATAL: TLS required` 的问题；补充证书指纹固定参数（`pcs` / `pinSHA256`）；服务端 `anytls-in` 移除冗余 TFO 规避黑洞惩罚；经真实出站与全矩阵 CI 验证，四大主力全通 |
 | **AnyTLS 深度扩容会话池提速** | v2.7.30 | 针对 AnyTLS 作为主力节点的首屏与并发提速：空闲会话池由 2 深度扩容至 4（`min_idle_session: 4` / `min-idle-session: 4`），保持 4 条热温 TLS 1.3 会话待命，消除网页多资源加载时的握手 RTT 与 TCP 队头阻塞，实现真正 0-RTT 极速首屏开包；空闲会话超时延长至 5 分钟（`5m` / `300s`），消除频繁断开重连；巡检间隔收敛为 15 秒（`15s` / `15`），更快剔除死连接；sing-box 客户端补齐 `bind_address_no_port: true` 减少端口碰撞；Mihomo 移除已废弃的 `global-client-fingerprint` 告警项 |

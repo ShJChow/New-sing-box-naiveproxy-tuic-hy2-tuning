@@ -307,12 +307,13 @@ Benchmark measured locally on VPS over 9 iterations showing median (min–max):
 
 ---
 
-## 10. Release History & Core Tuning Evolution (v2.1 – v2.7.51)
+## 10. Release History & Core Tuning Evolution (v2.1 – v2.7.52)
 
 After dozens of iterative rounds across high-latency cross-Pacific topologies (160ms+ / 1% packet loss), core technical milestones are summarized below:
 
 | Area | Versions | Technical Strategy & Tuning Findings |
 | :--- | :--- | :--- |
+| **Hysteria 2 Multi-Tier Adaptive Profiles & Field Deduplication Fix** | v2.7.52 | 1. **Config Self-Healing & Fix**: Removed redundant hardcoded `ignore_client_bandwidth: true` from server `hy2-in` template, resolving duplicate JSON key collision with `$hy_bw`; 2. **Multi-Device Adaptive Presets**: When generating client configs and subscriptions, Hysteria 2 provides tiered presets: default Auto-BBR (soft routers / 24h stability / QoS avoidance, no bandwidth ceiling), PC Wired steady Brutal tier (down 300M / up 50M, avoids link saturation disconnection), and Mobile Wi-Fi lightweight Brutal tier (down 100M / up 20M, prevents wireless bufferbloat); 3. **Sync Standalone Subscription Server**: Synchronized `sub_server.py` with TUN platform adaptation logic. |
 | **Four Pillars Convergence** | v2.7.0–v2.7.22 | Unified around Four Primary Pillars (Hysteria2 / AnyTLS / NaiveProxy / TUIC); v2.7.22 decommissioned Reality by default with self-healing `close_port` firewall cleanup. |
 | **AnyTLS Client Link Spec Hardening** | v2.7.31 | Fix AnyTLS connection failure when importing into v2rayN (sing-box core): explicitly added `security=tls` into `anytls://` link parameters, satisfying v2rayN internal `_node.StreamSecurity` validation check and eliminating empty TLS outbound generation (`FATAL: TLS required`); added cert fingerprint pinning parameters (`pcs` / `pinSHA256`); removed redundant TFO from server `anytls-in` to avoid blackhole penalty; verified all primary pillars on live outbound fetch and matrix CI. |
 | **AnyTLS Session Pool Scaling** | v2.7.30 | Speedup for AnyTLS as the primary node: enlarged idle session pool from 2 to 4 (`min_idle_session: 4` / `min-idle-session: 4`), keeping 4 warm TLS 1.3 tunnels on standby to eliminate handshake RTT and TCP head-of-line blocking under parallel browser requests, delivering true 0-RTT opening; extended idle session timeout to 5 minutes (`5m` / `300s`) to avoid recurring teardowns; tightened health check interval to 15s (`15s` / `15`) for rapid eviction of dead sockets; added `bind_address_no_port: true` in sing-box client outbound to reduce port pressure; removed deprecated `global-client-fingerprint` warning in Mihomo. |

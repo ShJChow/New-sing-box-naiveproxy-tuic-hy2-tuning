@@ -46,7 +46,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.51"
+SBBOX_VERSION="v2.7.52"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -1837,7 +1837,6 @@ EOF
             "listen_port": $port_hy2,
             "tcp_fast_open": true,
             "udp_fragment": true,
-            "ignore_client_bandwidth": true,
             "users": [
                 { "password": "$pw_hy" }
             ],
@@ -2105,8 +2104,19 @@ gen_client() {
     fi
     hy2_link="hysteria2://$pw_hy@$add:$port_hy2?security=tls&alpn=h3&insecure=$jhins&allowInsecure=$jhins$hyps$hy_bw_q&sni=$sni$hy2_pin$hy2_pcs$hyobfs_q#hy2-$node_tag"
     echo "$hy2_link" >> "$SB_LINK"
+    if [ -z "$hyup" ] && [ -z "$hydown" ]; then
+      local hy2_link_pc="hysteria2://$pw_hy@$add:$port_hy2?security=tls&alpn=h3&insecure=$jhins&allowInsecure=$jhins$hyps&upmbps=50&downmbps=300&sni=$sni$hy2_pin$hy2_pcs$hyobfs_q#hy2-pc-$node_tag"
+      local hy2_link_mob="hysteria2://$pw_hy@$add:$port_hy2?security=tls&alpn=h3&insecure=$jhins&allowInsecure=$jhins$hyps&upmbps=20&downmbps=100&sni=$sni$hy2_pin$hy2_pcs$hyobfs_q#hy2-mobile-$node_tag"
+      echo "$hy2_link_pc" >> "$SB_LINK"
+      echo "$hy2_link_mob" >> "$SB_LINK"
+    fi
     echo "💣【 🥇 Hysteria2 (高速主力) 】节点信息如下："
-    echo "$hy2_link"; echo
+    echo "$hy2_link"
+    if [ -z "$hyup" ] && [ -z "$hydown" ]; then
+      echo "$hy2_link_pc"
+      echo "$hy2_link_mob"
+    fi
+    echo
   fi
 
   # 2. 🥈 AnyTLS (新一代 TCP 主力)
@@ -2649,20 +2659,59 @@ gen_client_sbox() {
     fi
     if [ -n "$hyup" ] && [ -n "$hydown" ]; then
       hy_client_bw="\"up_mbps\": $hyup, \"down_mbps\": $hydown,"
+      ob+=('{
+          "type": "hysteria2",
+          "tag": "hysteria2",
+          "server": "'"$add"'",
+          "server_port": '"$port_hy2"',
+          '"$hy_ports_json"'
+          '"$hy_client_bw"'
+          "password": "'"$pw_hy"'",'"$hyobfs_json"'
+          "udp_fragment": true,
+          "bind_address_no_port": true,
+          "tls": { "enabled": true, "server_name": "'"$sni"'", "insecure": '"$msins"', "alpn": ["h3"]'"$hy2_tls_extra"' }
+      }')
+      tags+=("hysteria2")
+    else
+      ob+=('{
+          "type": "hysteria2",
+          "tag": "hysteria2",
+          "server": "'"$add"'",
+          "server_port": '"$port_hy2"',
+          '"$hy_ports_json"'
+          "password": "'"$pw_hy"'",'"$hyobfs_json"'
+          "udp_fragment": true,
+          "bind_address_no_port": true,
+          "tls": { "enabled": true, "server_name": "'"$sni"'", "insecure": '"$msins"', "alpn": ["h3"]'"$hy2_tls_extra"' }
+      }')
+      ob+=('{
+          "type": "hysteria2",
+          "tag": "hysteria2-pc",
+          "server": "'"$add"'",
+          "server_port": '"$port_hy2"',
+          '"$hy_ports_json"'
+          "up_mbps": 50,
+          "down_mbps": 300,
+          "password": "'"$pw_hy"'",'"$hyobfs_json"'
+          "udp_fragment": true,
+          "bind_address_no_port": true,
+          "tls": { "enabled": true, "server_name": "'"$sni"'", "insecure": '"$msins"', "alpn": ["h3"]'"$hy2_tls_extra"' }
+      }')
+      ob+=('{
+          "type": "hysteria2",
+          "tag": "hysteria2-mobile",
+          "server": "'"$add"'",
+          "server_port": '"$port_hy2"',
+          '"$hy_ports_json"'
+          "up_mbps": 20,
+          "down_mbps": 100,
+          "password": "'"$pw_hy"'",'"$hyobfs_json"'
+          "udp_fragment": true,
+          "bind_address_no_port": true,
+          "tls": { "enabled": true, "server_name": "'"$sni"'", "insecure": '"$msins"', "alpn": ["h3"]'"$hy2_tls_extra"' }
+      }')
+      tags+=("hysteria2" "hysteria2-pc" "hysteria2-mobile")
     fi
-    ob+=('{
-        "type": "hysteria2",
-        "tag": "hysteria2",
-        "server": "'"$add"'",
-        "server_port": '"$port_hy2"',
-        '"$hy_ports_json"'
-        '"$hy_client_bw"'
-        "password": "'"$pw_hy"'",'"$hyobfs_json"'
-        "udp_fragment": true,
-        "bind_address_no_port": true,
-        "tls": { "enabled": true, "server_name": "'"$sni"'", "insecure": '"$msins"', "alpn": ["h3"]'"$hy2_tls_extra"' }
-    }')
-    tags+=("hysteria2")
   fi
 
   # 2. 🥈 AnyTLS (新一代 TCP 主力)
@@ -2931,11 +2980,10 @@ gen_client_clash() {
     ports: $cl_ports"
     fi
     if [ -n "$hyup" ] && [ -n "$hydown" ]; then
-      hy_clash_bw="
+      local hy_clash_bw="
     up: \"$hyup Mbps\"
     down: \"$hydown Mbps\""
-    fi
-    proxies="$proxies
+      proxies="$proxies
   - name: hysteria2-$node_tag
     server: $add
     port: $port_hy2
@@ -2944,8 +2992,43 @@ gen_client_clash() {
     alpn: [h3]$hyobfs_yaml$hy_ports_yaml
     sni: $sni
     skip-cert-verify: $msins"
-    groups="$groups
+      groups="$groups
       - hysteria2-$node_tag"
+    else
+      proxies="$proxies
+  - name: hysteria2-$node_tag
+    server: $add
+    port: $port_hy2
+    type: hysteria2
+    password: $pw_hy
+    alpn: [h3]$hyobfs_yaml$hy_ports_yaml
+    sni: $sni
+    skip-cert-verify: $msins
+  - name: hysteria2-pc-$node_tag
+    server: $add
+    port: $port_hy2
+    type: hysteria2
+    up: \"50 Mbps\"
+    down: \"300 Mbps\"
+    password: $pw_hy
+    alpn: [h3]$hyobfs_yaml$hy_ports_yaml
+    sni: $sni
+    skip-cert-verify: $msins
+  - name: hysteria2-mobile-$node_tag
+    server: $add
+    port: $port_hy2
+    type: hysteria2
+    up: \"20 Mbps\"
+    down: \"100 Mbps\"
+    password: $pw_hy
+    alpn: [h3]$hyobfs_yaml$hy_ports_yaml
+    sni: $sni
+    skip-cert-verify: $msins"
+      groups="$groups
+      - hysteria2-$node_tag
+      - hysteria2-pc-$node_tag
+      - hysteria2-mobile-$node_tag"
+    fi
   fi
 
   # 2. 🥈 AnyTLS (新一代 TCP 主力)
