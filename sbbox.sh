@@ -46,7 +46,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.47"
+SBBOX_VERSION="v2.7.48"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -1898,36 +1898,17 @@ EOF
             "tag": "anytls-in",
             "listen": "::",
             "listen_port": $port_any,
-            "tcp_multi_path": true,
-            "udp_fragment": true,
-            "disable_tcp_keep_alive": false,
-            "tcp_keep_alive": "30s",
-            "tcp_keep_alive_interval": "5s",
             "users": [
                 {
                     "name": "default",
                     "password": "$pw_any"
                 }
             ],
-            "padding_scheme": [
-                "stop=8",
-                "0=30-30",
-                "1=100-400",
-                "2=400-500,c,500-1000,c,500-1000,c,500-1000,c,500-1000",
-                "3=9-9,500-1000",
-                "4=500-1000",
-                "5=500-1000",
-                "6=500-1000",
-                "7=500-1000"
-            ],
             "tls": {
                 "enabled": true,
                 "server_name": "$ym",
-                "min_version": "1.3",
-                "alpn": [ "h2" ],
                 "certificate_path": "$cert_path",
-                "key_path": "$key_path",
-                "handshake_timeout": "15s"
+                "key_path": "$key_path"
             }
         },
 EOF
@@ -2133,7 +2114,7 @@ gen_client() {
     local any_pcs="" any_pin=""
     [ -n "$_fp" ] && any_pcs="&pcs=$_fp"
     [ -n "$_sha" ] && any_pin="&pinSHA256=$_sha"
-    any_link="anytls://$pw_any@$add:$port_any?security=tls&sni=$sni&peer=$sni&alpn=h2&insecure=0&allowInsecure=0&allow_insecure=0$any_pcs$any_pin#anytls-$node_tag"
+    any_link="anytls://$pw_any@$add:$port_any?security=tls&sni=$sni&peer=$sni&insecure=0&allowInsecure=0&allow_insecure=0$any_pcs$any_pin#anytls-$node_tag"
     echo "$any_link" >> "$SB_LINK"
     echo "💣【 🥈 AnyTLS + TLS (新一代 TCP 主力) 】节点信息如下："
     echo "$any_link"; echo
@@ -2663,27 +2644,10 @@ gen_client_sbox() {
         "server": "'"$add"'",
         "server_port": '"$port_any"',
         "password": "'"$pw_any"'",
-        "tcp_multi_path": true,
-        "udp_fragment": true,
-        "disable_tcp_keep_alive": false,
-        "tcp_keep_alive": "30s",
-        "tcp_keep_alive_interval": "5s",
-        "idle_session_check_interval": "15s",
-        "idle_session_timeout": "5m",
-        "min_idle_session": 4,
-        "bind_address_no_port": true,
         "tls": {
             "enabled": true,
             "server_name": "'"$sni"'",
-            "min_version": "1.3",
-            "alpn": [
-                "h2"
-            ],
-            "insecure": '"$msins"',
-            "utls": {
-                "enabled": true,
-                "fingerprint": "chrome"
-            }'"$hy2_tls_extra"'
+            "insecure": '"$msins""$hy2_tls_extra"'
         }
     }')
     tags+=("anytls")
@@ -2957,14 +2921,7 @@ gen_client_clash() {
     type: anytls
     password: $pw_any
     sni: $sni
-    skip-cert-verify: false
-    alpn:
-      - h2
-    client-fingerprint: chrome
-    udp: true
-    idle-session-check-interval: 15
-    idle-session-timeout: 300
-    min-idle-session: 4"
+    skip-cert-verify: false"
 
     groups="$groups
       - anytls-$node_tag"
