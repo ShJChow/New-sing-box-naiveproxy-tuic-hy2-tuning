@@ -46,7 +46,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.52"
+SBBOX_VERSION="v2.7.53"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -69,13 +69,13 @@ tup="${tup:-}" hyp="${hyp:-}" nvp="${nvp:-}"
 reap="${reap:-${vlp:-${rea:-}}}"            # 最新 VLESS-Reality TCP 节点（免域名免证书）
 reap_sni="${reap_sni:-${reality_sni:-}}"    # Reality 伪装目标 SNI（默认 gateway.icloud.com）
 port_rea="${port_rea:-${port_vl:-}}"        # Reality 监听端口（默认随机 10000-29999 五位数低位）
-anyp="${anyp:-${any:-}}"                    # sing-box 1.14 新特性：AnyTLS + TLS 节点（抗 TLS-in-TLS 指纹）
+anyp="${anyp:-${any:-}}"                    # sing-box 1.14 新特性：AnyTLS + TLS 节点（默认不安装，抗 TLS-in-TLS 指纹）
 port_any="${port_any:-}"                    # AnyTLS 监听端口（默认随机 10000-29999 五位数低位）
 hyjpt="${hyjpt:-}"                          # Hysteria2 跳跃端口，默认关闭（空）；如 "25000:38000"
 hyobfs="${hyobfs:-1}"                       # Hysteria2 salamander 混淆，默认开启；关闭用 hyobfs=0
 hyobfs_pw="${hyobfs_pw:-}"                  # 混淆密码（默认独立随机值）
 hymask="${hymask:-https://www.bing.com}"    # Hysteria2 伪装：反代真实站点；静态 404 用 hymask=none
-sblevel="${sblevel:-error}"                 # 服务端日志级别：error（默认，少留痕）/ warn / info / off
+sblevel="${sblevel:-off}"                   # 服务端日志级别：off（默认彻底无痕保护隐私，不记录客户端真实 IP）/ error / warn / info
 blkport="${blkport:-1}"                     # 阻断出站邮件/SMB 端口（防凭据外泄后被拿去发垃圾邮件），关闭用 blkport=0
 reatd="${reatd:-}"                       # Reality max_time_difference（默认不设；如 reatd=1m。客户端时间偏差超过它会连不上）
 blockcn="${blockcn:-}"                   # 出站拒绝回国 IP（geoip-cn，默认关闭；安装期 blockcn=1 或 sbbox block cn on）
@@ -203,9 +203,9 @@ v4v6() {
 showmode() {
   echo "==========================================================="
   echo "sbbox $SBBOX_VERSION — Sing-box-Only 协议安全加固代理脚本"
-  echo "支持协议（2026梯队）：Hysteria2 / AnyTLS / Naiveproxy / Tuic（可选：VLESS-Reality）"
-  echo "主脚本（四大主力）：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) hyp=1 anyp=1 nvp=1 tup=1 alns=1 ym=你的域名"
-  echo "全五协议（含老客户端）：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) hyp=1 anyp=1 nvp=1 tup=1 reap=1 alns=1 ym=你的域名"
+  echo "支持协议（2026梯队）：Hysteria2 / Naiveproxy / Tuic（可选：VLESS-Reality / AnyTLS）"
+  echo "主脚本（三大主力）：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) hyp=1 nvp=1 tup=1 alns=1 ym=你的域名"
+  echo "全协议（含 Reality/AnyTLS）：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) hyp=1 nvp=1 tup=1 reap=1 anyp=1 alns=1 ym=你的域名"
   echo "管理菜单：sbbox（终端中直接输入）【或】 sbbox menu"
   echo "云端放行端口清单：sbbox ports（连不上但本机自检正常时，先核对云厂商安全组）"
   echo "节点本机自测：sbbox selftest（逐个节点在服务器本机真实握手，区分服务端问题与网络问题）"
@@ -226,12 +226,12 @@ showmode() {
   echo "自检修复：sbbox doctor"
   echo "卸载：sbbox del"
   echo "-----------------------------------------------------------"
-  echo "环境变量（安装期）：hyp=1 anyp=1 nvp=1 tup=1 (可选 reap=1)"
+  echo "环境变量（安装期）：hyp=1 nvp=1 tup=1 (可选 reap=1 anyp=1)"
   echo "  hyp=1    🥇 启用 Hysteria2 + TLS（高速主力，支持端口跳跃与混淆）"
-  echo "  anyp=1   🥈 启用 AnyTLS + TLS（新一代 TCP 主力，抹除 TLS-in-TLS 特征）"
-  echo "  nvp=1    🥉 启用 NaiveProxy (H3+H2，Chromium 内核级反探测伪装）"
-  echo "  tup=1    4 启用 TUIC (v5，标准 QUIC 0-RTT，Hysteria2 备选）"
+  echo "  nvp=1    🥈 启用 NaiveProxy (H3+H2，Chromium 内核级反探测伪装）"
+  echo "  tup=1    🥉 启用 TUIC (v5，标准 QUIC 0-RTT，Hysteria2 备选）"
   echo "  reap=1   (可选) 启用 VLESS-Reality TCP 节点（免域名免证书，兼容旧客户端）"
+  echo "  anyp=1   (可选) 启用 AnyTLS + TLS 节点（默认不安装，抗 TLS-in-TLS 特征）"
   echo "  warp=ai|all  (可选) 自动启用 WARP 出站解锁（默认关闭；ai 仅解锁流媒体/AI，all 全量流量）"
   echo "  alns=1   启用 acme 证书（需 ym=你的域名）"
   echo "  ym=域名  acme 证书域名（Hysteria2/AnyTLS/Tuic/Naive 使用）"
@@ -247,7 +247,7 @@ showmode() {
   echo "  hyobfs=salamander|gecko  Hysteria2 混淆协议（默认 salamander，1.14 新增 gecko，0 关闭）"
   echo "  dns_optimistic=1  启用 1.14 乐观 DNS 缓存并持久化（默认 1）"
   echo "  api=1        启用 1.14 原生 API 服务与实时指标（默认 1）"
-  echo "  sblevel=error|warn|info|off  服务端日志级别（默认 error）"
+  echo "  sblevel=off|error|warn|info  服务端日志级别（默认 off，彻底无痕保护隐私）"
   echo "轮换全部密码：sbbox rotate（UUID + 各协议独立新密钥，需重新导入客户端）"
   echo "-----------------------------------------------------------"
   echo "免责声明：本脚本仅供网络技术研究与学习交流。使用者须遵守所在国家/地区"
@@ -1600,7 +1600,7 @@ installsb() {
   local log_block
   case "$sblevel" in
     off|no|0|false)
-      log_block='    "log": { "disabled": true },'
+      log_block='    "log": { "disabled": true, "level": "panic", "timestamp": false },'
       ;;
     *)
       log_block="    \"log\": {
@@ -2309,9 +2309,8 @@ def resolve_token_file(token_path):
 
 class SubHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
-        ua = self.headers.get("User-Agent", "-") if hasattr(self, "headers") and self.headers else "-"
-        sys.stdout.write("%s - - [%s] %s (UA: %s)\n" % (self.address_string(), self.log_date_time_string(), format % args, ua))
-        sys.stdout.flush()
+        # Privacy: do not log client IPs or User-Agents
+        pass
 
     def do_HEAD(self):
         self.do_GET()
@@ -5012,7 +5011,7 @@ main() {
       status_show
       exit
     else
-      error "未指定任何协议。请至少设置一个：hyp=1 anyp=1 nvp=1 tup=1 (可选 reap=1)"
+      error "未指定任何协议。请至少设置一个：hyp=1 nvp=1 tup=1 (可选 reap=1 anyp=1)"
       echo ""
       showmode
       exit 1

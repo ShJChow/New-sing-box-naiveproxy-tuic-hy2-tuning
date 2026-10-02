@@ -9,10 +9,10 @@
 | 梯队次序 | 协议方案 | 定位与核心特性 | 传输与伪装 | 证书需求 |
 | :--- | :--- | :--- | :--- | :--- |
 | 🥇 **高速主力** | **Hysteria2** | 极速高吞吐 / 抗恶劣丢包 / Brutal 拥塞控制 | QUIC (H3) + salamander 混淆 + 端口跳跃 | 真实证书 / 自签+指纹固定 |
-| 🥈 **新一代 TCP 主力** | **AnyTLS** | 彻底消除 TLS-in-TLS 特征，抗深度主动探测与跨域延迟优化 | TCP + TLS 1.3 + 自适应 8 级填充 Padding | 真实证书 / 自签+指纹固定 |
-| 🥉 **高伪装主力** | **NaiveProxy** | Chromium 原生网络栈内核级反探测伪装 | HTTP/3 (QUIC) & HTTP/2 双通道 | **强制真实证书** |
-| 4 **QUIC 备选** | **TUIC v5** | 低延迟 UDP 加速 / 标准 QUIC 0-RTT | QUIC (H3) | 真实证书 / 自签+指纹固定 |
-| 5 **兼容老客户端 (可选)** | **VLESS-Reality** | 全客户端直连兼容（免域名免证书；按需显式传 `reap=1` 开启） | TCP (XTLS Vision) | **免域名 / 免证书（借用官方 SNI）** |
+| 🥈 **高伪装主力** | **NaiveProxy** | Chromium 原生网络栈内核级反探测伪装 | HTTP/3 (QUIC) & HTTP/2 双通道 | **强制真实证书** |
+| 🥉 **QUIC 备选** | **TUIC v5** | 低延迟 UDP 加速 / 标准 QUIC 0-RTT | QUIC (H3) | 真实证书 / 自签+指纹固定 |
+| 4 **兼容老客户端 (可选)** | **VLESS-Reality** | 全客户端直连兼容（免域名免证书；按需显式传 `reap=1` 开启） | TCP (XTLS Vision) | **免域名 / 免证书（借用官方 SNI）** |
+| 5 **抗特征深度伪装 (可选)** | **AnyTLS** | 彻底消除 TLS-in-TLS 特征（默认不安装；按需传 `anyp=1` 开启） | TCP + TLS 1.3 + 自适应 8 级填充 Padding | 真实证书 / 自签+指纹固定 |
 
 > 默认使用 **官方正式版内核（stable）**，默认开启 **QUIC 与 BBR 拥塞控制**，入站最低兼容 **TLS 1.2 / HTTP 1.1**。
 
@@ -39,7 +39,7 @@
 - [七、内核版本管理](#七内核版本管理)
 - [八、v2rayN 订阅与客户端配置](#八v2rayn-订阅与客户端配置)
 - [九、四条节点实测吞吐](#九四条节点实测吞吐)
-- [十、版本迭代与核心调优演进记录 (v2.1 - v2.7.51)](#十版本迭代与核心调优演进记录-v21---v2751)
+- [十、版本迭代与核心调优演进记录 (v2.1 - v2.7.53)](#十版本迭代与核心调优演进记录-v21---v2753)
 - [十一、免责声明](#十一免责声明)
 
 ---
@@ -129,7 +129,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/yonggekkk/acme-yg/main/acme.sh
 | 出站 DNS | **DoT 加密**（1.1.1.1 / 9.9.9.9） |
 | 内网访问 | `ip_is_private` 一律拒绝，防止内网与云元数据接口被穿透 |
 | 垃圾邮件滥用 | 默认阻断出站 25/465/587 与 SMB 端口（`blkport=0` 关闭） |
-| 服务端日志 | 默认 `error`；`sblevel=off` 完全不落盘 |
+| 服务端日志 | 默认 `off`（彻底无痕保护用户隐私，不向磁盘记录任何客户端 IP 与访问域名）；可选 `error` / `warn` / `info` |
 
 ---
 
@@ -176,13 +176,13 @@ systemctl --failed                             # 有 205/LIMITS 就是踩了这�
 ### 2. 一键安装
 
 ```bash
-# 1. 推荐四大主力梯队一键安装（含高速 Hysteria2 + AnyTLS + NaiveProxy + Tuic，需域名解析）：
+# 1. 推荐三大主力梯队一键安装（含高速 Hysteria2 + NaiveProxy + Tuic，需域名解析）：
 bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) \
-  hyp=1 anyp=1 nvp=1 tup=1 alns=1 ym=your.domain.com
+  hyp=1 nvp=1 tup=1 alns=1 ym=your.domain.com
 
-# 2. 全五协议完整安装（四大主力 + 兼容旧客户端的 VLESS-Reality TCP 节点）：
+# 2. 全协议完整安装（三大主力 + 兼容旧客户端的 VLESS-Reality + AnyTLS）：
 bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) \
-  hyp=1 anyp=1 nvp=1 tup=1 reap=1 alns=1 ym=your.domain.com
+  hyp=1 nvp=1 tup=1 reap=1 anyp=1 alns=1 ym=your.domain.com
 
 # 3. 无域名极速安装（含 Hysteria2 + Tuic + Reality，免域名、免申请证书）：
 bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) \
@@ -201,10 +201,10 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 | 变量 | 默认 | 说明 |
 |------|------|------|
 | `hyp` | 空 | 🥇 启用 Hysteria2 + TLS 节点（高速主力，支持端口跳跃与混淆，启用 `hyp=1`） |
-| `anyp` | 空 | 🥈 启用 AnyTLS + TLS 节点（新一代 TCP 主力，抹除 TLS-in-TLS 特征与跨域延迟优化，启用 `anyp=1`） |
-| `nvp` | 空 | 🥉 启用 NaiveProxy (H3+H2，Chromium 内核级反探测伪装，启用 `nvp=1`，需证书） |
-| `tup` | 空 | 4 启用 TUIC v5 节点（低延迟 UDP 加速 / 标准 QUIC 0-RTT，启用 `tup=1`） |
-| `reap` | 空 | 5 可选启用最新 VLESS-Reality TCP + XTLS-Vision 节点（免域名免证书；按需开启用 `reap=1`） |
+| `nvp` | 空 | 🥈 启用 NaiveProxy (H3+H2，Chromium 内核级反探测伪装，启用 `nvp=1`，需证书） |
+| `tup` | 空 | 🥉 启用 TUIC v5 节点（低延迟 UDP 加速 / 标准 QUIC 0-RTT，启用 `tup=1`） |
+| `reap` | 空 | 4 可选启用最新 VLESS-Reality TCP + XTLS-Vision 节点（免域名免证书；按需开启用 `reap=1`） |
+| `anyp` | 空 | 5 可选启用 AnyTLS + TLS 节点（默认不安装；按需开启用 `anyp=1`，抗 TLS-in-TLS 特征） |
 | `reap_sni` | `gateway.icloud.com` | Reality 目标 SNI 伪装域名（支持任意合规 TLS 1.3 域名） |
 | `port_any` | 随机 | 指定 AnyTLS 监听端口（默认 28443 或随机 10000-65535） |
 | `port_hy2` / `port_nv` / `port_tu` / `port_rea` | 随机 | 指定各协议固定端口（10000-65535） |
@@ -214,7 +214,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 | `hyobfs` | **1（默认开启）** | Hysteria2 混淆协议：可选 `salamander` 或 1.14 新增 `gecko`；关闭用 `hyobfs=0` |
 | `hyobfs_pw` | 独立随机 | Hysteria2 混淆密码（与认证密码分离） |
 | `hymask` | `https://www.bing.com` | Hysteria2 伪装：反代真实站点抗主动探测；静态 404 用 `hymask=none` |
-| `sblevel` | `error` | 服务端日志级别，`off` 完全不落盘（日志会记录访问过的域名） |
+| `sblevel` | **`off`（默认开启）** | 服务端日志级别：默认 `off` 彻底无痕保护隐私；可选 `error` / `warn` / `info` |
 | `blkport` | **1（默认开启）** | 阻断出站 25/465/587/SMB 端口，防凭据外泄后被拿去发垃圾邮件；关闭用 `blkport=0` |
 | `hyup` / `hydown` | 空 | Hysteria2 上/下行 Mbps，**两个都设**才启用 Brutal 拥塞控制 |
 | `sub` | **1（默认开启）** | 启用 v2rayN / 通用订阅服务（默认开启 1；关闭用 `sub=0` 或 `sbbox sub off`） |
@@ -346,6 +346,7 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 
 | 演进领域 | 涉及版本 | 核心技术方案与调优结论 |
 | :--- | :--- | :--- |
+| **默认移除 AnyTLS 节点并强化零日志隐私安全** | v2.7.53 | 1. **默认三大主力**：默认安装协议集由四大主力调整为三大主力（Hysteria2 + NaiveProxy + TUIC），默认不再安装 AnyTLS（按需传 `anyp=1` 开启），消除裸奔端口公网扫描暴露风险；2. **零日志隐私加固**：sing-box 日志默认切换为 `sblevel=off`（`disabled: true, level: panic, timestamp: false`），彻底禁止将客户端真实 IP 与访问目标域名写入磁盘日志；3. **订阅服务零留痕**：订阅分发进程（`sub_server.py`）静默处理 HTTP 请求日志（`log_message` 置空），阻断客户端公网 IP 与 User-Agent 泄露至 systemd journald；4. **平滑自愈与迁移**：老旧 AnyTLS 节点平滑移除并自动闭合防火墙端口。 |
 | **Hysteria 2 多机型自适应分级（PC / Mobile / Auto BBR）· 修复重复字段** | v2.7.52 | 1. **配置自愈与修复**：修复服务端 `hy2-in` 模板中硬编码冗余的 `ignore_client_bandwidth: true`，消除与 `$hy_bw` 产生的重复 JSON 键问题；2. **多机型自适应节点**：客户端配置与订阅生成中，Hysteria 2 提供多场景自适应分级：默认纯 BBR 自适应（软路由/挂机/防单端口 QoS，不设带宽上限）、PC 有线稳态 Brutal 档（下行 300M / 上行 50M，压在承载 60%~70% 避免顶格被断）、移动端轻量 Brutal 档（下行 100M / 上行 20M，防无线环境 Bufferbloat）；3. **同步独立订阅服务**：同步 `sub_server.py` 的 TUN 平台自适应代码 |
 | **四大主力协议收敛** | v2.7.0–v2.7.22 | 聚焦四大主力（Hysteria2 / AnyTLS / NaiveProxy / TUIC）；v2.7.22 彻底下线 Reality 并默认不安装，引入 `close_port` 自愈清理防火墙 |
 | **AnyTLS 客户端链接协议规范加固** | v2.7.31 | 针对 v2rayN（sing-box 内核）导入 AnyTLS 断连修复：在 `anytls://` 节点链接参数中显式补齐 `security=tls`，满足 v2rayN 内部 `_node.StreamSecurity` 强校验规则，彻底根治此前因缺少该参数导致客户端生成空 TLS 配置触发 `FATAL: TLS required` 的问题；补充证书指纹固定参数（`pcs` / `pinSHA256`）；服务端 `anytls-in` 移除冗余 TFO 规避黑洞惩罚；经真实出站与全矩阵 CI 验证，四大主力全通 |

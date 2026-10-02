@@ -24,9 +24,8 @@ def resolve_token_file(token_path):
 
 class SubHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
-        ua = self.headers.get("User-Agent", "-") if hasattr(self, "headers") and self.headers else "-"
-        sys.stdout.write("%s - - [%s] %s (UA: %s)\n" % (self.address_string(), self.log_date_time_string(), format % args, ua))
-        sys.stdout.flush()
+        # Privacy: do not log client IPs or User-Agents
+        pass
 
     def do_HEAD(self):
         self.do_GET()

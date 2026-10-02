@@ -9,10 +9,10 @@ A **sing-box 1.14 single-core** deployment script, covering the 2026 protocol ti
 | Priority | Protocol | Purpose & Key Features | Transport | Certificate Requirement |
 | :--- | :--- | :--- | :--- | :--- |
 | 🥇 **High-Speed** | **Hysteria2** | Extreme throughput / loss resistance / Brutal congestion control | QUIC (H3) + salamander obfuscation + port hopping | Real Cert / Self-signed + Pinning |
-| 🥈 **Next-Gen TCP** | **AnyTLS** | Eliminates TLS-in-TLS fingerprinting, WAN latency optimized | TCP + TLS 1.3 + Adaptive 8-tier Padding | Real Cert / Self-signed + Pinning |
-| 🥉 **Anti-Censorship** | **NaiveProxy** | Chromium Cronet native network stack camouflage | HTTP/3 (QUIC) & HTTP/2 dual channel | **Mandatory Real Cert** |
-| 4 **QUIC Alternative** | **TUIC v5** | Low-latency UDP acceleration / standard QUIC 0-RTT | QUIC (H3) | Real Cert / Self-signed + Pinning |
-| 5 **Legacy Compat (Optional)** | **VLESS-Reality** | Universal direct link (No domain/cert needed; enable with `reap=1`) | TCP (XTLS Vision) | **No Domain / No Cert required (SNI Steal)** |
+| 🥈 **Anti-Censorship** | **NaiveProxy** | Chromium Cronet native network stack camouflage | HTTP/3 (QUIC) & HTTP/2 dual channel | **Mandatory Real Cert** |
+| 🥉 **QUIC Alternative** | **TUIC v5** | Low-latency UDP acceleration / standard QUIC 0-RTT | QUIC (H3) | Real Cert / Self-signed + Pinning |
+| 4 **Legacy Compat (Optional)** | **VLESS-Reality** | Universal direct link (No domain/cert needed; enable with `reap=1`) | TCP (XTLS Vision) | **No Domain / No Cert required (SNI Steal)** |
+| 5 **Anti-Fingerprint (Optional)** | **AnyTLS** | Eliminates TLS-in-TLS fingerprinting (Not installed by default; enable with `anyp=1`) | TCP + TLS 1.3 + Adaptive 8-tier Padding | Real Cert / Self-signed + Pinning |
 
 > Defaults to the **official stable core (`stable`, since v2.7.34)**, with **QUIC and BBR congestion control** enabled by default, and backward compatibility down to **TLS 1.2 / HTTP 1.1**.
 
@@ -165,13 +165,13 @@ Main process exited, code=exited, status=205/LIMITS
 ### 4.2 One-Command Installation
 
 ```bash
-# 1. Recommended Four Major Protocols Installation (High-speed Hysteria2 + AnyTLS + NaiveProxy + Tuic, requires domain):
+# 1. Recommended Three Major Protocols Installation (High-speed Hysteria2 + NaiveProxy + Tuic, requires domain):
 bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) \
-  hyp=1 anyp=1 nvp=1 tup=1 alns=1 ym=your.domain.com
+  hyp=1 nvp=1 tup=1 alns=1 ym=your.domain.com
 
-# 2. Full Five-Protocol Installation (Four Major Protocols + Legacy Client Compatible VLESS-Reality TCP):
+# 2. Full Protocol Installation (Three Major Protocols + VLESS-Reality TCP + AnyTLS):
 bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) \
-  hyp=1 anyp=1 nvp=1 tup=1 reap=1 alns=1 ym=your.domain.com
+  hyp=1 nvp=1 tup=1 reap=1 anyp=1 alns=1 ym=your.domain.com
 
 # 3. No-Domain Fast Installation (Hysteria2 + Tuic + Reality, no domain and no cert application needed):
 bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) \
@@ -190,10 +190,10 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `hyp` | empty | 🥇 Enable Hysteria2 + TLS node (High-speed主力, supports port hopping and obfuscation, enable with `hyp=1`) |
-| `anyp` | empty | 🥈 Enable AnyTLS + TLS node (Next-gen TCP主力, eliminates TLS-in-TLS fingerprinting and WAN latency optimization, enable with `anyp=1`) |
-| `nvp` | empty | 🥉 Enable NaiveProxy (H3+H2, Chromium Cronet stack anti-probing camouflage, enable with `nvp=1`, requires real cert) |
-| `tup` | empty | 4 Enable TUIC v5 node (Low-latency UDP acceleration / standard QUIC 0-RTT, enable with `tup=1`) |
-| `reap` | empty | 5 Optional: enable VLESS-Reality TCP + XTLS-Vision node (no domain/cert needed; enable with `reap=1`) |
+| `nvp` | empty | 🥈 Enable NaiveProxy (H3+H2, Chromium Cronet stack anti-probing camouflage, enable with `nvp=1`, requires real cert) |
+| `tup` | empty | 🥉 Enable TUIC v5 node (Low-latency UDP acceleration / standard QUIC 0-RTT, enable with `tup=1`) |
+| `reap` | empty | 4 Optional: enable VLESS-Reality TCP + XTLS-Vision node (no domain/cert needed; enable with `reap=1`) |
+| `anyp` | empty | 5 Optional: enable AnyTLS + TLS node (Not installed by default; enable with `anyp=1`, eliminates TLS-in-TLS fingerprinting) |
 | `reap_sni` | `gateway.icloud.com` | Reality target camouflage SNI domain (supports any compliant TLS 1.3 domain) |
 | `port_any` | random | Specify AnyTLS listening port (default 28443 or random 10000-65535) |
 | `port_hy2` / `port_nv` / `port_tu` / `port_rea` | random | Fixed port assignments (10000-65535) |
@@ -203,7 +203,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 | `hyobfs` | **1 (default)** | Hysteria2 obfuscation: `salamander` or 1.14 `gecko`; disable with `hyobfs=0` |
 | `hyobfs_pw` | independent | Hysteria2 obfuscation password |
 | `hymask` | `https://www.bing.com` | Hysteria2 masquerade target URL |
-| `sblevel` | `error` | server log level (`off` disables disk logs) |
+| `sblevel` | **`off` (default)** | server log level: `off` by default for zero-log privacy (disables disk logs and client IP tracking); optional `error` / `warn` / `info` |
 | `blkport` | **1 (default)** | block outbound SMTP/SMB ports |
 | `hyup` / `hydown` | empty | Hysteria2 up/down Mbps (set both for Brutal CC) |
 | `sub` | **1 (default)** | enable v2rayN / universal subscription server (enabled by default; disable with `sub=0` or `sbbox sub off`) |
@@ -307,12 +307,13 @@ Benchmark measured locally on VPS over 9 iterations showing median (min–max):
 
 ---
 
-## 10. Release History & Core Tuning Evolution (v2.1 – v2.7.52)
+## 10. Release History & Core Tuning Evolution (v2.1 – v2.7.53)
 
 After dozens of iterative rounds across high-latency cross-Pacific topologies (160ms+ / 1% packet loss), core technical milestones are summarized below:
 
 | Area | Versions | Technical Strategy & Tuning Findings |
 | :--- | :--- | :--- |
+| **Remove AnyTLS from Defaults & Enforce Zero-Log Privacy** | v2.7.53 | 1. **Default Three Pillars**: Default installed protocols streamlined to Three Primary Pillars (Hysteria2 + NaiveProxy + TUIC); AnyTLS is no longer installed by default (enabled on demand via `anyp=1`), mitigating exposure to internet port scanning; 2. **Zero-Log Privacy Hardening**: sing-box server logging defaults to `sblevel=off` (`disabled: true, level: panic, timestamp: false`), eliminating client IP and target domain logging to disk; 3. **Subscription Service Privacy**: Overrode `SubHandler.log_message` in `sub_server.py` with `pass`, strictly preventing client public IP addresses and User-Agents from leaking into systemd journald logs; 4. **Self-Healing & Port Hygiene**: Automatically closes old AnyTLS firewall rules and purges inactive node entries on upgrade. |
 | **Hysteria 2 Multi-Tier Adaptive Profiles & Field Deduplication Fix** | v2.7.52 | 1. **Config Self-Healing & Fix**: Removed redundant hardcoded `ignore_client_bandwidth: true` from server `hy2-in` template, resolving duplicate JSON key collision with `$hy_bw`; 2. **Multi-Device Adaptive Presets**: When generating client configs and subscriptions, Hysteria 2 provides tiered presets: default Auto-BBR (soft routers / 24h stability / QoS avoidance, no bandwidth ceiling), PC Wired steady Brutal tier (down 300M / up 50M, avoids link saturation disconnection), and Mobile Wi-Fi lightweight Brutal tier (down 100M / up 20M, prevents wireless bufferbloat); 3. **Sync Standalone Subscription Server**: Synchronized `sub_server.py` with TUN platform adaptation logic. |
 | **Four Pillars Convergence** | v2.7.0–v2.7.22 | Unified around Four Primary Pillars (Hysteria2 / AnyTLS / NaiveProxy / TUIC); v2.7.22 decommissioned Reality by default with self-healing `close_port` firewall cleanup. |
 | **AnyTLS Client Link Spec Hardening** | v2.7.31 | Fix AnyTLS connection failure when importing into v2rayN (sing-box core): explicitly added `security=tls` into `anytls://` link parameters, satisfying v2rayN internal `_node.StreamSecurity` validation check and eliminating empty TLS outbound generation (`FATAL: TLS required`); added cert fingerprint pinning parameters (`pcs` / `pinSHA256`); removed redundant TFO from server `anytls-in` to avoid blackhole penalty; verified all primary pillars on live outbound fetch and matrix CI. |
