@@ -46,7 +46,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.50"
+SBBOX_VERSION="v2.7.51"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -2692,6 +2692,13 @@ gen_client_sbox() {
   #     现场 BBRv3 实测（160ms RTT / 1% 丢包）：
   #       h2 下行中位由 110 提升至 209 Mbps（+90%），0% 丢包下达 391 Mbps；
   #       h3 剥离冗余 TCP 参数，下行中位由 125 提升至 204 Mbps（+63%），1G 线下达 413 Mbps，上行达 92 Mbps。
+  # v2.7.51 并发 / 窗口对比（tools/naive_rtt_bench.py，100MB 下载，丢包只加在下行；
+  # 160ms/1% 每项 5 次，40ms/0.5% 每项 3 次；h3 与 h2 各一组，吞吐中位 Mbps）：
+  #   h3 160ms：现值(并发2, 32/64MB) 277 → 并发1 290 → 64/128MB 238 → 并发1+64/128MB 340；40ms：629 → 666 → 646 → 674
+  #   h2 160ms：现值(并发2, 32MB) 236 → 并发1 261 → 64MB 273 → 并发1+64MB 318；40ms：869 → 852 → 896 → 1116
+  #   第一轮 3 次的并发 1/2/4 与窗口 16/32/64 也呈单调趋势（并发越少越快、窗口越大越快），四种条件下
+  #   「并发1 + 更大窗口」都是最高。故改为 insecure_concurrency=1，stream 64MB / quic session 128MB。
+  #   只量了吞吐中位数；并发 1 的「双流冗余」收益（单条连接被丢弃/阻塞时的容灾）未测。
   if [ -n "$nvp" ] && [ "$CERT_OK" = 1 ]; then
     ob+=('{
         "type": "naive",
@@ -2700,9 +2707,9 @@ gen_client_sbox() {
         "server_port": '"$port_nv"',
         "username": "'"$nv_user"'",
         "password": "'"$nv_pw"'",
-        "insecure_concurrency": 2,
-        "stream_receive_window": 33554432,
-        "quic_session_receive_window": 67108864,
+        "insecure_concurrency": 1,
+        "stream_receive_window": 67108864,
+        "quic_session_receive_window": 134217728,
         "udp_over_tcp": true,
         "quic": true,
         "quic_congestion_control": "bbr",
@@ -2717,9 +2724,9 @@ gen_client_sbox() {
         "server_port": '"$port_nv"',
         "username": "'"$nv_user"'",
         "password": "'"$nv_pw"'",
-        "insecure_concurrency": 2,
-        "stream_receive_window": 33554432,
-        "quic_session_receive_window": 67108864,
+        "insecure_concurrency": 1,
+        "stream_receive_window": 67108864,
+        "quic_session_receive_window": 134217728,
         "udp_over_tcp": true,
         "quic": true,
         "quic_congestion_control": "bbr",
