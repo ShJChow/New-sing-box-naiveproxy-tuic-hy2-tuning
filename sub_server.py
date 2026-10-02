@@ -23,9 +23,16 @@ def resolve_token_file(token_path):
     return candidate
 
 class SubHandler(BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        # Privacy: do not log client IPs or User-Agents
+    # 隐私：不落访问日志，也不把客户端 IP / UA 写进 journald；
+    # 真正的处理器错误仍写 stderr（不带客户端地址），便于排错
+    def version_string(self):
+        return "nginx"
+
+    def log_request(self, code="-", size="-"):
         pass
+
+    def log_message(self, format, *args):
+        sys.stderr.write("sbbox-sub: " + (format % args) + "\n")
 
     def do_HEAD(self):
         self.do_GET()
@@ -35,10 +42,9 @@ class SubHandler(BaseHTTPRequestHandler):
         query = raw_path.split("?", 1)[1] if "?" in raw_path else ""
         token_path = unquote(raw_path.split("?")[0]).lstrip("/")
         if token_path in ("", "index.html"):
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            # 根路径与未知路径一致返回 404，不暴露服务身份
+            self.send_response(404)
             self.end_headers()
-            self.wfile.write(b"sbbox subscription server is running.\n")
             return
         if token_path in ("qr", "qr.png", "sub_qr.png") or token_path.endswith((".png", "/qr")):
             qr_file = os.path.join(WEB_DIR_REAL, "sub_qr.png")

@@ -46,7 +46,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.53"
+SBBOX_VERSION="v2.7.54"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -75,7 +75,7 @@ hyjpt="${hyjpt:-}"                          # Hysteria2 跳跃端口，默认关
 hyobfs="${hyobfs:-1}"                       # Hysteria2 salamander 混淆，默认开启；关闭用 hyobfs=0
 hyobfs_pw="${hyobfs_pw:-}"                  # 混淆密码（默认独立随机值）
 hymask="${hymask:-https://www.bing.com}"    # Hysteria2 伪装：反代真实站点；静态 404 用 hymask=none
-sblevel="${sblevel:-off}"                   # 服务端日志级别：off（默认彻底无痕保护隐私，不记录客户端真实 IP）/ error / warn / info
+sblevel="${sblevel:-error}"                 # 服务端日志级别：error（默认，只记真正的错误）/ off（完全不落盘）/ warn / info
 blkport="${blkport:-1}"                     # 阻断出站邮件/SMB 端口（防凭据外泄后被拿去发垃圾邮件），关闭用 blkport=0
 reatd="${reatd:-}"                       # Reality max_time_difference（默认不设；如 reatd=1m。客户端时间偏差超过它会连不上）
 blockcn="${blockcn:-}"                   # 出站拒绝回国 IP（geoip-cn，默认关闭；安装期 blockcn=1 或 sbbox block cn on）
@@ -247,7 +247,7 @@ showmode() {
   echo "  hyobfs=salamander|gecko  Hysteria2 混淆协议（默认 salamander，1.14 新增 gecko，0 关闭）"
   echo "  dns_optimistic=1  启用 1.14 乐观 DNS 缓存并持久化（默认 1）"
   echo "  api=1        启用 1.14 原生 API 服务与实时指标（默认 1）"
-  echo "  sblevel=off|error|warn|info  服务端日志级别（默认 off，彻底无痕保护隐私）"
+  echo "  sblevel=error|off|warn|info  服务端日志级别（默认 error；off 完全不落盘，但 sbbox log 将无内容）"
   echo "轮换全部密码：sbbox rotate（UUID + 各协议独立新密钥，需重新导入客户端）"
   echo "-----------------------------------------------------------"
   echo "免责声明：本脚本仅供网络技术研究与学习交流。使用者须遵守所在国家/地区"
@@ -2311,9 +2311,16 @@ def resolve_token_file(token_path):
     return candidate
 
 class SubHandler(BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        # Privacy: do not log client IPs or User-Agents
+    # 隐私：不落访问日志，也不把客户端 IP / UA 写进 journald；
+    # 真正的处理器错误仍写 stderr（不带客户端地址），便于排错
+    def version_string(self):
+        return "nginx"
+
+    def log_request(self, code="-", size="-"):
         pass
+
+    def log_message(self, format, *args):
+        sys.stderr.write("sbbox-sub: " + (format % args) + "\n")
 
     def do_HEAD(self):
         self.do_GET()
@@ -2323,10 +2330,9 @@ class SubHandler(BaseHTTPRequestHandler):
         query = raw_path.split("?", 1)[1] if "?" in raw_path else ""
         token_path = unquote(raw_path.split("?")[0]).lstrip("/")
         if token_path in ("", "index.html"):
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            # 根路径与未知路径一致返回 404，不暴露服务身份
+            self.send_response(404)
             self.end_headers()
-            self.wfile.write(b"sbbox subscription server is running.\n")
             return
         if token_path in ("qr", "qr.png", "sub_qr.png") or token_path.endswith((".png", "/qr")):
             qr_file = os.path.join(WEB_DIR_REAL, "sub_qr.png")
@@ -2495,6 +2501,11 @@ ExecStart=$runner
 Restart=on-failure
 RestartSec=3s
 LimitNOFILE=65535
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
 KillSignal=SIGTERM
 TimeoutStopSec=15
 
