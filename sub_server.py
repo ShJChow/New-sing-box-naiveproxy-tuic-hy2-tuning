@@ -31,8 +31,17 @@ class SubHandler(BaseHTTPRequestHandler):
     def log_request(self, code="-", size="-"):
         pass
 
+    def send_error(self, code, message=None, explain=None):
+        # 不返回 Python 默认错误页（带 "Error response" 特征），只给状态码
+        self.send_response(code)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def log_message(self, format, *args):
-        sys.stderr.write("sbbox-sub: " + (format % args) + "\n")
+        # 去掉控制字符，并遮住请求行里像订阅 token 的长路径段，再写 stderr
+        msg = re.sub(r"[^\x20-\x7e]", "?", format % args)
+        msg = re.sub(r"/[A-Za-z0-9._-]{16,}", "/<redacted>", msg)
+        sys.stderr.write("sbbox-sub: " + msg[:200] + "\n")
 
     def do_HEAD(self):
         self.do_GET()

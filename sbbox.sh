@@ -46,7 +46,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.55"
+SBBOX_VERSION="v2.7.56"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -75,6 +75,7 @@ hyjpt="${hyjpt:-}"                          # Hysteria2 跳跃端口，默认关
 hyobfs="${hyobfs:-1}"                       # Hysteria2 salamander 混淆，默认开启；关闭用 hyobfs=0
 hyobfs_pw="${hyobfs_pw:-}"                  # 混淆密码（默认独立随机值）
 hymask="${hymask:-https://www.bing.com}"    # Hysteria2 伪装：反代真实站点；静态 404 用 hymask=none
+sblevel_env="${sblevel:-}"                   # 记下用户是否显式传了 sblevel：没传时 load_state 才用磁盘上保存的值
 sblevel="${sblevel:-error}"                 # 服务端日志级别：error（默认，只记真正的错误）/ off（完全不落盘）/ warn / info
 blkport="${blkport:-1}"                     # 阻断出站邮件/SMB 端口（防凭据外泄后被拿去发垃圾邮件），关闭用 blkport=0
 reatd="${reatd:-}"                       # Reality max_time_difference（默认不设；如 reatd=1m。客户端时间偏差超过它会连不上）
@@ -2321,8 +2322,17 @@ class SubHandler(BaseHTTPRequestHandler):
     def log_request(self, code="-", size="-"):
         pass
 
+    def send_error(self, code, message=None, explain=None):
+        # 不返回 Python 默认错误页（带 "Error response" 特征），只给状态码
+        self.send_response(code)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def log_message(self, format, *args):
-        sys.stderr.write("sbbox-sub: " + (format % args) + "\n")
+        # 去掉控制字符，并遮住请求行里像订阅 token 的长路径段，再写 stderr
+        msg = re.sub(r"[^\x20-\x7e]", "?", format % args)
+        msg = re.sub(r"/[A-Za-z0-9._-]{16,}", "/<redacted>", msg)
+        sys.stderr.write("sbbox-sub: " + msg[:200] + "\n")
 
     def do_HEAD(self):
         self.do_GET()
@@ -2491,6 +2501,15 @@ PYEOF
   [ -f "$SB_HOME/sub.pid" ] && kill "$(cat "$SB_HOME/sub.pid")" 2>/dev/null && rm -f "$SB_HOME/sub.pid"
 
   if [ "$SERVICE_TYPE" = "systemd" ] && [ "$IS_ROOT" = 1 ]; then
+    # PrivateTmp / ProtectKernelTunables / ProtectControlGroups 需要挂载命名空间；OpenVZ / 非特权 LXC 里
+    # 旧版 systemd 会因 226/NAMESPACE 起不来，容器里只保留不需要命名空间的两项
+    SUB_NS_HARDEN=""
+    if ! systemd-detect-virt --container -q 2>/dev/null; then
+      SUB_NS_HARDEN="PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+"
+    fi
     cat > /etc/systemd/system/sbbox-sub.service <<EOF
 [Unit]
 Description=sbbox subscription server
@@ -2504,11 +2523,8 @@ Restart=on-failure
 RestartSec=3s
 LimitNOFILE=65535
 NoNewPrivileges=yes
-PrivateTmp=yes
-ProtectKernelTunables=yes
-ProtectControlGroups=yes
 RestrictSUIDSGID=yes
-KillSignal=SIGTERM
+${SUB_NS_HARDEN}KillSignal=SIGTERM
 TimeoutStopSec=15
 
 [Install]
@@ -3261,9 +3277,10 @@ sbrestart() {
   sleep 2
   if pgrep -f "sing-box run -c $SB_CONF" >/dev/null 2>&1; then
     info "sing-box 已重启"
-  else
-    error "sing-box 重启失败"
+    return 0
   fi
+  error "sing-box 重启失败"
+  return 1
 }
 
 # Hysteria2 是否由 sbbox 之外的独立 hysteria 进程提供服务。
@@ -4907,14 +4924,14 @@ PY
   [ "$fail" -eq 0 ]
 }
 
-# 交互式管理菜单（v2.7.40）：已安装后直接输入 sbbox（在终端里）进入，风格同 xray-xhttp 的 xh。
-# 每个动作都在子 shell 里执行，子命令内部的 exit / 失败只会回到菜单，不会把菜单一起带走。
 # 协议开关：sbbox proto [show | hy2|naive|tuic|reality|anytls on|off]
 # 默认安装的是 Hysteria2 / Naiveproxy / TUIC / VLESS-Reality 四条；AnyTLS 等需要时在这里开关。
 # 流程与 cmd_port 一致：改磁盘上的 proto_* 标记 → 重新生成服务端与客户端配置 → 重启。
+# 与 cmd_port 不同的是这里先做快照：任何一步失败都把 sb.json、proto_*、port_* 恢复并重启，
+# 不会留下「标记说开着、实际没有入站」或「代理已经停了」的状态。
 cmd_proto() {
   [ -x "$SB_BIN" ] || { error "未安装 sbbox，无法切换协议"; exit 1; }
-  local pname="${1:-show}" act="${2:-show}" pf label n
+  local pname="${1:-show}" act="${2:-show}" pf label n snap f
   # 只认磁盘上记录的状态，不受当前 shell 里残留的环境变量影响
   tup="" hyp="" nvp="" reap="" anyp=""
   load_state
@@ -4938,43 +4955,97 @@ cmd_proto() {
       ;;
     *) echo "用法：sbbox proto [show | hy2|naive|tuic|reality|anytls on|off]"; return 1 ;;
   esac
+  # 能正常工作的协议数：Naive / AnyTLS 没有真实证书时不会生成入站，不算数
+  _proto_working_count() {
+    local c=0 x
+    for x in proto_tup proto_hyp proto_rea; do [ -f "$SB_HOME/$x" ] && c=$((c+1)); done
+    if cert_ready; then
+      for x in proto_nvp proto_any; do [ -f "$SB_HOME/$x" ] && c=$((c+1)); done
+    fi
+    echo "$c"
+  }
   case "$act" in
     on)
       if [ -f "$SB_HOME/$pf" ]; then info "$label 已经是开启状态"; return 0; fi
-      if [ "$pf" = proto_any ] && [ ! -s "$SB_HOME/port_any" ]; then
-        # assign_port 对 AnyTLS 传的是固定默认 28443；这里先落一个随机端口，和其余协议一致
-        local _p _try=0
-        while :; do
-          _p=$(shuf -i 10000-29999 -n 1)
-          is_port_conflict "$_p" && { _try=$((_try+1)); [ $_try -ge 100 ] && break; continue; }
-          break
-        done
-        echo "$_p" > "$SB_HOME/port_any"
-      fi
-      touch "$SB_HOME/$pf"
+      case "$pf" in
+        proto_nvp|proto_any)
+          cert_ready || { error "$label 需要有效的 TLS 证书（当前是自签证书），未做任何修改。请先用 ym=域名 alns=1 重新运行 sbbox 申请证书。"; return 1; }
+          ;;
+      esac
       ;;
     off)
       if [ ! -f "$SB_HOME/$pf" ]; then info "$label 本来就是关闭状态"; return 0; fi
-      n=$(ls "$SB_HOME"/proto_tup "$SB_HOME"/proto_hyp "$SB_HOME"/proto_nvp "$SB_HOME"/proto_rea "$SB_HOME"/proto_any 2>/dev/null | wc -l)
-      [ "$n" -gt 1 ] || { error "这是最后一个协议，不能关闭（要卸载请用 sbbox del）"; return 1; }
-      rm -f "$SB_HOME/$pf"
+      n=$(_proto_working_count)
+      # 关掉的是一个能工作的协议，且它是最后一个 → 拒绝
+      if [ "$n" -le 1 ]; then
+        case "$pf" in
+          proto_nvp|proto_any) cert_ready || n=2 ;;   # 本来就不工作的协议随时可以关
+        esac
+        [ "$n" -gt 1 ] || { error "这是最后一个能工作的协议，不能关闭（要卸载请用 sbbox del）"; return 1; }
+      fi
       ;;
     *) echo "用法：sbbox proto $pname on|off"; return 1 ;;
   esac
-  # 关闭时：先记下旧端口，等配置重生成后关防火墙并删端口文件
+  # 快照：配置与全部协议 / 端口标记
+  snap=$(mktemp -d "$SB_HOME/.proto-snap.XXXXXX") || { error "无法创建快照目录"; return 1; }
+  [ -f "$SB_CONF" ] && cp -a "$SB_CONF" "$snap/sb.json"
+  for f in "$SB_HOME"/proto_* "$SB_HOME"/port_*; do [ -e "$f" ] && cp -a "$f" "$snap/"; done
+  _proto_restore() {
+    rm -f "$SB_HOME"/proto_* "$SB_HOME"/port_*
+    for f in "$snap"/proto_* "$snap"/port_*; do [ -e "$f" ] && cp -a "$f" "$SB_HOME/"; done
+    [ -f "$snap/sb.json" ] && cp -a "$snap/sb.json" "$SB_CONF"
+    sbrestart >/dev/null 2>&1 || true
+    rm -rf "$snap"
+  }
+  if [ "$act" = on ]; then
+    if [ "$pf" = proto_any ] && [ ! -s "$SB_HOME/port_any" ]; then
+      # assign_port 对 AnyTLS 传的是固定默认 28443；这里先落一个随机端口，和其余协议一致
+      local _p="" _try=0
+      while [ "$_try" -lt 100 ]; do
+        _p=$(shuf -i 10000-29999 -n 1 2>/dev/null)
+        if [ -n "$_p" ] && ! is_port_conflict "$_p"; then break; fi
+        _p=""; _try=$((_try+1))
+      done
+      [ -n "$_p" ] || { error "找不到可用的随机端口，未做任何修改"; rm -rf "$snap"; return 1; }
+      echo "$_p" > "$SB_HOME/port_any"
+    fi
+    touch "$SB_HOME/$pf"
+  else
+    rm -f "$SB_HOME/$pf"
+  fi
+  # 关闭时：先记下旧端口，等配置重生成成功后关防火墙并删端口文件
   local old_tu="$port_tu" old_hy2="$port_hy2" old_nv="$port_nv" old_rea="$port_rea" old_any="$port_any"
   tup="" hyp="" nvp="" reap="" anyp=""
   v4v6
   load_state
   [ -s "$SB_HOME/subport" ] && sub=1
   [ "$CERT_OK" = 1 ] && alns=1
-  installsb
+  # installsb 里有 exit 1，放进子 shell 才不会把整个命令带走。它正常结束时最后一条命令的状态码没有意义，
+  # 所以用哨兵文件判断「跑完了」，再用内核校验配置。
+  ( installsb; touch "$snap/.installsb-ok" )
+  if [ ! -e "$snap/.installsb-ok" ] || ! "$SB_BIN" check -c "$SB_CONF" >/dev/null 2>&1; then
+    error "重新生成服务端配置失败，正在恢复修改前的状态……"
+    _proto_restore
+    return 1
+  fi
   apply_hy_hop
-  sbrestart
+  if ! sbrestart; then
+    error "sing-box 重启失败，正在恢复修改前的状态……（原因可用 journalctl -u ${SB_SERVICE} -n 20 查看）"
+    _proto_restore
+    return 1
+  fi
+  rm -rf "$snap"
   if [ "$act" = off ]; then
     case "$pf" in
       proto_tup) [ -n "$old_tu" ] && close_port "$old_tu" udp; rm -f "$SB_HOME/port_tu" ;;
-      proto_hyp) [ -n "$old_hy2" ] && close_port "$old_hy2" udp; rm -f "$SB_HOME/port_hy2" ;;
+      proto_hyp)
+        [ -n "$old_hy2" ] && close_port "$old_hy2" udp
+        # 端口跳跃的 DNAT 规则指向旧端口，一并清掉（保留 hyjpt 文件，重新开启时会按它恢复）
+        if [ -n "$old_hy2" ]; then
+          iptables -t nat -S PREROUTING 2>/dev/null | grep -w "$old_hy2" | sed 's/^-A/iptables -t nat -D/' | bash 2>/dev/null || true
+          ip6tables -t nat -S PREROUTING 2>/dev/null | grep -w "$old_hy2" | sed 's/^-A/ip6tables -t nat -D/' | bash 2>/dev/null || true
+        fi
+        rm -f "$SB_HOME/port_hy2" ;;
       proto_nvp) [ -n "$old_nv" ] && { close_port "$old_nv" tcp; close_port "$old_nv" udp; }; rm -f "$SB_HOME/port_nv" ;;
       proto_rea) [ -n "$old_rea" ] && close_port "$old_rea" tcp; rm -f "$SB_HOME/port_rea" ;;
       proto_any) [ -n "$old_any" ] && close_port "$old_any" tcp; rm -f "$SB_HOME/port_any" ;;
@@ -4993,6 +5064,8 @@ cmd_proto() {
   info "$label 已$([ "$act" = on ] && echo 开启 || echo 关闭)，配置与客户端节点已同步。云厂商安全组需自行放行 / 回收对应端口（sbbox ports 可查）。"
 }
 
+# 交互式管理菜单（v2.7.40）：已安装后直接输入 sbbox（在终端里）进入，风格同 xray-xhttp 的 xh。
+# 每个动作都在子 shell 里执行，子命令内部的 exit / 失败只会回到菜单，不会把菜单一起带走。
 cmd_menu() {
   local choice a
   while true; do
@@ -5098,7 +5171,7 @@ main() {
 
   # 安装流程
   case "$reap" in
-    0|no|off|false|NO|OFF|FALSE) reap="" ;;
+    0|no|off|false|NO|OFF|FALSE) reap=""; reap_off=1 ;;
     1|yes|on|true|YES|ON|TRUE) reap=1 ;;
     "")
       # 默认精简四大核心主力梯队（Hysteria2 / AnyTLS / Naive / TUIC），reap 默认不开启，需显式传 reap=1
@@ -5108,7 +5181,7 @@ main() {
 
   # 全新安装且没指定任何协议：默认装 Hysteria2 / Naiveproxy / TUIC / VLESS-Reality 四条；
   # AnyTLS 等备用协议装好后用 sbbox proto anytls on 开启。Naiveproxy 必须有真实证书，没给域名就跳过它。
-  if [ -z "$tup" ] && [ -z "$hyp" ] && [ -z "$nvp" ] && [ -z "$reap" ] && [ -z "$anyp" ] && [ -z "$stlp" ] && [ ! -x "$SB_BIN" ]; then
+  if [ -z "$tup" ] && [ -z "$hyp" ] && [ -z "$nvp" ] && [ -z "$reap" ] && [ -z "$anyp" ] && [ -z "$stlp" ] && [ ! -x "$SB_BIN" ] && [ -z "$reap_off" ]; then
     hyp=1 tup=1 reap=1
     if [ -n "$alns" ] || [ -n "$ym" ]; then
       nvp=1
@@ -5232,6 +5305,8 @@ save_state() {
   [ -n "$anyp" ] && touch "$SB_HOME/proto_any"
   [ -n "$port_any" ] && echo "$port_any" > "$SB_HOME/port_any"
   echo "$ym" > "$SB_HOME/ym"
+  # 日志级别持久化：之后 proto / port / rotate 重新生成配置时沿用安装时的选择，不会悄悄变回默认值
+  [ -n "$sblevel" ] && echo "$sblevel" > "$SB_HOME/sblevel"
   [ -n "$hyjpt" ] && echo "$hyjpt" > "$SB_HOME/hyjpt"
   # Brutal 带宽必须持久化：否则 rotate / 重新生成配置时静默退回 BBR，
   # 用户看不出配置为何变了
@@ -5867,6 +5942,7 @@ load_state() {
   [ -s "$SB_HOME/hyobfs_pw" ] && hyobfs_pw=$(cat "$SB_HOME/hyobfs_pw")
   [ -s "$SB_HOME/hyobfs_type" ] && hyobfs_type=$(cat "$SB_HOME/hyobfs_type")
   [ -s "$SB_HOME/api_port" ] && api_port=$(cat "$SB_HOME/api_port")
+  [ -z "$sblevel_env" ] && [ -s "$SB_HOME/sblevel" ] && sblevel=$(cat "$SB_HOME/sblevel")
   [ -z "$sbrel_explicit" ] && [ -f "$SB_HOME/sbrel" ] && sbrel=$(cat "$SB_HOME/sbrel")
   # 订阅服务：默认开启；若用户曾显式执行 sbbox sub off 则保持关闭（除非环境变量显式指定 sub=1）
   if [ -z "$sub_explicit" ]; then
