@@ -46,7 +46,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.54"
+SBBOX_VERSION="v2.7.55"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -204,10 +204,12 @@ showmode() {
   echo "==========================================================="
   echo "sbbox $SBBOX_VERSION — Sing-box-Only 协议安全加固代理脚本"
   echo "支持协议（2026梯队）：Hysteria2 / Naiveproxy / Tuic（可选：VLESS-Reality / AnyTLS）"
-  echo "主脚本（三大主力）：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) hyp=1 nvp=1 tup=1 alns=1 ym=你的域名"
+  echo "默认四条（Hysteria2/Naive/TUIC/Reality）：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) alns=1 ym=你的域名"
+  echo "指定协议（三大主力）：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) hyp=1 nvp=1 tup=1 alns=1 ym=你的域名"
   echo "全协议（含 Reality/AnyTLS）：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) hyp=1 nvp=1 tup=1 reap=1 anyp=1 alns=1 ym=你的域名"
   echo "管理菜单：sbbox（终端中直接输入）【或】 sbbox menu"
   echo "云端放行端口清单：sbbox ports（连不上但本机自检正常时，先核对云厂商安全组）"
+  echo "协议开关：sbbox proto show | sbbox proto anytls on|off（默认安装 Hysteria2/Naive/TUIC/Reality，AnyTLS 等备用协议在此开关）"
   echo "节点本机自测：sbbox selftest（逐个节点在服务器本机真实握手，区分服务端问题与网络问题）"
   echo "出站分流：sbbox block cn|ads on|off（屏蔽回国 IP / 广告域名，默认关闭）| sbbox block show | sbbox block update"
   echo "显示节点信息：sbbox list 【或】 bash sbbox.sh list"
@@ -4907,6 +4909,90 @@ PY
 
 # 交互式管理菜单（v2.7.40）：已安装后直接输入 sbbox（在终端里）进入，风格同 xray-xhttp 的 xh。
 # 每个动作都在子 shell 里执行，子命令内部的 exit / 失败只会回到菜单，不会把菜单一起带走。
+# 协议开关：sbbox proto [show | hy2|naive|tuic|reality|anytls on|off]
+# 默认安装的是 Hysteria2 / Naiveproxy / TUIC / VLESS-Reality 四条；AnyTLS 等需要时在这里开关。
+# 流程与 cmd_port 一致：改磁盘上的 proto_* 标记 → 重新生成服务端与客户端配置 → 重启。
+cmd_proto() {
+  [ -x "$SB_BIN" ] || { error "未安装 sbbox，无法切换协议"; exit 1; }
+  local pname="${1:-show}" act="${2:-show}" pf label n
+  # 只认磁盘上记录的状态，不受当前 shell 里残留的环境变量影响
+  tup="" hyp="" nvp="" reap="" anyp=""
+  load_state
+  case "$pname" in
+    hy2|hysteria2) pf=proto_hyp; label="Hysteria2" ;;
+    naive|nv|naiveproxy) pf=proto_nvp; label="Naiveproxy" ;;
+    tuic|tu) pf=proto_tup; label="TUIC" ;;
+    reality|rea|vless) pf=proto_rea; label="VLESS-Reality" ;;
+    anytls|any) pf=proto_any; label="AnyTLS" ;;
+    show|status|"")
+      echo "当前协议（默认安装前四条，AnyTLS 为备用）："
+      for n in "hy2:proto_hyp:Hysteria2" "naive:proto_nvp:Naiveproxy" "tuic:proto_tup:TUIC" "reality:proto_rea:VLESS-Reality" "anytls:proto_any:AnyTLS"; do
+        if [ -f "$SB_HOME/$(echo "$n" | cut -d: -f2)" ]; then
+          printf '  %-9s %-14s %s\n' "$(echo "$n" | cut -d: -f1)" "$(echo "$n" | cut -d: -f3)" "已开启"
+        else
+          printf '  %-9s %-14s %s\n' "$(echo "$n" | cut -d: -f1)" "$(echo "$n" | cut -d: -f3)" "未开启"
+        fi
+      done
+      echo "用法：sbbox proto <hy2|naive|tuic|reality|anytls> on|off"
+      return 0
+      ;;
+    *) echo "用法：sbbox proto [show | hy2|naive|tuic|reality|anytls on|off]"; return 1 ;;
+  esac
+  case "$act" in
+    on)
+      if [ -f "$SB_HOME/$pf" ]; then info "$label 已经是开启状态"; return 0; fi
+      if [ "$pf" = proto_any ] && [ ! -s "$SB_HOME/port_any" ]; then
+        # assign_port 对 AnyTLS 传的是固定默认 28443；这里先落一个随机端口，和其余协议一致
+        local _p _try=0
+        while :; do
+          _p=$(shuf -i 10000-29999 -n 1)
+          is_port_conflict "$_p" && { _try=$((_try+1)); [ $_try -ge 100 ] && break; continue; }
+          break
+        done
+        echo "$_p" > "$SB_HOME/port_any"
+      fi
+      touch "$SB_HOME/$pf"
+      ;;
+    off)
+      if [ ! -f "$SB_HOME/$pf" ]; then info "$label 本来就是关闭状态"; return 0; fi
+      n=$(ls "$SB_HOME"/proto_tup "$SB_HOME"/proto_hyp "$SB_HOME"/proto_nvp "$SB_HOME"/proto_rea "$SB_HOME"/proto_any 2>/dev/null | wc -l)
+      [ "$n" -gt 1 ] || { error "这是最后一个协议，不能关闭（要卸载请用 sbbox del）"; return 1; }
+      rm -f "$SB_HOME/$pf"
+      ;;
+    *) echo "用法：sbbox proto $pname on|off"; return 1 ;;
+  esac
+  # 关闭时：先记下旧端口，等配置重生成后关防火墙并删端口文件
+  local old_tu="$port_tu" old_hy2="$port_hy2" old_nv="$port_nv" old_rea="$port_rea" old_any="$port_any"
+  tup="" hyp="" nvp="" reap="" anyp=""
+  v4v6
+  load_state
+  [ -s "$SB_HOME/subport" ] && sub=1
+  [ "$CERT_OK" = 1 ] && alns=1
+  installsb
+  apply_hy_hop
+  sbrestart
+  if [ "$act" = off ]; then
+    case "$pf" in
+      proto_tup) [ -n "$old_tu" ] && close_port "$old_tu" udp; rm -f "$SB_HOME/port_tu" ;;
+      proto_hyp) [ -n "$old_hy2" ] && close_port "$old_hy2" udp; rm -f "$SB_HOME/port_hy2" ;;
+      proto_nvp) [ -n "$old_nv" ] && { close_port "$old_nv" tcp; close_port "$old_nv" udp; }; rm -f "$SB_HOME/port_nv" ;;
+      proto_rea) [ -n "$old_rea" ] && close_port "$old_rea" tcp; rm -f "$SB_HOME/port_rea" ;;
+      proto_any) [ -n "$old_any" ] && close_port "$old_any" tcp; rm -f "$SB_HOME/port_any" ;;
+    esac
+    load_state
+  fi
+  gen_client
+  if [ "$IS_ROOT" = 1 ]; then
+    if command -v netfilter-persistent >/dev/null 2>&1; then
+      netfilter-persistent save >/dev/null 2>&1 || true
+    elif [ -x "$(command -v iptables-save 2>/dev/null)" ] && [ -d /etc/iptables ]; then
+      iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+      ip6tables-save > /etc/iptables/rules.v6 2>/dev/null || true
+    fi
+  fi
+  info "$label 已$([ "$act" = on ] && echo 开启 || echo 关闭)，配置与客户端节点已同步。云厂商安全组需自行放行 / 回收对应端口（sbbox ports 可查）。"
+}
+
 cmd_menu() {
   local choice a
   while true; do
@@ -4932,6 +5018,7 @@ cmd_menu() {
     echo " 18) 出站分流开关 屏蔽回国 IP / 广告域名 block"
     echo " 19) 云端需放行的端口清单 ports"
     echo " 20) 节点本机自测 selftest（区分服务端问题与网络问题）"
+    echo " 21) 协议开关 proto（默认四条之外的备用协议如 AnyTLS 在这里开关）"
     echo "  0) 退出"
     read -rp "请选择: " choice || break
     case "$choice" in
@@ -4955,6 +5042,7 @@ cmd_menu() {
       18) read -rp "  show / cn on|off / ads on|off / update: " a; ( cmd_block ${a:-show} ) ;;
       19) ( load_state; cloud_ports_hint ) ;;
       20) ( cmd_selftest ) ;;
+      21) read -rp "  show / <hy2|naive|tuic|reality|anytls> on|off: " a; ( cmd_proto ${a:-show} ) ;;
       0|q|Q) break ;;
       *) warn "无效选择" ;;
     esac
@@ -5001,6 +5089,7 @@ main() {
     doctor) doctor; exit ;;
     ports)  load_state; cloud_ports_hint; exit ;;
     selftest) cmd_selftest; exit ;;
+    proto)  shift; cmd_proto "$@"; exit ;;
     rotate) cmd_rotate; exit ;;
     del)    cleandel; exit ;;
     help|-h|--help) showmode; exit ;;
@@ -5016,6 +5105,18 @@ main() {
       reap=""
       ;;
   esac
+
+  # 全新安装且没指定任何协议：默认装 Hysteria2 / Naiveproxy / TUIC / VLESS-Reality 四条；
+  # AnyTLS 等备用协议装好后用 sbbox proto anytls on 开启。Naiveproxy 必须有真实证书，没给域名就跳过它。
+  if [ -z "$tup" ] && [ -z "$hyp" ] && [ -z "$nvp" ] && [ -z "$reap" ] && [ -z "$anyp" ] && [ -z "$stlp" ] && [ ! -x "$SB_BIN" ]; then
+    hyp=1 tup=1 reap=1
+    if [ -n "$alns" ] || [ -n "$ym" ]; then
+      nvp=1
+    else
+      warn "未指定 ym=域名 / alns=1：默认协议集里的 Naiveproxy 需要真实证书，本次先跳过（之后补证书可用 sbbox proto naive on）"
+    fi
+    info "未指定协议，使用默认协议集：Hysteria2 / TUIC / VLESS-Reality$([ -n "$nvp" ] && echo ' / Naiveproxy')"
+  fi
 
   if [ -z "$tup" ] && [ -z "$hyp" ] && [ -z "$nvp" ] && [ -z "$reap" ] && [ -z "$anyp" ] && [ -z "$stlp" ]; then
     if [ -x "$SB_BIN" ]; then
