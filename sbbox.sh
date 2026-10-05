@@ -46,7 +46,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.57"
+SBBOX_VERSION="v2.7.58"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -396,10 +396,22 @@ import json
 try:
     with open('$conf', 'r', encoding='utf-8') as f:
         data = json.load(f)
+    changed = False
     cf = data.get('experimental', {}).get('cache_file', {})
     if cf.get('enabled') and 'buffer_size' not in cf:
         cf['buffer_size'] = '${cache_buffer:-1MB}'
         cf['flush_interval'] = '${cache_flush:-1m}'
+        changed = True
+    dns = data.get('dns', {})
+    if 'optimistic' not in dns:
+        dns['optimistic'] = True
+        changed = True
+    for ib in data.get('inbounds', []):
+        if ib.get('type') == 'naive' and 'tls' in ib:
+            if ib['tls'].get('min_version') == '1.3':
+                ib['tls']['min_version'] = '1.2'
+                changed = True
+    if changed:
         with open('$conf', 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=4, ensure_ascii=False)
 except Exception:
@@ -417,6 +429,11 @@ try:
         if k in cf:
             del cf[k]
             changed = True
+    for ib in data.get('inbounds', []):
+        if ib.get('type') == 'naive' and 'tls' in ib:
+            if ib['tls'].get('min_version') == '1.3':
+                ib['tls']['min_version'] = '1.2'
+                changed = True
     if changed:
         with open('$conf', 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=4, ensure_ascii=False)
@@ -448,8 +465,10 @@ install_sb_official() {
     if "$tmp/sing-box-${ver}-linux-${cpu}/sing-box" version >/dev/null 2>&1; then
       mv -f "$tmp/sing-box-${ver}-linux-${cpu}/sing-box" "$SB_BIN"
       chmod +x "$SB_BIN"
-      [ -s "$tmp/sing-box-${ver}-linux-${cpu}/libcronet.so" ] && \
+      if [ -s "$tmp/sing-box-${ver}-linux-${cpu}/libcronet.so" ]; then
         mv -f "$tmp/sing-box-${ver}-linux-${cpu}/libcronet.so" "$SB_HOME/libcronet.so"
+        chmod 755 "$SB_HOME/libcronet.so" 2>/dev/null || true
+      fi
       rm -rf "$tmp"; return 0
     fi
   fi
@@ -1882,7 +1901,7 @@ EOF
             "tls": {
                 "enabled": true,
                 "server_name": "$ym",
-                "min_version": "1.3",
+                "min_version": "1.2",
                 "alpn": [ "h3", "h2" ],
                 "certificate_path": "$CERT_DIR/fullchain.cer",
                 "key_path": "$CERT_DIR/private.key",
@@ -1981,6 +2000,7 @@ $route_rules
 }
 EOF
   info "服务端配置已生成：$SB_CONF"
+  adapt_sb_conf_for_version "$(sb_installed_version)"
 
   # 配置自检：把 JSON/字段错误在安装期暴露出来，而不是留到服务静默启动失败
   if ! "$SB_BIN" check -c "$SB_CONF" 2>"$SB_HOME/check.err"; then
@@ -2146,7 +2166,7 @@ gen_client() {
 
     # v2.7.28：去掉 http3:// / http2:// 两条同入站的重复写法（v2rayN 不识别，导入即 -1）
     nv1_link="naive+quic://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1$nv_uot$nv_pcs$nv_pin#naive-h3-$node_tag"
-    nv2_link="naive+quic://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1$nv_uot$nv_pcs$nv_pin#naive-h2-$node_tag"
+    nv2_link="naive+https://$nv_user:$nv_pw@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1$nv_uot$nv_pcs$nv_pin#naive-h2-$node_tag"
 
     for l in "$nv1_link" "$nv2_link"; do
       echo "$l" >> "$SB_LINK"
@@ -2808,10 +2828,8 @@ gen_client_sbox() {
         "password": "'"$nv_pw"'",
         "insecure_concurrency": 1,
         "stream_receive_window": 67108864,
-        "quic_session_receive_window": 134217728,
         "udp_over_tcp": true,
-        "quic": true,
-        "quic_congestion_control": "bbr",
+        "quic": false,
         "bind_address_no_port": true,
         "tls": { "enabled": true, "insecure": false, "server_name": "'"$sni"'" }
     }')
@@ -4746,6 +4764,7 @@ status_show() {
     echo -e "  内核版本:     $("$SB_BIN" version 2>/dev/null | head -1)"
     if [ "$cur_ch" = "pre" ]; then
       echo -e "  更新通道:     ${YELLOW}pre-release (测试版，跟踪最新特性)${NC}"
+      echo -e "  已启特性:     ${GREEN}DNS乐观缓存、1.14/1.15原生API、1.15 cache_file批量缓冲(1MB/1m)、NaiveProxy H2/H3双栈${NC}"
     else
       echo -e "  更新通道:     ${GREEN}stable (官方稳定正式版)${NC}"
     fi
