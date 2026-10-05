@@ -39,7 +39,7 @@ Bundled with:
 - [7. Kernel Version Management](#7-kernel-version-management)
 - [8. Subscription & Client Configs](#8-subscription--client-configs)
 - [9. Benchmark Throughput](#9-benchmark-throughput)
-- [10. Release History & Core Tuning Evolution (v2.1 – v2.7.62)](#10-release-history--core-tuning-evolution-v21--v2762)
+- [10. Release History & Core Tuning Evolution (v2.1 – v2.7.63)](#10-release-history--core-tuning-evolution-v21--v2763)
 - [11. Disclaimer](#11-disclaimer)
 
 ---
@@ -306,7 +306,7 @@ Benchmark measured locally on VPS over 9 iterations showing median (min–max):
 
 ---
 
-## 10. Release History & Core Tuning Evolution (v2.1 – v2.7.62)
+## 10. Release History & Core Tuning Evolution (v2.1 – v2.7.63)
 
 After dozens of iterative rounds across high-latency cross-Pacific topologies (160ms+ / 1% packet loss), core technical milestones are summarized below:
 
@@ -354,6 +354,7 @@ After dozens of iterative rounds across high-latency cross-Pacific topologies (1
 | **Boost AnyTLS Throughput Speed & Fix Runtime/Environment Bottlenecks** | v2.7.60 | 1) **Uncap Go Runtime Page-Fault Bottleneck**: Completely removed `GODEBUG=madvdontneed=1` from systemd drop-in. This parameter forced Go's scavenger to immediately release heap pages to kernel via `MADV_DONTNEED`, which caused constant kernel page faults and memory zeroing (`clear_page`) during heavy TLS streaming in AnyTLS; replaced with `GODEBUG=netdns=go` (enforcing async pure-Go DNS resolution without blocking libc `getaddrinfo` worker threads), and pinned `GOMAXPROCS` to all CPU cores. 2) **Warm Session Pool & 0-RTT Connection**: Introduced warm idle session pool in clients (sing-box and Mihomo: `min_idle_session: 4` / `min-idle-session: 4`), keeping 4 warm TLS 1.3 tunnels on standby, eliminating handshake round-trips and TCP head-of-line blocking under parallel web requests (reducing connection latency from ~450ms to 0-RTT); idle timeout set to 5m (`5m` / `300s`) and check interval to 15s (`15s` / `15`). 3) **Socket-Level Tuning**: Enabled `bind_address_no_port: true` (preventing source port exhaustion) and `tcp_keep_alive: 30s` / `tcp_keep_alive_interval: 5s` (preventing middlebox NAT timeouts on warm idle connections). 4) **Server Inbound TFO Acceleration & Spec Convergence**: Enabled `"tcp_fast_open": true` on `anytls-in`, disabled `"tcp_multi_path": false` to prevent MPTCP connection stall, enforced minimum TLS 1.3 with dual ALPN `["h2", "http/1.1"]`. 5) **Link Sanitization**: Cleaned redundant `security=tls`, `peer=$sni`, and `allowInsecure=0` from `anytls://` links. |
 | **Default Installation Command Promotes Four Core Pillars (Hysteria2 + Naive + TUIC + AnyTLS)** | v2.7.61 | 1) **Align Architecture with Core Protocols**: Promoted speed-tuned and 0-RTT session-pool-equipped AnyTLS into the four core default pillars; fresh installations without protocol parameters no longer require manual `hyp=1 nvp=1 tup=1 anyp=1` flags, automatically deploying Hysteria2, NaiveProxy (H3+H2), TUIC, and AnyTLS when certificate options (`alns=1 ym=your.domain.com`) are supplied. 2) **Reality Repositioned as Optional Fallback**: VLESS-Reality TCP node is now turned off by default, preserved as an optional fallback via `reap=1` or `sbbox proto reality on`. 3) **Tooling & Docs Synchronized**: Updated `showmode` guidance, interactive menu item 21, and `sbbox proto` status listing. |
 | **TUIC v5 Disables 0-RTT Handshake by Default (Privacy & Anti-Replay Baseline)** | v2.7.62 | 1) **Anti-Replay Security Hardening**: In accordance with sing-box official best practices, defaulted `zero_rtt_handshake` in TUIC v5 server inbound and sing-box client outbound to `false`, and Mihomo `reduce-rtt` to `false`, eliminating TLS 1.3 / QUIC Early Data replay attack vectors. 2) **Retain High-Performance Baseline**: Kept server-side BBR, client-side CUBIC, and native UDP Datagram (`native`) for maximum throughput and zero head-of-line blocking. |
+| **Fix AnyTLS & TUIC Link TLS Parsing Bug in v2rayN (-1 Delay Crash)** | v2.7.63 | 1) **v2rayN Link Spec Alignment**: Explicitly appended `security=tls` to `anytls://` and `tuic://` share links, satisfying v2rayN's `_node.StreamSecurity` parser validation. This permanently eliminates the issue where missing TLS parameters caused v2rayN to emit empty TLS outbound configs in sing-box, triggering `FATAL: anytls requires tls` core crash (-1 latency). 2) **Client Compatibility**: Maintained seamless interoperability across Shadowrocket, Mihomo, and sing-box native clients. |
 
 ---
 

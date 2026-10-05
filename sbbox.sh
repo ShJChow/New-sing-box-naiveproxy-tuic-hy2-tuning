@@ -46,7 +46,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.62"
+SBBOX_VERSION="v2.7.63"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -2178,7 +2178,7 @@ gen_client() {
     local any_pcs="" any_pin=""
     [ "$CERT_OK" != 1 ] && [ -n "$_fp" ] && any_pcs="&pcs=$_fp"
     [ "$CERT_OK" != 1 ] && [ -n "$_sha" ] && any_pin="&pinSHA256=$_sha"
-    any_link="anytls://$(rawurlencode "$pw_any")@$add:$port_any?alpn=h2&sni=$sni&insecure=$jhins$any_pcs$any_pin#anytls-$node_tag"
+    any_link="anytls://$(rawurlencode "$pw_any")@$add:$port_any?security=tls&alpn=h2&sni=$sni&insecure=$jhins$any_pcs$any_pin#anytls-$node_tag"
     echo "$any_link" >> "$SB_LINK"
     echo "💣【 🥈 AnyTLS + TLS (新一代 TCP 主力) 】节点信息如下："
     echo "$any_link"; echo
@@ -2211,7 +2211,7 @@ gen_client() {
       1|on|yes|true) [ -n "$tuech_config" ] && tuic_ech="&ech=$(printf %s "$tuech_config" | base64 | tr -d '\n')" ;;
     esac
     # v2.7.36：客户端拥塞控制用 cubic（TUIC 默认值），见下方 sbox_client 的 tuic 出站注释
-    tuic_link="tuic://$uuid:$(rawurlencode "$pw_tu")@$add:$port_tu?congestion_control=cubic&udp_relay_mode=native&alpn=h3&sni=$sni&insecure=$jhins&allowInsecure=$jhins&allow_insecure=$jhins$tuic_pcs$tuic_pin$tuic_ech#tuic-$node_tag"
+    tuic_link="tuic://$uuid:$(rawurlencode "$pw_tu")@$add:$port_tu?security=tls&congestion_control=cubic&udp_relay_mode=native&alpn=h3&sni=$sni&insecure=$jhins&allowInsecure=$jhins&allow_insecure=$jhins$tuic_pcs$tuic_pin$tuic_ech#tuic-$node_tag"
     echo "$tuic_link" >> "$SB_LINK"
     echo "💣【 4 Tuic (QUIC 备选) 】节点信息如下："
     echo "$tuic_link"; echo
