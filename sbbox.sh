@@ -46,7 +46,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.61"
+SBBOX_VERSION="v2.7.62"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -232,7 +232,7 @@ showmode() {
   echo "环境变量（安装期）：hyp=1 nvp=1 tup=1 anyp=1 (可选 reap=1)"
   echo "  hyp=1    🥇 启用 Hysteria2 + TLS（高速主力，支持端口跳跃与混淆）"
   echo "  nvp=1    🥈 启用 NaiveProxy (H3+H2，Chromium 内核级反探测伪装）"
-  echo "  tup=1    🥉 启用 TUIC (v5，标准 QUIC 0-RTT，Hysteria2 备选）"
+  echo "  tup=1    🥉 启用 TUIC (v5，标准 QUIC 极速，Hysteria2 备选）"
   echo "  anyp=1   💣 启用 AnyTLS + TLS（新一代 TCP 主力，0-RTT 会话池与抗特征深度伪装）"
   echo "  reap=1   (可选) 启用 VLESS-Reality TCP 节点（免域名免证书，兼容旧客户端）"
   echo "  warp=ai|all  (可选) 自动启用 WARP 出站解锁（默认关闭；ai 仅解锁流媒体/AI，all 全量流量）"
@@ -1764,7 +1764,7 @@ EOF
                 { "uuid": "$uuid", "password": "$pw_tu" }
             ],
             "congestion_control": "bbr",
-            "zero_rtt_handshake": true,
+            "zero_rtt_handshake": false,
             "auth_timeout": "8s",
             "heartbeat": "10s",
             "udp_timeout": "300s",
@@ -2849,7 +2849,7 @@ gen_client_sbox() {
         "password": "'"$pw_tu"'",
         "congestion_control": "cubic",
         '"$tuic_udp"'
-        "zero_rtt_handshake": true,
+        "zero_rtt_handshake": false,
         "heartbeat": "10s",
         "udp_fragment": true,
         "bind_address_no_port": true,
@@ -3087,7 +3087,7 @@ gen_client_clash() {
     uuid: $uuid
     password: $pw_tu
     alpn: [h3]
-    reduce-rtt: true
+    reduce-rtt: false
     heartbeat-interval: 10000
     request-timeout: 8000
     udp-relay-mode: native

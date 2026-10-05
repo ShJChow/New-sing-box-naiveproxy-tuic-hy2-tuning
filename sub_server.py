@@ -121,10 +121,7 @@ class SubHandler(BaseHTTPRequestHandler):
                         for ib in cfg.get("inbounds", []):
                             if ib.get("type") != "tun":
                                 continue
-                            if any(v in ua for v in ("1.12", "1.13", "1.14")):
-                                ib["stack"] = "mixed"
-                            else:
-                                ib.pop("stack", None)
+                            ib["stack"] = "mixed"
                             if plat == "windows":
                                 ib["strict_route"] = True
                             elif plat == "linux":

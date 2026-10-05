@@ -39,7 +39,7 @@
 - [七、内核版本管理](#七内核版本管理)
 - [八、v2rayN 订阅与客户端配置](#八v2rayn-订阅与客户端配置)
 - [九、四条节点实测吞吐](#九四条节点实测吞吐)
-- [十、版本迭代与核心调优演进记录 (v2.1 - v2.7.61)](#十版本迭代与核心调优演进记录-v21---v2761)
+- [十、版本迭代与核心调优演进记录 (v2.1 - v2.7.62)](#十版本迭代与核心调优演进记录-v21---v2762)
 - [十一、免责声明](#十一免责声明)
 
 ---
@@ -339,7 +339,7 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 
 ---
 
-## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.61)
+## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.62)
 
 本项目经跨洋弱网环境（160ms+ / 1% 丢包）数十轮实测迭代，核心演进总结如下：
 
@@ -386,6 +386,7 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 | **修复 Hysteria2 节点安全性漏洞与速度链接缺陷** | v2.7.59 | 1) 修复 Hysteria2 安全性与证书轮换致命 Bug：正规 CA 证书（`CERT_OK=1`）不再在链接中硬编码 `pinSHA256` 及在客户端配置中固定 `certificate_public_key_sha256`，彻底消除 60~90 天证书自动轮换导致全量客户端断连报错的隐患；仅自签名证书（`CERT_OK!=1`）才启用叶证书指纹固定与 `insecure=1`。2) 纠正链接非标准参数：剥离 `security=tls`、`allowInsecure=0` 与 `pcs=` 等非标准字段，仅保留规范的 `insecure=0/1`、`sni`、`alpn=h3`、`mport` 与 `obfs`；密码与混淆密码统一进行标准 URL 百分号编码，防止特殊字符导致解析崩溃。3) 修复客户端速度瓶颈：彻底移除此前在客户端默认硬编码的 `hy2-pc`（50M/300M）与 `hy2-mobile`（20M/100M）限速节点，默认统一输出满速原生 BBR 拥塞控制节点（仅当用户显式传 `hyup`/`hydown` 或运行 `sbbox speed` 时才在单一节点上应用限额），避免用户千兆/5G 宽带被客户端速率限制器扼杀。4) 清理服务端 `hy2-in` 入站内冗余的 `tcp_fast_open` 与 `udp_timeout` 参数 |
 | **提升 AnyTLS 吞吐速度与修复运行环境/参数瓶颈** | v2.7.60 | 1) **解除 Go 运行时内核缺页限速**：彻底移除 systemd drop-in 中的 `GODEBUG=madvdontneed=1`。该参数强制 Go 垃圾回收器使用 `MADV_DONTNEED` 立即向内核释放内存页，导致 AnyTLS 高速收发流式 TLS 数据包时频繁发生内核缺页异常与内存清零中断（`clear_page`），严重扼杀吞吐；替换为 `GODEBUG=netdns=go`（启用纯 Go 异步 DNS 解析，杜绝 libc `getaddrinfo` 阻塞工作线程），并在主服务明确声明 `GOMAXPROCS` 绑定全部 CPU 核心。2) **会话池预热与 0-RTT 极速建连**：客户端（sing-box 与 Mihomo）引入温热空闲会话池（`min_idle_session: 4`，Mihomo 为 `min-idle-session: 4`），保持 4 条热 TLS 1.3 连接待命，消除网页并发请求时的三次握手与 TLS 协商延迟（建连延迟由 ~450ms 降至 0-RTT）；空闲会话超时设为 5 分钟（`5m` / `300s`），巡检间隔设为 15 秒（`15s` / `15`）。3) **套接字底层优化**：客户端出站开启 `bind_address_no_port: true`（消除短时间海量连接引起的源端口耗尽）与 `tcp_keep_alive: 30s` / `tcp_keep_alive_interval: 5s`（防止运营商中间 NAT 路由静默杀掉空闲保活连接）。4) **服务端入站 TFO 加速与协议收敛**：`anytls-in` 入站启用 `"tcp_fast_open": true`，关闭 `"tcp_multi_path": false`（规避 MPTCP 握手超时卡死），强制最低 TLS 1.3 并支持 `["h2", "http/1.1"]` 双 ALPN 协商。5) **节点链接规范化**：剥离 `anytls://` 链接中冗余的 `security=tls`、`peer=$sni`、`allowInsecure=0`。 |
 | **默认安装命令全面升级为四大主力（Hysteria2 + Naive + TUIC + AnyTLS）** | v2.7.61 | 1) **默认协议集架构对齐**：正式将已完成极速调优与 0-RTT 会话池加固的 AnyTLS 纳为默认安装四大核心主力之一；全新安装命令无需再手动指定 `hyp=1 nvp=1 tup=1 anyp=1`，只要提供证书参数（`alns=1 ym=你的域名`）即自动部署 Hysteria2、NaiveProxy（H3+H2）、TUIC 与 AnyTLS 四条主力节点。2) **Reality 调整为可选备用**：VLESS-Reality TCP 节点默认收敛关闭，保留按需传 `reap=1` 或通过 `sbbox proto reality on` 随时开启的能力。3) **管理与帮助生态同步**：同步更新 `showmode` 引导、菜单项 21 与 `sbbox proto` 状态展示。 |
+| **TUIC v5 默认关闭 0-RTT 握手（安全与隐私优先基线）** | v2.7.62 | 1) **防重放安全加固**：遵循 sing-box 官方规范与安全基线，将 TUIC v5 服务端 (`tuic-in`) 与 sing-box 客户端出站的 `zero_rtt_handshake` 默认设为 `false`，Mihomo/Clash 客户端 `reduce-rtt` 同步默认设为 `false`，彻底规避 TLS 1.3 / QUIC Early Data 重放攻击风险。2) **性能与稳定性对齐**：保持服务端 BBR、客户端 CUBIC、原生 UDP Datagram (`native`) 的高带宽低延迟组合。 |
 
 ---
 
