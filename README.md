@@ -11,8 +11,8 @@
 | 🥇 **高速主力** | **Hysteria2** | 极速高吞吐 / 抗恶劣丢包 / Brutal 拥塞控制 | QUIC (H3) + salamander 混淆 + 端口跳跃 | 真实证书 / 自签+指纹固定 |
 | 🥈 **高伪装主力** | **NaiveProxy** | Chromium 原生网络栈内核级反探测伪装 | HTTP/3 (QUIC) & HTTP/2 双通道 | **强制真实证书** |
 | 🥉 **QUIC 备选** | **TUIC v5** | 低延迟 UDP 加速 / 标准 QUIC 0-RTT | QUIC (H3) | 真实证书 / 自签+指纹固定 |
-| 4 **兼容老客户端 (可选)** | **VLESS-Reality** | 全客户端直连兼容（免域名免证书；按需显式传 `reap=1` 开启） | TCP (XTLS Vision) | **免域名 / 免证书（借用官方 SNI）** |
-| 5 **抗特征深度伪装 (可选)** | **AnyTLS** | 彻底消除 TLS-in-TLS 特征（默认不安装；按需传 `anyp=1` 开启） | TCP + TLS 1.3 + 自适应 8 级填充 Padding | 真实证书 / 自签+指纹固定 |
+| 💣 **TCP 主力** | **AnyTLS** | 彻底消除 TLS-in-TLS 特征 / 0-RTT 会话池 | TCP + TLS 1.3 + 自适应 8 级填充 Padding | **强制真实证书** |
+| 5 **兼容老客户端 (可选)** | **VLESS-Reality** | 全客户端直连兼容（免域名免证书；按需显式传 `reap=1` 开启） | TCP (XTLS Vision) | **免域名 / 免证书（借用官方 SNI）** |
 
 > 默认使用 **官方正式版内核（stable）**，默认开启 **QUIC 与 BBR 拥塞控制**，入站最低兼容 **TLS 1.2 / HTTP 1.1**。
 
@@ -39,7 +39,7 @@
 - [七、内核版本管理](#七内核版本管理)
 - [八、v2rayN 订阅与客户端配置](#八v2rayn-订阅与客户端配置)
 - [九、四条节点实测吞吐](#九四条节点实测吞吐)
-- [十、版本迭代与核心调优演进记录 (v2.1 - v2.7.60)](#十版本迭代与核心调优演进记录-v21---v2760)
+- [十、版本迭代与核心调优演进记录 (v2.1 - v2.7.61)](#十版本迭代与核心调优演进记录-v21---v2761)
 - [十一、免责声明](#十一免责声明)
 
 ---
@@ -176,17 +176,16 @@ systemctl --failed                             # 有 205/LIMITS 就是踩了这�
 ### 2. 一键安装
 
 ```bash
-# 1. 推荐三大主力梯队一键安装（含高速 Hysteria2 + NaiveProxy + Tuic，需域名解析）：
+# 1. 默认四大主力梯队一键安装（含高速 Hysteria2 + NaiveProxy + Tuic + AnyTLS，需域名解析）：
 bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) \
-  hyp=1 nvp=1 tup=1 alns=1 ym=your.domain.com
+  alns=1 ym=your.domain.com
 
-# 2. 全协议完整安装（三大主力 + 兼容旧客户端的 VLESS-Reality + AnyTLS）：
+# 2. 全协议完整安装（四大主力 + 兼容旧客户端的 VLESS-Reality）：
 bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) \
-  hyp=1 nvp=1 tup=1 reap=1 anyp=1 alns=1 ym=your.domain.com
+  reap=1 alns=1 ym=your.domain.com
 
-# 3. 无域名极速安装（含 Hysteria2 + Tuic + Reality，免域名、免申请证书）：
-bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) \
-  hyp=1 tup=1 reap=1
+# 3. 无域名极速安装（含 Hysteria2 + Tuic，自签证书 + SHA256 指纹固定，免域名）：
+bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh)
 ```
 
 > `alns=1` 时 acme.sh 走 standalone 模式，需要 **80 端口空闲**、域名 A 记录已解析到本机。
@@ -200,11 +199,11 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `hyp` | 空 | 🥇 启用 Hysteria2 + TLS 节点（高速主力，支持端口跳跃与混淆，启用 `hyp=1`） |
-| `nvp` | 空 | 🥈 启用 NaiveProxy (H3+H2，Chromium 内核级反探测伪装，启用 `nvp=1`，需证书） |
-| `tup` | 空 | 🥉 启用 TUIC v5 节点（低延迟 UDP 加速 / 标准 QUIC 0-RTT，启用 `tup=1`） |
-| `reap` | 空 | 4 可选启用最新 VLESS-Reality TCP + XTLS-Vision 节点（免域名免证书；按需开启用 `reap=1`） |
-| `anyp` | 空 | 5 可选启用 AnyTLS + TLS 节点（默认不安装；按需开启用 `anyp=1`，抗 TLS-in-TLS 特征） |
+| `hyp` | 空（默认安装） | 🥇 启用 Hysteria2 + TLS 节点（高速主力，支持端口跳跃与混淆，启用 `hyp=1`） |
+| `nvp` | 空（有证书时默认安装） | 🥈 启用 NaiveProxy (H3+H2，Chromium 内核级反探测伪装，启用 `nvp=1`，需证书） |
+| `tup` | 空（默认安装） | 🥉 启用 TUIC v5 节点（低延迟 UDP 加速 / 标准 QUIC 0-RTT，启用 `tup=1`） |
+| `anyp` | 空（有证书时默认安装） | 💣 启用 AnyTLS + TLS 节点（新一代 TCP 主力，0-RTT 会话池与抗特征深度伪装） |
+| `reap` | 空 | 5 可选启用最新 VLESS-Reality TCP + XTLS-Vision 节点（免域名免证书；按需开启用 `reap=1`） |
 | `reap_sni` | `gateway.icloud.com` | Reality 目标 SNI 伪装域名（支持任意合规 TLS 1.3 域名） |
 | `port_any` | 随机 | 指定 AnyTLS 监听端口（默认 28443 或随机 10000-65535） |
 | `port_hy2` / `port_nv` / `port_tu` / `port_rea` | 随机 | 指定各协议固定端口（10000-65535） |
@@ -340,7 +339,7 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 
 ---
 
-## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.60)
+## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.61)
 
 本项目经跨洋弱网环境（160ms+ / 1% 丢包）数十轮实测迭代，核心演进总结如下：
 
@@ -386,6 +385,7 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 | **Naive-h2 纠正为标准 HTTPS + pre 通道自适应新特性** | v2.7.58 | 1) 修复 NaiveProxy 节点运行报内核错误：纠正此前将 `naive-h2` 误生成为 `naive+quic://` 的问题，恢复为标准的 HTTPS/H2 链接 `naive+https://`；客户端出站恢复为 HTTP/2（`quic: false` 并剥离 QUIC 专用参数）；服务端 `naive-in` 的 TLS `min_version` 调为 `1.2` 兼容模式，避免 TLS 1.2 客户端被服务端拒连。2) `sbrel=pre` 通道自动应用 sing-box 1.15+ 新特性：自动配置 1.15 `cache_file` 写缓冲（1MB/1m 刷盘）、DNS 乐观缓存、1.14/1.15 原生 API、Hysteria2 BBR Profile；TUN 客户端订阅按内核版本识别，对 1.15+ 客户端自动启用自研高性能 Go TUN 栈并去除废弃警告 |
 | **修复 Hysteria2 节点安全性漏洞与速度链接缺陷** | v2.7.59 | 1) 修复 Hysteria2 安全性与证书轮换致命 Bug：正规 CA 证书（`CERT_OK=1`）不再在链接中硬编码 `pinSHA256` 及在客户端配置中固定 `certificate_public_key_sha256`，彻底消除 60~90 天证书自动轮换导致全量客户端断连报错的隐患；仅自签名证书（`CERT_OK!=1`）才启用叶证书指纹固定与 `insecure=1`。2) 纠正链接非标准参数：剥离 `security=tls`、`allowInsecure=0` 与 `pcs=` 等非标准字段，仅保留规范的 `insecure=0/1`、`sni`、`alpn=h3`、`mport` 与 `obfs`；密码与混淆密码统一进行标准 URL 百分号编码，防止特殊字符导致解析崩溃。3) 修复客户端速度瓶颈：彻底移除此前在客户端默认硬编码的 `hy2-pc`（50M/300M）与 `hy2-mobile`（20M/100M）限速节点，默认统一输出满速原生 BBR 拥塞控制节点（仅当用户显式传 `hyup`/`hydown` 或运行 `sbbox speed` 时才在单一节点上应用限额），避免用户千兆/5G 宽带被客户端速率限制器扼杀。4) 清理服务端 `hy2-in` 入站内冗余的 `tcp_fast_open` 与 `udp_timeout` 参数 |
 | **提升 AnyTLS 吞吐速度与修复运行环境/参数瓶颈** | v2.7.60 | 1) **解除 Go 运行时内核缺页限速**：彻底移除 systemd drop-in 中的 `GODEBUG=madvdontneed=1`。该参数强制 Go 垃圾回收器使用 `MADV_DONTNEED` 立即向内核释放内存页，导致 AnyTLS 高速收发流式 TLS 数据包时频繁发生内核缺页异常与内存清零中断（`clear_page`），严重扼杀吞吐；替换为 `GODEBUG=netdns=go`（启用纯 Go 异步 DNS 解析，杜绝 libc `getaddrinfo` 阻塞工作线程），并在主服务明确声明 `GOMAXPROCS` 绑定全部 CPU 核心。2) **会话池预热与 0-RTT 极速建连**：客户端（sing-box 与 Mihomo）引入温热空闲会话池（`min_idle_session: 4`，Mihomo 为 `min-idle-session: 4`），保持 4 条热 TLS 1.3 连接待命，消除网页并发请求时的三次握手与 TLS 协商延迟（建连延迟由 ~450ms 降至 0-RTT）；空闲会话超时设为 5 分钟（`5m` / `300s`），巡检间隔设为 15 秒（`15s` / `15`）。3) **套接字底层优化**：客户端出站开启 `bind_address_no_port: true`（消除短时间海量连接引起的源端口耗尽）与 `tcp_keep_alive: 30s` / `tcp_keep_alive_interval: 5s`（防止运营商中间 NAT 路由静默杀掉空闲保活连接）。4) **服务端入站 TFO 加速与协议收敛**：`anytls-in` 入站启用 `"tcp_fast_open": true`，关闭 `"tcp_multi_path": false`（规避 MPTCP 握手超时卡死），强制最低 TLS 1.3 并支持 `["h2", "http/1.1"]` 双 ALPN 协商。5) **节点链接规范化**：剥离 `anytls://` 链接中冗余的 `security=tls`、`peer=$sni`、`allowInsecure=0`。 |
+| **默认安装命令全面升级为四大主力（Hysteria2 + Naive + TUIC + AnyTLS）** | v2.7.61 | 1) **默认协议集架构对齐**：正式将已完成极速调优与 0-RTT 会话池加固的 AnyTLS 纳为默认安装四大核心主力之一；全新安装命令无需再手动指定 `hyp=1 nvp=1 tup=1 anyp=1`，只要提供证书参数（`alns=1 ym=你的域名`）即自动部署 Hysteria2、NaiveProxy（H3+H2）、TUIC 与 AnyTLS 四条主力节点。2) **Reality 调整为可选备用**：VLESS-Reality TCP 节点默认收敛关闭，保留按需传 `reap=1` 或通过 `sbbox proto reality on` 随时开启的能力。3) **管理与帮助生态同步**：同步更新 `showmode` 引导、菜单项 21 与 `sbbox proto` 状态展示。 |
 
 ---
 

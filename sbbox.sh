@@ -46,7 +46,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.60"
+SBBOX_VERSION="v2.7.61"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -66,10 +66,10 @@ uuid="${uuid:-}"
 ym="${ym:-}"                                # acme 证书域名（启用 alns 时必需）
 alns="${alns:-}"                            # 申请 acme 证书：alns=1
 tup="${tup:-}" hyp="${hyp:-}" nvp="${nvp:-}"
-reap="${reap:-${vlp:-${rea:-}}}"            # 最新 VLESS-Reality TCP 节点（免域名免证书）
+reap="${reap:-${vlp:-${rea:-}}}"            # 可选备用：VLESS-Reality TCP 节点（免域名免证书；按需传 reap=1 开启）
 reap_sni="${reap_sni:-${reality_sni:-}}"    # Reality 伪装目标 SNI（默认 gateway.icloud.com）
 port_rea="${port_rea:-${port_vl:-}}"        # Reality 监听端口（默认随机 10000-29999 五位数低位）
-anyp="${anyp:-${any:-}}"                    # sing-box 1.14 新特性：AnyTLS + TLS 节点（默认不安装，抗 TLS-in-TLS 指纹）
+anyp="${anyp:-${any:-}}"                    # 默认四大主力之一：AnyTLS + TLS 节点（抗 TLS-in-TLS 特征与 0-RTT 极速会话池）
 port_any="${port_any:-}"                    # AnyTLS 监听端口（默认随机 10000-29999 五位数低位）
 hyjpt="${hyjpt:-}"                          # Hysteria2 跳跃端口，默认关闭（空）；如 "25000:38000"
 hyobfs="${hyobfs:-1}"                       # Hysteria2 salamander 混淆，默认开启；关闭用 hyobfs=0
@@ -204,13 +204,13 @@ v4v6() {
 showmode() {
   echo "==========================================================="
   echo "sbbox $SBBOX_VERSION — Sing-box-Only 协议安全加固代理脚本"
-  echo "支持协议（2026梯队）：Hysteria2 / Naiveproxy / Tuic（可选：VLESS-Reality / AnyTLS）"
-  echo "默认四条（Hysteria2/Naive/TUIC/Reality）：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) alns=1 ym=你的域名"
+  echo "支持协议（2026梯队）：Hysteria2 / Naiveproxy / Tuic / AnyTLS（可选：VLESS-Reality）"
+  echo "默认四大主力（Hysteria2/Naive/TUIC/AnyTLS）：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) alns=1 ym=你的域名"
   echo "指定协议（三大主力）：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) hyp=1 nvp=1 tup=1 alns=1 ym=你的域名"
-  echo "全协议（含 Reality/AnyTLS）：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) hyp=1 nvp=1 tup=1 reap=1 anyp=1 alns=1 ym=你的域名"
+  echo "全协议（含 Reality）：bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) reap=1 alns=1 ym=你的域名"
   echo "管理菜单：sbbox（终端中直接输入）【或】 sbbox menu"
   echo "云端放行端口清单：sbbox ports（连不上但本机自检正常时，先核对云厂商安全组）"
-  echo "协议开关：sbbox proto show | sbbox proto anytls on|off（默认安装 Hysteria2/Naive/TUIC/Reality，AnyTLS 等备用协议在此开关）"
+  echo "协议开关：sbbox proto show | sbbox proto reality on|off（默认安装四大主力，VLESS-Reality 等备用协议在此开关）"
   echo "节点本机自测：sbbox selftest（逐个节点在服务器本机真实握手，区分服务端问题与网络问题）"
   echo "出站分流：sbbox block cn|ads on|off（屏蔽回国 IP / 广告域名，默认关闭）| sbbox block show | sbbox block update"
   echo "显示节点信息：sbbox list 【或】 bash sbbox.sh list"
@@ -229,12 +229,12 @@ showmode() {
   echo "自检修复：sbbox doctor"
   echo "卸载：sbbox del"
   echo "-----------------------------------------------------------"
-  echo "环境变量（安装期）：hyp=1 nvp=1 tup=1 (可选 reap=1 anyp=1)"
+  echo "环境变量（安装期）：hyp=1 nvp=1 tup=1 anyp=1 (可选 reap=1)"
   echo "  hyp=1    🥇 启用 Hysteria2 + TLS（高速主力，支持端口跳跃与混淆）"
   echo "  nvp=1    🥈 启用 NaiveProxy (H3+H2，Chromium 内核级反探测伪装）"
   echo "  tup=1    🥉 启用 TUIC (v5，标准 QUIC 0-RTT，Hysteria2 备选）"
+  echo "  anyp=1   💣 启用 AnyTLS + TLS（新一代 TCP 主力，0-RTT 会话池与抗特征深度伪装）"
   echo "  reap=1   (可选) 启用 VLESS-Reality TCP 节点（免域名免证书，兼容旧客户端）"
-  echo "  anyp=1   (可选) 启用 AnyTLS + TLS 节点（默认不安装，抗 TLS-in-TLS 特征）"
   echo "  warp=ai|all  (可选) 自动启用 WARP 出站解锁（默认关闭；ai 仅解锁流媒体/AI，all 全量流量）"
   echo "  alns=1   启用 acme 证书（需 ym=你的域名）"
   echo "  ym=域名  acme 证书域名（Hysteria2/AnyTLS/Tuic/Naive 使用）"
@@ -4932,15 +4932,15 @@ cmd_proto() {
     reality|rea|vless) pf=proto_rea; label="VLESS-Reality" ;;
     anytls|any) pf=proto_any; label="AnyTLS" ;;
     show|status|"")
-      echo "当前协议（默认安装前四条，AnyTLS 为备用）："
-      for n in "hy2:proto_hyp:Hysteria2" "naive:proto_nvp:Naiveproxy" "tuic:proto_tup:TUIC" "reality:proto_rea:VLESS-Reality" "anytls:proto_any:AnyTLS"; do
+      echo "当前协议（默认安装四大主力，Reality 为可选备用）："
+      for n in "hy2:proto_hyp:Hysteria2" "naive:proto_nvp:Naiveproxy" "tuic:proto_tup:TUIC" "anytls:proto_any:AnyTLS" "reality:proto_rea:VLESS-Reality"; do
         if [ -f "$SB_HOME/$(echo "$n" | cut -d: -f2)" ]; then
           printf '  %-9s %-14s %s\n' "$(echo "$n" | cut -d: -f1)" "$(echo "$n" | cut -d: -f3)" "已开启"
         else
           printf '  %-9s %-14s %s\n' "$(echo "$n" | cut -d: -f1)" "$(echo "$n" | cut -d: -f3)" "未开启"
         fi
       done
-      echo "用法：sbbox proto <hy2|naive|tuic|reality|anytls> on|off"
+      echo "用法：sbbox proto <hy2|naive|tuic|anytls|reality> on|off"
       return 0
       ;;
     *) echo "用法：sbbox proto [show | hy2|naive|tuic|reality|anytls on|off]"; return 1 ;;
@@ -5081,7 +5081,7 @@ cmd_menu() {
     echo " 18) 出站分流开关 屏蔽回国 IP / 广告域名 block"
     echo " 19) 云端需放行的端口清单 ports"
     echo " 20) 节点本机自测 selftest（区分服务端问题与网络问题）"
-    echo " 21) 协议开关 proto（默认四条之外的备用协议如 AnyTLS 在这里开关）"
+    echo " 21) 协议开关 proto（默认四大主力之外的备用协议如 Reality 在这里开关）"
     echo "  0) 退出"
     read -rp "请选择: " choice || break
     case "$choice" in
@@ -5169,16 +5169,16 @@ main() {
       ;;
   esac
 
-  # 全新安装且没指定任何协议：默认装 Hysteria2 / Naiveproxy / TUIC / VLESS-Reality 四条；
-  # AnyTLS 等备用协议装好后用 sbbox proto anytls on 开启。Naiveproxy 必须有真实证书，没给域名就跳过它。
+  # 全新安装且没指定任何协议：默认装四大主力（Hysteria2 / Naiveproxy / TUIC / AnyTLS）；
+  # VLESS-Reality 等备用协议装好后用 sbbox proto reality on 开启。Naiveproxy 与 AnyTLS 必须有真实证书，没给域名就跳过它们。
   if [ -z "$tup" ] && [ -z "$hyp" ] && [ -z "$nvp" ] && [ -z "$reap" ] && [ -z "$anyp" ] && [ -z "$stlp" ] && [ ! -x "$SB_BIN" ] && [ -z "$reap_off" ]; then
-    hyp=1 tup=1 reap=1
+    hyp=1 tup=1
     if [ -n "$alns" ] || [ -n "$ym" ]; then
-      nvp=1
+      nvp=1 anyp=1
     else
-      warn "未指定 ym=域名 / alns=1：默认协议集里的 Naiveproxy 需要真实证书，本次先跳过（之后补证书可用 sbbox proto naive on）"
+      warn "未指定 ym=域名 / alns=1：默认协议集里的 Naiveproxy 与 AnyTLS 需要真实证书，本次先跳过（之后补证书可用 sbbox proto naive on 或 sbbox proto anytls on）"
     fi
-    info "未指定协议，使用默认协议集：Hysteria2 / TUIC / VLESS-Reality$([ -n "$nvp" ] && echo ' / Naiveproxy')"
+    info "未指定协议，使用默认协议集：Hysteria2 / TUIC$([ -n "$nvp" ] && echo ' / Naiveproxy / AnyTLS')"
   fi
 
   if [ -z "$tup" ] && [ -z "$hyp" ] && [ -z "$nvp" ] && [ -z "$reap" ] && [ -z "$anyp" ] && [ -z "$stlp" ]; then

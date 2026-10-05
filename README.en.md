@@ -11,8 +11,8 @@ A **sing-box 1.14 single-core** deployment script, covering the 2026 protocol ti
 | 🥇 **High-Speed** | **Hysteria2** | Extreme throughput / loss resistance / Brutal congestion control | QUIC (H3) + salamander obfuscation + port hopping | Real Cert / Self-signed + Pinning |
 | 🥈 **Anti-Censorship** | **NaiveProxy** | Chromium Cronet native network stack camouflage | HTTP/3 (QUIC) & HTTP/2 dual channel | **Mandatory Real Cert** |
 | 🥉 **QUIC Alternative** | **TUIC v5** | Low-latency UDP acceleration / standard QUIC 0-RTT | QUIC (H3) | Real Cert / Self-signed + Pinning |
-| 4 **Legacy Compat (Optional)** | **VLESS-Reality** | Universal direct link (No domain/cert needed; enable with `reap=1`) | TCP (XTLS Vision) | **No Domain / No Cert required (SNI Steal)** |
-| 5 **Anti-Fingerprint (Optional)** | **AnyTLS** | Eliminates TLS-in-TLS fingerprinting (Not installed by default; enable with `anyp=1`) | TCP + TLS 1.3 + Adaptive 8-tier Padding | Real Cert / Self-signed + Pinning |
+| 💣 **TCP Primary** | **AnyTLS** | Eliminates TLS-in-TLS fingerprinting / 0-RTT Warm Pool | TCP + TLS 1.3 + Adaptive 8-tier Padding | **Mandatory Real Cert** |
+| 5 **Legacy Compat (Optional)** | **VLESS-Reality** | Universal direct link (No domain/cert needed; enable with `reap=1`) | TCP (XTLS Vision) | **No Domain / No Cert required (SNI Steal)** |
 
 > Defaults to the **official stable core (`stable`, since v2.7.34)**, with **QUIC and BBR congestion control** enabled by default, and backward compatibility down to **TLS 1.2 / HTTP 1.1**.
 
@@ -39,7 +39,7 @@ Bundled with:
 - [7. Kernel Version Management](#7-kernel-version-management)
 - [8. Subscription & Client Configs](#8-subscription--client-configs)
 - [9. Benchmark Throughput](#9-benchmark-throughput)
-- [10. Release History & Core Tuning Evolution (v2.1 – v2.7.60)](#10-release-history--core-tuning-evolution-v21--v2760)
+- [10. Release History & Core Tuning Evolution (v2.1 – v2.7.61)](#10-release-history--core-tuning-evolution-v21--v2761)
 - [11. Disclaimer](#11-disclaimer)
 
 ---
@@ -165,17 +165,16 @@ Main process exited, code=exited, status=205/LIMITS
 ### 4.2 One-Command Installation
 
 ```bash
-# 1. Recommended Three Major Protocols Installation (High-speed Hysteria2 + NaiveProxy + Tuic, requires domain):
+# 1. Default Four Core Pillars Installation (High-speed Hysteria2 + NaiveProxy + Tuic + AnyTLS, requires domain):
 bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) \
-  hyp=1 nvp=1 tup=1 alns=1 ym=your.domain.com
+  alns=1 ym=your.domain.com
 
-# 2. Full Protocol Installation (Three Major Protocols + VLESS-Reality TCP + AnyTLS):
+# 2. Full Protocol Installation (Four Core Pillars + Legacy-compatible VLESS-Reality):
 bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) \
-  hyp=1 nvp=1 tup=1 reap=1 anyp=1 alns=1 ym=your.domain.com
+  reap=1 alns=1 ym=your.domain.com
 
-# 3. No-Domain Fast Installation (Hysteria2 + Tuic + Reality, no domain and no cert application needed):
-bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh) \
-  hyp=1 tup=1 reap=1
+# 3. No-Domain Fast Installation (Hysteria2 + Tuic, self-signed cert + SHA256 pinning, no domain needed):
+bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh)
 ```
 
 > `alns=1` uses acme.sh in standalone mode, requiring **port 80 to be free** and the domain's A record resolved to this host.
@@ -189,11 +188,11 @@ bash <(curl -Ls https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveprox
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `hyp` | empty | 🥇 Enable Hysteria2 + TLS node (High-speed主力, supports port hopping and obfuscation, enable with `hyp=1`) |
-| `nvp` | empty | 🥈 Enable NaiveProxy (H3+H2, Chromium Cronet stack anti-probing camouflage, enable with `nvp=1`, requires real cert) |
-| `tup` | empty | 🥉 Enable TUIC v5 node (Low-latency UDP acceleration / standard QUIC 0-RTT, enable with `tup=1`) |
-| `reap` | empty | 4 Optional: enable VLESS-Reality TCP + XTLS-Vision node (no domain/cert needed; enable with `reap=1`) |
-| `anyp` | empty | 5 Optional: enable AnyTLS + TLS node (Not installed by default; enable with `anyp=1`, eliminates TLS-in-TLS fingerprinting) |
+| `hyp` | empty (installed by default) | 🥇 Enable Hysteria2 + TLS node (High-speed, supports port hopping and obfuscation, enable with `hyp=1`) |
+| `nvp` | empty (installed by default with cert) | 🥈 Enable NaiveProxy (H3+H2, Chromium Cronet stack anti-probing camouflage, enable with `nvp=1`, requires real cert) |
+| `tup` | empty (installed by default) | 🥉 Enable TUIC v5 node (Low-latency UDP acceleration / standard QUIC 0-RTT, enable with `tup=1`) |
+| `anyp` | empty (installed by default with cert) | 💣 Enable AnyTLS + TLS node (Next-gen TCP pillar, 0-RTT warm pool and anti-fingerprint camouflage) |
+| `reap` | empty | 5 Optional: enable VLESS-Reality TCP + XTLS-Vision node (no domain/cert needed; enable with `reap=1`) |
 | `reap_sni` | `gateway.icloud.com` | Reality target camouflage SNI domain (supports any compliant TLS 1.3 domain) |
 | `port_any` | random | Specify AnyTLS listening port (default 28443 or random 10000-65535) |
 | `port_hy2` / `port_nv` / `port_tu` / `port_rea` | random | Fixed port assignments (10000-65535) |
@@ -307,7 +306,7 @@ Benchmark measured locally on VPS over 9 iterations showing median (min–max):
 
 ---
 
-## 10. Release History & Core Tuning Evolution (v2.1 – v2.7.60)
+## 10. Release History & Core Tuning Evolution (v2.1 – v2.7.61)
 
 After dozens of iterative rounds across high-latency cross-Pacific topologies (160ms+ / 1% packet loss), core technical milestones are summarized below:
 
@@ -353,6 +352,7 @@ After dozens of iterative rounds across high-latency cross-Pacific topologies (1
 | **Naive-h2 corrected to standard HTTPS + pre channel auto-adapts new features** | v2.7.58 | 1) Fixed NaiveProxy node kernel error: corrected `naive-h2` link generation from erroneous `naive+quic://` to standard HTTPS/H2 link `naive+https://`; client outbound restored to HTTP/2 (`quic: false` without QUIC-only parameters); server `naive-in` TLS `min_version` relaxed to `1.2` for full client compatibility. 2) `sbrel=pre` channel automatically applies sing-box 1.15+ features: auto-configures 1.15 `cache_file` write buffer (1MB / 1m flush), DNS optimistic cache, 1.14/1.15 native API, Hysteria2 BBR profile; TUN client subscription automatically uses high-performance Go TUN stack for 1.15+ clients without deprecation warnings. |
 | **Fix Hysteria2 Security Bugs & Speed/Link Bottlenecks** | v2.7.59 | 1) Fixed Hysteria2 security & cert-rotation time-bomb: trusted CA certificates (`CERT_OK=1`) no longer hardcode `pinSHA256` into share links or pin `certificate_public_key_sha256` into client configs, eliminating hard client disconnections when certificates auto-renew every 60-90 days; leaf fingerprint pinning is strictly reserved for self-signed certificates (`CERT_OK!=1`). 2) Cleaned non-standard URI parameters: stripped invalid `security=tls`, `allowInsecure=0`, and `pcs=` query fields, adhering strictly to the Hysteria 2 URI specification; passwords and obfs passwords are now properly URL percent-encoded. 3) Fixed client speed throttling: removed hardcoded `hy2-pc` (50M/300M) and `hy2-mobile` (20M/100M) rate-capped nodes, defaulting to full-speed unconstrained BBR congestion control unless explicit bandwidth rates (`hyup`/`hydown`) are configured. 4) Cleaned redundant `tcp_fast_open` and `udp_timeout` directives from server-side `hy2-in` UDP inbound. |
 | **Boost AnyTLS Throughput Speed & Fix Runtime/Environment Bottlenecks** | v2.7.60 | 1) **Uncap Go Runtime Page-Fault Bottleneck**: Completely removed `GODEBUG=madvdontneed=1` from systemd drop-in. This parameter forced Go's scavenger to immediately release heap pages to kernel via `MADV_DONTNEED`, which caused constant kernel page faults and memory zeroing (`clear_page`) during heavy TLS streaming in AnyTLS; replaced with `GODEBUG=netdns=go` (enforcing async pure-Go DNS resolution without blocking libc `getaddrinfo` worker threads), and pinned `GOMAXPROCS` to all CPU cores. 2) **Warm Session Pool & 0-RTT Connection**: Introduced warm idle session pool in clients (sing-box and Mihomo: `min_idle_session: 4` / `min-idle-session: 4`), keeping 4 warm TLS 1.3 tunnels on standby, eliminating handshake round-trips and TCP head-of-line blocking under parallel web requests (reducing connection latency from ~450ms to 0-RTT); idle timeout set to 5m (`5m` / `300s`) and check interval to 15s (`15s` / `15`). 3) **Socket-Level Tuning**: Enabled `bind_address_no_port: true` (preventing source port exhaustion) and `tcp_keep_alive: 30s` / `tcp_keep_alive_interval: 5s` (preventing middlebox NAT timeouts on warm idle connections). 4) **Server Inbound TFO Acceleration & Spec Convergence**: Enabled `"tcp_fast_open": true` on `anytls-in`, disabled `"tcp_multi_path": false` to prevent MPTCP connection stall, enforced minimum TLS 1.3 with dual ALPN `["h2", "http/1.1"]`. 5) **Link Sanitization**: Cleaned redundant `security=tls`, `peer=$sni`, and `allowInsecure=0` from `anytls://` links. |
+| **Default Installation Command Promotes Four Core Pillars (Hysteria2 + Naive + TUIC + AnyTLS)** | v2.7.61 | 1) **Align Architecture with Core Protocols**: Promoted speed-tuned and 0-RTT session-pool-equipped AnyTLS into the four core default pillars; fresh installations without protocol parameters no longer require manual `hyp=1 nvp=1 tup=1 anyp=1` flags, automatically deploying Hysteria2, NaiveProxy (H3+H2), TUIC, and AnyTLS when certificate options (`alns=1 ym=your.domain.com`) are supplied. 2) **Reality Repositioned as Optional Fallback**: VLESS-Reality TCP node is now turned off by default, preserved as an optional fallback via `reap=1` or `sbbox proto reality on`. 3) **Tooling & Docs Synchronized**: Updated `showmode` guidance, interactive menu item 21, and `sbbox proto` status listing. |
 
 ---
 
