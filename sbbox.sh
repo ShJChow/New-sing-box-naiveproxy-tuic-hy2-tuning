@@ -46,7 +46,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.58"
+SBBOX_VERSION="v2.7.59"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -1857,7 +1857,6 @@ EOF
             "tag": "hy2-in",
             "listen": "::",
             "listen_port": $port_hy2,
-            "tcp_fast_open": true,
             "udp_fragment": true,
             "users": [
                 { "password": "$pw_hy" }
@@ -1865,7 +1864,6 @@ EOF
 $hy_bw
 ${hy_obfs:+$hy_obfs}
 $hy_mask
-            "udp_timeout": "60s",
             "tls": {
                 "enabled": true,
                 "min_version": "1.3",
@@ -2021,6 +2019,26 @@ EOF
 # ======================================================
 # 客户端节点链接生成 + 聚合订阅
 # ======================================================
+if ! declare -f rawurlencode >/dev/null 2>&1; then
+  rawurlencode() {
+    local string="$1"
+    local encoded="" i char hex
+    local LC_ALL=C
+
+    for ((i = 0; i < ${#string}; i++)); do
+      char="${string:i:1}"
+      case "$char" in
+        [a-zA-Z0-9.~_-]) encoded+="$char" ;;
+        *)
+          printf -v hex '%%%02X' "'$char"
+          encoded+="$hex"
+          ;;
+      esac
+    done
+    printf '%s' "$encoded"
+  }
+fi
+
 # 使用 openssl 动态提取活动证书的 SHA-256 指纹与哈希值
 # 1. 证书 SHA-256 指纹（HEX 大写无冒号）——v2rayN/NekoBox pcs= 固定证书参数
 _cert_fp() {
@@ -2122,36 +2140,42 @@ gen_client() {
     local hy_bw_q=""
     [ -n "$hyup" ] && hy_bw_q="&upmbps=$hyup"
     [ -n "$hydown" ] && hy_bw_q="$hy_bw_q&downmbps=$hydown"
-    local hy2_pin="" hy2_pcs=""
-    [ -n "$_sha" ] && hy2_pin="&pinSHA256=$_sha"
-    [ -n "$_fp" ] && hy2_pcs="&pcs=$_fp"
+
+    # 证书安全处理：
+    # 只有自签名证书（CERT_OK!=1）才需要 insecure=1 和 pinSHA256 固定指纹；
+    # 正规 CA 证书（CERT_OK=1）严禁在链接中锁死 pinSHA256，否则证书 60-90 天自动轮换后所有客户端全部报错失效！
+    # 同时去除 security=tls、allowInsecure、pcs 等非标准参数，确保全平台客户端（Shadowrocket/Loon/NekoBox/Sing-box/Clash Meta）解析兼容。
+    local hy2_pin="" hy2_insecure_q="&insecure=0"
+    if [ "$CERT_OK" != 1 ]; then
+      hy2_insecure_q="&insecure=1"
+      [ -n "$_sha" ] && hy2_pin="&pinSHA256=$_sha"
+    fi
+
     local hyobfs_q=""
     if [ -s "$SB_HOME/hyobfs_pw" ]; then
-      hyobfs_q="&obfs=$_obfs_t&obfs-password=$(cat "$SB_HOME/hyobfs_pw")"
+      local _obfs_pw_raw _enc_obfs_pw
+      _obfs_pw_raw=$(cat "$SB_HOME/hyobfs_pw")
+      _enc_obfs_pw=$(rawurlencode "$_obfs_pw_raw")
+      hyobfs_q="&obfs=$_obfs_t&obfs-password=$_enc_obfs_pw"
     fi
-    hy2_link="hysteria2://$pw_hy@$add:$port_hy2?security=tls&alpn=h3&insecure=$jhins&allowInsecure=$jhins$hyps$hy_bw_q&sni=$sni$hy2_pin$hy2_pcs$hyobfs_q#hy2-$node_tag"
+
+    local enc_pw_hy; enc_pw_hy=$(rawurlencode "$pw_hy")
+
+    # 主 Hysteria2 节点（全速原生 BBR 拥塞控制，无人工限速）
+    hy2_link="hysteria2://$enc_pw_hy@$add:$port_hy2?alpn=h3$hy2_insecure_q$hyps$hy_bw_q&sni=$sni$hy2_pin$hyobfs_q#hy2-$node_tag"
     echo "$hy2_link" >> "$SB_LINK"
-    if [ -z "$hyup" ] && [ -z "$hydown" ]; then
-      local hy2_link_pc="hysteria2://$pw_hy@$add:$port_hy2?security=tls&alpn=h3&insecure=$jhins&allowInsecure=$jhins$hyps&upmbps=50&downmbps=300&sni=$sni$hy2_pin$hy2_pcs$hyobfs_q#hy2-pc-$node_tag"
-      local hy2_link_mob="hysteria2://$pw_hy@$add:$port_hy2?security=tls&alpn=h3&insecure=$jhins&allowInsecure=$jhins$hyps&upmbps=20&downmbps=100&sni=$sni$hy2_pin$hy2_pcs$hyobfs_q#hy2-mobile-$node_tag"
-      echo "$hy2_link_pc" >> "$SB_LINK"
-      echo "$hy2_link_mob" >> "$SB_LINK"
-    fi
+
     echo "💣【 🥇 Hysteria2 (高速主力) 】节点信息如下："
     echo "$hy2_link"
-    if [ -z "$hyup" ] && [ -z "$hydown" ]; then
-      echo "$hy2_link_pc"
-      echo "$hy2_link_mob"
-    fi
     echo
   fi
 
   # 2. 🥈 AnyTLS (新一代 TCP 主力)
   if [ -n "$anyp" ] && [ "$CERT_OK" = 1 ]; then
     local any_pcs="" any_pin=""
-    [ -n "$_fp" ] && any_pcs="&pcs=$_fp"
-    [ -n "$_sha" ] && any_pin="&pinSHA256=$_sha"
-    any_link="anytls://$pw_any@$add:$port_any?security=tls&alpn=h2&sni=$sni&peer=$sni&insecure=0&allowInsecure=0&allow_insecure=0$any_pcs$any_pin#anytls-$node_tag"
+    [ "$CERT_OK" != 1 ] && [ -n "$_fp" ] && any_pcs="&pcs=$_fp"
+    [ "$CERT_OK" != 1 ] && [ -n "$_sha" ] && any_pin="&pinSHA256=$_sha"
+    any_link="anytls://$(rawurlencode "$pw_any")@$add:$port_any?security=tls&alpn=h2&sni=$sni&peer=$sni&insecure=0&allowInsecure=0&allow_insecure=0$any_pcs$any_pin#anytls-$node_tag"
     echo "$any_link" >> "$SB_LINK"
     echo "💣【 🥈 AnyTLS + TLS (新一代 TCP 主力) 】节点信息如下："
     echo "$any_link"; echo
@@ -2160,13 +2184,13 @@ gen_client() {
   # 3. 🥉 NaiveProxy (HTTPS / 流量形态特殊需求)
   if [ -n "$nvp" ] && [ "$CERT_OK" = 1 ]; then
     local nv_pcs="" nv_pin=""
-    [ -n "$_fp" ] && nv_pcs="&pcs=$_fp"
-    [ -n "$_sha" ] && nv_pin="&pinSHA256=$_sha"
+    [ "$CERT_OK" != 1 ] && [ -n "$_fp" ] && nv_pcs="&pcs=$_fp"
+    [ "$CERT_OK" != 1 ] && [ -n "$_sha" ] && nv_pin="&pinSHA256=$_sha"
     local nv_uot="&uot=1&udp-over-tcp=true&udp_over_tcp=1"
 
     # v2.7.28：去掉 http3:// / http2:// 两条同入站的重复写法（v2rayN 不识别，导入即 -1）
-    nv1_link="naive+quic://$nv_user:$nv_pw@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1$nv_uot$nv_pcs$nv_pin#naive-h3-$node_tag"
-    nv2_link="naive+https://$nv_user:$nv_pw@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1$nv_uot$nv_pcs$nv_pin#naive-h2-$node_tag"
+    nv1_link="naive+quic://$(rawurlencode "$nv_user"):$(rawurlencode "$nv_pw")@$add:$port_nv?quic=1&congestion_control=bbr&security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1$nv_uot$nv_pcs$nv_pin#naive-h3-$node_tag"
+    nv2_link="naive+https://$(rawurlencode "$nv_user"):$(rawurlencode "$nv_pw")@$add:$port_nv?security=tls&sni=$sni&insecure=0&allowInsecure=0&padding=1$nv_uot$nv_pcs$nv_pin#naive-h2-$node_tag"
 
     for l in "$nv1_link" "$nv2_link"; do
       echo "$l" >> "$SB_LINK"
@@ -2178,13 +2202,13 @@ gen_client() {
   # 4. 4 TUIC (Hysteria2 的 QUIC 备选)
   if [ -n "$tup" ]; then
     local tuic_pcs="" tuic_pin="" tuic_ech=""
-    [ -n "$_fp" ] && tuic_pcs="&pcs=$_fp"
-    [ -n "$_sha" ] && tuic_pin="&pinSHA256=$_sha"
+    [ "$CERT_OK" != 1 ] && [ -n "$_fp" ] && tuic_pcs="&pcs=$_fp"
+    [ "$CERT_OK" != 1 ] && [ -n "$_sha" ] && tuic_pin="&pinSHA256=$_sha"
     case "$tuech" in
       1|on|yes|true) [ -n "$tuech_config" ] && tuic_ech="&ech=$(printf %s "$tuech_config" | base64 | tr -d '\n')" ;;
     esac
     # v2.7.36：客户端拥塞控制用 cubic（TUIC 默认值），见下方 sbox_client 的 tuic 出站注释
-    tuic_link="tuic://$uuid:$pw_tu@$add:$port_tu?congestion_control=cubic&udp_relay_mode=native&alpn=h3&sni=$sni&insecure=$jhins&allowInsecure=$jhins&allow_insecure=$jhins$tuic_pcs$tuic_pin$tuic_ech#tuic-$node_tag"
+    tuic_link="tuic://$uuid:$(rawurlencode "$pw_tu")@$add:$port_tu?congestion_control=cubic&udp_relay_mode=native&alpn=h3&sni=$sni&insecure=$jhins&allowInsecure=$jhins&allow_insecure=$jhins$tuic_pcs$tuic_pin$tuic_ech#tuic-$node_tag"
     echo "$tuic_link" >> "$SB_LINK"
     echo "💣【 4 Tuic (QUIC 备选) 】节点信息如下："
     echo "$tuic_link"; echo
@@ -2682,14 +2706,17 @@ gen_client_sbox() {
   esac
 
   # TLS 证书公钥 SHA-256 固定（通过 openssl 提取 SPKI SHA-256，防中间人）
+  # 仅自签名证书（CERT_OK!=1）或显式开启时固定，正规 CA 证书严禁默认固定，避免证书轮换后客户端失效
   local tuic_tls_extra="" hy2_tls_extra="" sb64
   sb64=$(_cert_spki_base64)
   if [ -n "$sb64" ]; then
     case "$tuils" in
       ""|0|no|off|false) : ;;
-      *) tuic_tls_extra=", \"certificate_public_key_sha256\": [\"$sb64\"]" ;;
+      *) [ "$CERT_OK" != 1 ] && tuic_tls_extra=", \"certificate_public_key_sha256\": [\"$sb64\"]" ;;
     esac
-    hy2_tls_extra=", \"certificate_public_key_sha256\": [\"$sb64\"]"
+    if [ "$CERT_OK" != 1 ] || [ "${hyils:-0}" = 1 ]; then
+      hy2_tls_extra=", \"certificate_public_key_sha256\": [\"$sb64\"]"
+    fi
   fi
 
   # 1. 🥇 Hysteria2 (高速主力)
@@ -2711,59 +2738,20 @@ gen_client_sbox() {
     fi
     if [ -n "$hyup" ] && [ -n "$hydown" ]; then
       hy_client_bw="\"up_mbps\": $hyup, \"down_mbps\": $hydown,"
-      ob+=('{
-          "type": "hysteria2",
-          "tag": "hysteria2",
-          "server": "'"$add"'",
-          "server_port": '"$port_hy2"',
-          '"$hy_ports_json"'
-          '"$hy_client_bw"'
-          "password": "'"$pw_hy"'",'"$hyobfs_json"'
-          "udp_fragment": true,
-          "bind_address_no_port": true,
-          "tls": { "enabled": true, "server_name": "'"$sni"'", "insecure": '"$msins"', "alpn": ["h3"]'"$hy2_tls_extra"' }
-      }')
-      tags+=("hysteria2")
-    else
-      ob+=('{
-          "type": "hysteria2",
-          "tag": "hysteria2",
-          "server": "'"$add"'",
-          "server_port": '"$port_hy2"',
-          '"$hy_ports_json"'
-          "password": "'"$pw_hy"'",'"$hyobfs_json"'
-          "udp_fragment": true,
-          "bind_address_no_port": true,
-          "tls": { "enabled": true, "server_name": "'"$sni"'", "insecure": '"$msins"', "alpn": ["h3"]'"$hy2_tls_extra"' }
-      }')
-      ob+=('{
-          "type": "hysteria2",
-          "tag": "hysteria2-pc",
-          "server": "'"$add"'",
-          "server_port": '"$port_hy2"',
-          '"$hy_ports_json"'
-          "up_mbps": 50,
-          "down_mbps": 300,
-          "password": "'"$pw_hy"'",'"$hyobfs_json"'
-          "udp_fragment": true,
-          "bind_address_no_port": true,
-          "tls": { "enabled": true, "server_name": "'"$sni"'", "insecure": '"$msins"', "alpn": ["h3"]'"$hy2_tls_extra"' }
-      }')
-      ob+=('{
-          "type": "hysteria2",
-          "tag": "hysteria2-mobile",
-          "server": "'"$add"'",
-          "server_port": '"$port_hy2"',
-          '"$hy_ports_json"'
-          "up_mbps": 20,
-          "down_mbps": 100,
-          "password": "'"$pw_hy"'",'"$hyobfs_json"'
-          "udp_fragment": true,
-          "bind_address_no_port": true,
-          "tls": { "enabled": true, "server_name": "'"$sni"'", "insecure": '"$msins"', "alpn": ["h3"]'"$hy2_tls_extra"' }
-      }')
-      tags+=("hysteria2" "hysteria2-pc" "hysteria2-mobile")
     fi
+    ob+=('{
+        "type": "hysteria2",
+        "tag": "hysteria2",
+        "server": "'"$add"'",
+        "server_port": '"$port_hy2"',
+        '"$hy_ports_json"'
+        '"$hy_client_bw"'
+        "password": "'"$pw_hy"'",'"$hyobfs_json"'
+        "udp_fragment": true,
+        "bind_address_no_port": true,
+        "tls": { "enabled": true, "server_name": "'"$sni"'", "insecure": '"$msins"', "alpn": ["h3"]'"$hy2_tls_extra"' }
+    }')
+    tags+=("hysteria2")
   fi
 
   # 2. 🥈 AnyTLS (新一代 TCP 主力)
@@ -3034,10 +3022,11 @@ gen_client_clash() {
     ports: $cl_ports"
     fi
     if [ -n "$hyup" ] && [ -n "$hydown" ]; then
-      local hy_clash_bw="
+      hy_clash_bw="
     up: \"$hyup Mbps\"
     down: \"$hydown Mbps\""
-      proxies="$proxies
+    fi
+    proxies="$proxies
   - name: hysteria2-$node_tag
     server: $add
     port: $port_hy2
@@ -3046,43 +3035,8 @@ gen_client_clash() {
     alpn: [h3]$hyobfs_yaml$hy_ports_yaml
     sni: $sni
     skip-cert-verify: $msins"
-      groups="$groups
+    groups="$groups
       - hysteria2-$node_tag"
-    else
-      proxies="$proxies
-  - name: hysteria2-$node_tag
-    server: $add
-    port: $port_hy2
-    type: hysteria2
-    password: $pw_hy
-    alpn: [h3]$hyobfs_yaml$hy_ports_yaml
-    sni: $sni
-    skip-cert-verify: $msins
-  - name: hysteria2-pc-$node_tag
-    server: $add
-    port: $port_hy2
-    type: hysteria2
-    up: \"50 Mbps\"
-    down: \"300 Mbps\"
-    password: $pw_hy
-    alpn: [h3]$hyobfs_yaml$hy_ports_yaml
-    sni: $sni
-    skip-cert-verify: $msins
-  - name: hysteria2-mobile-$node_tag
-    server: $add
-    port: $port_hy2
-    type: hysteria2
-    up: \"20 Mbps\"
-    down: \"100 Mbps\"
-    password: $pw_hy
-    alpn: [h3]$hyobfs_yaml$hy_ports_yaml
-    sni: $sni
-    skip-cert-verify: $msins"
-      groups="$groups
-      - hysteria2-$node_tag
-      - hysteria2-pc-$node_tag
-      - hysteria2-mobile-$node_tag"
-    fi
   fi
 
   # 2. 🥈 AnyTLS (新一代 TCP 主力)
