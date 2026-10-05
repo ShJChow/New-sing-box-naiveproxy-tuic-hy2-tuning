@@ -39,7 +39,7 @@
 - [七、内核版本管理](#七内核版本管理)
 - [八、v2rayN 订阅与客户端配置](#八v2rayn-订阅与客户端配置)
 - [九、四条节点实测吞吐](#九四条节点实测吞吐)
-- [十、版本迭代与核心调优演进记录 (v2.1 - v2.7.53)](#十版本迭代与核心调优演进记录-v21---v2753)
+- [十、版本迭代与核心调优演进记录 (v2.1 - v2.7.60)](#十版本迭代与核心调优演进记录-v21---v2760)
 - [十一、免责声明](#十一免责声明)
 
 ---
@@ -340,7 +340,7 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 
 ---
 
-## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.52)
+## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.60)
 
 本项目经跨洋弱网环境（160ms+ / 1% 丢包）数十轮实测迭代，核心演进总结如下：
 
@@ -385,6 +385,7 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 | **服务端 DNS 按 CDN 边缘远近重排 · 外置 Hysteria2 指定解析器 · 吸收第三方调优中的有效项** | v2.7.37 | **DNS**：sing-box 服务端 `dns-secure` 改为 `9.9.9.10`（Quad9 不拦截版，DoT），`dns-backup` 改为 `1.1.1.1`。解析耗时只在每个域名首次查询时付一次，返回的 CDN 边缘远近却决定之后每条连接的延迟：本机 32 个常用域名 × 各 3 次，比最优边缘慢 3ms 以上的，8.8.8.8 有 10 个、1.1.1.1 有 5 个、9.9.9.10 只有 1 个（Apple / iCloud / Microsoft 等 Akamai 系差 10~50ms）。**外置 Hysteria2**：`/etc/hysteria/sbbox.yaml` 原先没有 `resolver`，走系统 resolved（本机首选 8.8.8.8）。同一 sing-box 客户端经它取 generate_204，每次都比 Xray 内置 Hy2 慢约 28ms，抓包确认是服务端到目标的 RTT：拿到的是 14ms 外的 Google 边缘，Xray 那边是 0.8ms。现由 `hy2_external_sync_resolver` 追加 `resolver: udp 9.9.9.10:53`（已有 resolver 段原样保留），`sbbox doctor` 会检测并自动补上、重启 hysteria-sbbox。改后热连接 190 → 164ms（1.2 → 1.0 RTT，160ms 下），闲置 65s / 120s 后仍为 1.0 RTT。**系统调优**：`net.core.rmem_max / wmem_max` 由 128MB 收敛为 64MB（含千兆链路分支，与 `tcp_rmem / wmem` 上限一致）；新增 `vm.min_free_kbytes`（large 档 64MB / medium 档 32MB）与 `kernel.sched_autogroup_enabled = 0`；`nf_conntrack` 登记进 `/etc/modules-load.d/sbbox-conntrack.conf`——开机时 systemd-sysctl 早于 iptables / Docker 加载该模块，`nf_conntrack_max` 会被静默跳过（`tune off` 一并删除）；`kernel.core_pattern = core` 改由调优代码写入（此前只在注释里提到、靠手工补写，重跑 `tune on` 就会丢）。这几项吸收自第三方一键脚本（vps-tcp-tune）中与本项目不冲突的部分，其余因与已有取值冲突或实测无收益而不采纳（明细见同机 Xray v4.9.48）。**测过不采纳**：naive `insecure_concurrency` 取 1 与 2 的握手耗时无差异，维持 2；naive-h3 闲置约 30s 后 Cronet 会关掉 QUIC 连接，下次请求多 1 RTT，属客户端行为，服务端不可调。握手测量工具与全节点数据见同机 Xray 仓库 `tools/xray_handshake_bench.py`。同机 Xray 在 v4.9.48 同步加入 64MB 与三项系统调优，并把内置 DNS 同样改为 9.9.9.10 |
 | **Naive-h2 纠正为标准 HTTPS + pre 通道自适应新特性** | v2.7.58 | 1) 修复 NaiveProxy 节点运行报内核错误：纠正此前将 `naive-h2` 误生成为 `naive+quic://` 的问题，恢复为标准的 HTTPS/H2 链接 `naive+https://`；客户端出站恢复为 HTTP/2（`quic: false` 并剥离 QUIC 专用参数）；服务端 `naive-in` 的 TLS `min_version` 调为 `1.2` 兼容模式，避免 TLS 1.2 客户端被服务端拒连。2) `sbrel=pre` 通道自动应用 sing-box 1.15+ 新特性：自动配置 1.15 `cache_file` 写缓冲（1MB/1m 刷盘）、DNS 乐观缓存、1.14/1.15 原生 API、Hysteria2 BBR Profile；TUN 客户端订阅按内核版本识别，对 1.15+ 客户端自动启用自研高性能 Go TUN 栈并去除废弃警告 |
 | **修复 Hysteria2 节点安全性漏洞与速度链接缺陷** | v2.7.59 | 1) 修复 Hysteria2 安全性与证书轮换致命 Bug：正规 CA 证书（`CERT_OK=1`）不再在链接中硬编码 `pinSHA256` 及在客户端配置中固定 `certificate_public_key_sha256`，彻底消除 60~90 天证书自动轮换导致全量客户端断连报错的隐患；仅自签名证书（`CERT_OK!=1`）才启用叶证书指纹固定与 `insecure=1`。2) 纠正链接非标准参数：剥离 `security=tls`、`allowInsecure=0` 与 `pcs=` 等非标准字段，仅保留规范的 `insecure=0/1`、`sni`、`alpn=h3`、`mport` 与 `obfs`；密码与混淆密码统一进行标准 URL 百分号编码，防止特殊字符导致解析崩溃。3) 修复客户端速度瓶颈：彻底移除此前在客户端默认硬编码的 `hy2-pc`（50M/300M）与 `hy2-mobile`（20M/100M）限速节点，默认统一输出满速原生 BBR 拥塞控制节点（仅当用户显式传 `hyup`/`hydown` 或运行 `sbbox speed` 时才在单一节点上应用限额），避免用户千兆/5G 宽带被客户端速率限制器扼杀。4) 清理服务端 `hy2-in` 入站内冗余的 `tcp_fast_open` 与 `udp_timeout` 参数 |
+| **提升 AnyTLS 吞吐速度与修复运行环境/参数瓶颈** | v2.7.60 | 1) **解除 Go 运行时内核缺页限速**：彻底移除 systemd drop-in 中的 `GODEBUG=madvdontneed=1`。该参数强制 Go 垃圾回收器使用 `MADV_DONTNEED` 立即向内核释放内存页，导致 AnyTLS 高速收发流式 TLS 数据包时频繁发生内核缺页异常与内存清零中断（`clear_page`），严重扼杀吞吐；替换为 `GODEBUG=netdns=go`（启用纯 Go 异步 DNS 解析，杜绝 libc `getaddrinfo` 阻塞工作线程），并在主服务明确声明 `GOMAXPROCS` 绑定全部 CPU 核心。2) **会话池预热与 0-RTT 极速建连**：客户端（sing-box 与 Mihomo）引入温热空闲会话池（`min_idle_session: 4`，Mihomo 为 `min-idle-session: 4`），保持 4 条热 TLS 1.3 连接待命，消除网页并发请求时的三次握手与 TLS 协商延迟（建连延迟由 ~450ms 降至 0-RTT）；空闲会话超时设为 5 分钟（`5m` / `300s`），巡检间隔设为 15 秒（`15s` / `15`）。3) **套接字底层优化**：客户端出站开启 `bind_address_no_port: true`（消除短时间海量连接引起的源端口耗尽）与 `tcp_keep_alive: 30s` / `tcp_keep_alive_interval: 5s`（防止运营商中间 NAT 路由静默杀掉空闲保活连接）。4) **服务端入站 TFO 加速与协议收敛**：`anytls-in` 入站启用 `"tcp_fast_open": true`，关闭 `"tcp_multi_path": false`（规避 MPTCP 握手超时卡死），强制最低 TLS 1.3 并支持 `["h2", "http/1.1"]` 双 ALPN 协商。5) **节点链接规范化**：剥离 `anytls://` 链接中冗余的 `security=tls`、`peer=$sni`、`allowInsecure=0`。 |
 
 ---
 
