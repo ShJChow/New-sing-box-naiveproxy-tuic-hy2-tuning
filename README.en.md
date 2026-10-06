@@ -39,7 +39,7 @@ Bundled with:
 - [7. Kernel Version Management](#7-kernel-version-management)
 - [8. Subscription & Client Configs](#8-subscription--client-configs)
 - [9. Benchmark Throughput](#9-benchmark-throughput)
-- [10. Release History & Core Tuning Evolution (v2.1 – v2.7.63)](#10-release-history--core-tuning-evolution-v21--v2763)
+- [10. Release History & Core Tuning Evolution (v2.1 – v2.7.64)](#10-release-history--core-tuning-evolution-v21--v2764)
 - [11. Disclaimer](#11-disclaimer)
 
 ---
@@ -306,12 +306,13 @@ Benchmark measured locally on VPS over 9 iterations showing median (min–max):
 
 ---
 
-## 10. Release History & Core Tuning Evolution (v2.1 – v2.7.63)
+## 10. Release History & Core Tuning Evolution (v2.1 – v2.7.64)
 
 After dozens of iterative rounds across high-latency cross-Pacific topologies (160ms+ / 1% packet loss), core technical milestones are summarized below:
 
 | Area | Versions | Technical Strategy & Tuning Findings |
 | :--- | :--- | :--- |
+| **System Flow Tuning Aligned with xh Baseline (Adaptive 128MB Buffer & initcwnd 32)** | v2.7.64 | Fully unified `sbbox` kernel & network tuning using `xh` (Xray-core-xhttp) as the golden benchmark: 1) Adaptive RAM tiers: for hosts with >=4GB RAM (medium/large tiers), uncap TCP/socket buffers to 128MB (`134217728`), with `optmem_max` dynamically set to 128KB (`131072`); 2) Dynamic multi-core RPS scaling: `rps_sock_flow_entries` scales dynamically as `$((8192 * CPU_CORES))`; 3) Boot-time NIC tune script (`sbbox-nic-tune`) aligned: default route sets `initcwnd 32 initrwnd 32` for fast TLS handshakes, dynamically binds multi-core RPS/RFS and `fq` qdisc across active NICs; 4) Firewall MTU protection: added FORWARD chain `TCPMSS --clamp-mss-to-pmtu` to eliminate public PMTU blackhole drops; 5) Client Linux tuning guide and Before/After status display updated to the 128MB standard. |
 | **Remove AnyTLS from Defaults & Enforce Zero-Log Privacy** | v2.7.53 | 1. **Default Three Pillars**: Default installed protocols streamlined to Three Primary Pillars (Hysteria2 + NaiveProxy + TUIC); AnyTLS is no longer installed by default (enabled on demand via `anyp=1`), mitigating exposure to internet port scanning; 2. **Zero-Log Privacy Hardening**: sing-box server logging defaults to `sblevel=off` (`disabled: true, level: panic, timestamp: false`), eliminating client IP and target domain logging to disk; 3. **Subscription Service Privacy**: Overrode `SubHandler.log_message` in `sub_server.py` with `pass`, strictly preventing client public IP addresses and User-Agents from leaking into systemd journald logs; 4. **Port hygiene**: AnyTLS is no longer installed by default (the earlier claim of automatically closing old firewall rules was not implemented; clean up old nodes by hand). (the default became error in v2.7.54 and `log_message` now drops only access logs) |
 | **Default log level error & subscription-server de-fingerprinting** | v2.7.54 | 1. `sblevel` now defaults to `error` instead of `off`: only real errors are logged so `sbbox log` / doctor have something to show; `sblevel=off` still disables disk logging entirely; 2. The subscription server drops only access logs, handler errors still go to stderr (no client address); 3. Generic `Server` header, and the root path now returns 404 like any unknown path instead of identifying the service; 4. `sbbox-sub.service` gains `NoNewPrivileges`, `PrivateTmp`, `ProtectKernelTunables`, `ProtectControlGroups`, `RestrictSUIDSGID`. Server-side logging and sub-server only; no transport parameters changed. |
 | **Four default nodes + `sbbox proto` for spare protocols** | v2.7.55 | A fresh install with no protocol arguments now installs Hysteria2 / TUIC / VLESS-Reality / Naiveproxy (Naive is skipped with a notice when neither `ym=` nor `alns=1` is given, since it needs a real certificate); this case used to exit with an error. New `sbbox proto [show \| hy2\|naive\|tuic\|reality\|anytls on\|off]` and menu item 21 switch any protocol on an installed box (AnyTLS is the spare one): flip the `proto_*` marker, regenerate server and client config, restart; turning one off reclaims its port and firewall rule, and the last protocol cannot be removed. AnyTLS gets a random port. Local round trip: after on → off, credentials, ports, `sb.json` and subscription files are byte-identical, and `sbbox selftest` passes 8/8 while it is on. Cloud security-list rules are still yours to open / reclaim. |

@@ -46,7 +46,7 @@ SYSCTL_CONF="/etc/sysctl.d/99-sbbox.conf"
 LIMITS_CONF="/etc/security/limits.d/99-sbbox.conf"
 SB_SERVICE="sbbox"
 SB_SEC_DIR="$SB_HOME/sec"
-SBBOX_VERSION="v2.7.63"
+SBBOX_VERSION="v2.7.64"
 SB_URL="https://raw.githubusercontent.com/ShJChow/New-sing-box-naiveproxy-tuic-hy2-tuning/main/sbbox.sh"
 # root 装到 /usr/local/bin（始终在 PATH 中）；非 root 退回 ~/bin
 if [ "$(id -u 2>/dev/null)" = "0" ] && [ -d /usr/local/bin ]; then
@@ -931,78 +931,88 @@ write_nic_tune_script() {
 #!/usr/bin/env bash
 # 由 sbbox tune on 生成 / sbbox tune off 移除，开机由 sbbox-nic.service 执行。
 # 重设 sysctl 管不到、重启即丢的网卡运行时参数；全部 best-effort，可重复执行。
-nic=$(ip route show default 2>/dev/null | awk '/default/{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
-[ -n "$nic" ] || { echo "未识别到默认路由网卡，跳过"; exit 0; }
+def_route=$(ip route show default 2>/dev/null | head -1)
+def_dev=$(echo "$def_route" | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}')
 
-# 1. fq（仅在 default_qdisc=fq 即 BBR 可用时设置）：多队列网卡 mq 下每个 TX 队列挂 fq
-if command -v tc >/dev/null 2>&1 && [ "$(sysctl -n net.core.default_qdisc 2>/dev/null)" = "fq" ]; then
-  fq_opts="limit 20480 flow_limit 4096 quantum 18028 initial_quantum 90140"
-  num_tx=$(find "/sys/class/net/$nic/queues/" -maxdepth 1 -name 'tx-*' 2>/dev/null | wc -l)
-  if [ "$num_tx" -gt 1 ]; then
-    tc qdisc replace dev "$nic" root handle 1: mq 2>/dev/null
-    for i in $(seq 1 "$num_tx"); do
-      tc qdisc replace dev "$nic" parent 1:$i fq $fq_opts 2>/dev/null
-    done
-  else
-    tc qdisc replace dev "$nic" root fq $fq_opts 2>/dev/null
+# 1. 默认路由初始拥塞窗口 initcwnd / initrwnd 32，加速 TLS 握手
+if [ -n "$def_route" ]; then
+  clean_route=$(echo "$def_route" | sed 's/ initcwnd [0-9]*//g; s/ initrwnd [0-9]*//g')
+  ip route change $clean_route initcwnd 32 initrwnd 32 2>/dev/null || true
+fi
+
+# 2. 出口网卡发送队列长度与 MTU 保护
+if [ -n "$def_dev" ]; then
+  ip link set dev "$def_dev" txqueuelen 10000 2>/dev/null || true
+  cur_mtu=$(cat "/sys/class/net/$def_dev/mtu" 2>/dev/null || echo 1500)
+  if [ "$cur_mtu" -lt 1480 ] && [ "$cur_mtu" -gt 0 ]; then
+    ip link set dev "$def_dev" mtu 1480 2>/dev/null || true
   fi
-  echo "网卡 $nic 队列规则：$(tc qdisc show dev "$nic" 2>/dev/null | awk '{print $2}' | sort | uniq -c | awk '{printf "%s×%s ", $2, $1}')（QUIC pacing 生效）"
-fi
-
-# 2. 收发环形队列拉到硬件上限：高速 QUIC 是突发型流量，默认 ring（常见 256/512）
-#    在瞬时突发下会直接 rx_dropped，而这类丢包在 sing-box 日志里完全看不见。
-#    GRO/GSO/TSO 分片卸载属于网卡通用能力，只开不关。
-if command -v ethtool >/dev/null 2>&1; then
-  rx_max=$(ethtool -g "$nic" 2>/dev/null | awk '/^RX:/{print $2; exit}')
-  tx_max=$(ethtool -g "$nic" 2>/dev/null | awk '/^TX:/{print $2; exit}')
-  if [ -n "$rx_max" ] && [ -n "$tx_max" ]; then
-    ethtool -G "$nic" rx "$rx_max" tx "$tx_max" >/dev/null 2>&1 && \
-      echo "网卡 $nic 收发队列已拉满：rx=$rx_max tx=$tx_max"
+  # MTU 高于公网路径的 1500（避免 PMTU 黑洞）
+  if [ "$cur_mtu" -gt 1500 ]; then
+    if ip link set dev "$def_dev" mtu 1500 2>/dev/null; then
+      echo "网卡 $def_dev MTU $cur_mtu → 1500（避免 PMTU 黑洞）"
+      for ipt in iptables ip6tables; do
+        command -v "$ipt" >/dev/null 2>&1 || continue
+        "$ipt" -t mangle -C POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || \
+          "$ipt" -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null
+      done
+      command -v netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save >/dev/null 2>&1
+    fi
   fi
-  ok=""
-  ethtool -K "$nic" gro on >/dev/null 2>&1 && ok="gro"
-  ethtool -K "$nic" gso on >/dev/null 2>&1 && ok="$ok gso"
-  ethtool -K "$nic" tso on >/dev/null 2>&1 && ok="$ok tso"
-  [ -n "$ok" ] && echo "网卡 $nic 已开启分片卸载：$ok"
-fi
 
-# 3. 发送队列长度；MTU 低于 1480 时抬到 1480、高于 1500 时降到 1500
-ip link set dev "$nic" txqueuelen 10000 >/dev/null 2>&1
-cur_mtu=$(cat "/sys/class/net/$nic/mtu" 2>/dev/null || echo 1500)
-if [ "$cur_mtu" -lt 1480 ] && [ "$cur_mtu" -gt 0 ]; then
-  ip link set dev "$nic" mtu 1480 >/dev/null 2>&1
-fi
-# v2.7.38：MTU 高于公网路径的 1500（如部分云厂商默认 9000 巨帧）会发出超大 TCP 段，
-# 在公网出口被静默丢弃（PMTU 黑洞）：TCP 握手成功，但 TLS 证书链等大包到不了，
-# AnyTLS / Naive-H2 / Reality 表现为超时或 RST，QUIC 节点（单包 <1280）不受影响。
-# 降到 1500，并补一条 MSS 钳制兜底（已存在则不重复加；只在真的降过 MTU 时才动防火墙）。
-if [ "$cur_mtu" -gt 1500 ]; then
-  if ip link set dev "$nic" mtu 1500 >/dev/null 2>&1; then
-    echo "网卡 $nic MTU $cur_mtu → 1500（避免 PMTU 黑洞）"
-    for ipt in iptables ip6tables; do
-      command -v "$ipt" >/dev/null 2>&1 || continue
-      "$ipt" -t mangle -C POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || \
-        "$ipt" -t mangle -A POSTROUTING -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null
-    done
-    command -v netfilter-persistent >/dev/null 2>&1 && netfilter-persistent save >/dev/null 2>&1
+  # 收发环形队列拉到硬件上限与通用分片卸载
+  if command -v ethtool >/dev/null 2>&1; then
+    rx_max=$(ethtool -g "$def_dev" 2>/dev/null | awk '/^RX:/{print $2; exit}')
+    tx_max=$(ethtool -g "$def_dev" 2>/dev/null | awk '/^TX:/{print $2; exit}')
+    if [ -n "$rx_max" ] && [ -n "$tx_max" ]; then
+      ethtool -G "$def_dev" rx "$rx_max" tx "$tx_max" >/dev/null 2>&1 && \
+        echo "网卡 $def_dev 收发队列已拉满：rx=$rx_max tx=$tx_max"
+    fi
+    ok=""
+    ethtool -K "$def_dev" gro on >/dev/null 2>&1 && ok="gro"
+    ethtool -K "$def_dev" gso on >/dev/null 2>&1 && ok="$ok gso"
+    ethtool -K "$def_dev" tso on >/dev/null 2>&1 && ok="$ok tso"
+    [ -n "$ok" ] && echo "网卡 $def_dev 已开启分片卸载：$ok"
   fi
 fi
 
-# 4. RPS/RFS 软中断多核均衡：遍历网卡 rx 队列分配 CPU 掩码，避免单核 softirq 瓶颈
-cpu_cores=$(nproc 2>/dev/null || echo 1)
-if [ "$cpu_cores" -gt 1 ] && [ -d "/sys/class/net/$nic/queues" ]; then
-  rps_mask=$(printf '%x' $(( (1 << cpu_cores) - 1 )))
-  flow_entries=$((8192 * cpu_cores))
-  num_rx=$(find "/sys/class/net/$nic/queues/" -maxdepth 1 -name 'rx-*' 2>/dev/null | wc -l)
+# 3. RPS/RFS 多核软中断均衡（仅多核）+ fq 队列（仅在 default_qdisc=fq 即 BBR 可用时设置）
+cores=$(nproc 2>/dev/null || echo 1)
+rps_mask=$(printf '%x' $(( (1 << cores) - 1 )))
+flow_entries=$((8192 * cores))
+want_fq=0
+[ "$(sysctl -n net.core.default_qdisc 2>/dev/null)" = "fq" ] && command -v tc >/dev/null 2>&1 && want_fq=1
+fq_opts="limit 20480 flow_limit 4096 quantum 18028 initial_quantum 90140"
+
+for d in /sys/class/net/*; do
+  [ -e "$d" ] || continue
+  dev=$(basename "$d")
+  case "$dev" in
+    lo|docker*|veth*|br-*|virbr*|zt*|tailscale*|wg*|tun*|tap*) continue ;;
+  esac
+  [ -d "/sys/class/net/$dev/queues" ] || continue
+  num_rx=$(find "/sys/class/net/$dev/queues/" -maxdepth 1 -name 'rx-*' 2>/dev/null | wc -l)
   [ "$num_rx" -le 0 ] && num_rx=1
-  for rxq in /sys/class/net/"$nic"/queues/rx-*/rps_cpus; do
-    [ -f "$rxq" ] && echo "$rps_mask" > "$rxq" 2>/dev/null
-  done
-  for rxq_dir in /sys/class/net/"$nic"/queues/rx-*/; do
-    [ -f "${rxq_dir}rps_flow_cnt" ] && echo "$((flow_entries / num_rx))" > "${rxq_dir}rps_flow_cnt" 2>/dev/null
-  done
-  echo "网卡 $nic RPS/RFS 已绑定多核均衡（cores=$cpu_cores, mask=$rps_mask, flows=$flow_entries）"
-fi
+  if [ "$cores" -gt 1 ]; then
+    for rxq in /sys/class/net/"$dev"/queues/rx-*/rps_cpus; do
+      [ -f "$rxq" ] && echo "$rps_mask" > "$rxq" 2>/dev/null || true
+    done
+    for rxq_dir in /sys/class/net/"$dev"/queues/rx-*/; do
+      [ -f "${rxq_dir}rps_flow_cnt" ] && echo "$((flow_entries / num_rx))" > "${rxq_dir}rps_flow_cnt" 2>/dev/null || true
+    done
+  fi
+  if [ "$want_fq" -eq 1 ]; then
+    num_tx=$(find "/sys/class/net/$dev/queues/" -maxdepth 1 -name 'tx-*' 2>/dev/null | wc -l)
+    if [ "$num_tx" -gt 1 ]; then
+      tc qdisc replace dev "$dev" root handle 1: mq 2>/dev/null || true
+      for i in $(seq 1 "$num_tx"); do
+        tc qdisc replace dev "$dev" parent 1:$i fq $fq_opts 2>/dev/null || true
+      done
+    else
+      tc qdisc replace dev "$dev" root fq $fq_opts 2>/dev/null || true
+    fi
+  fi
+done
 exit 0
 NICTUNEEOF
   chmod 755 "$NIC_TUNE_BIN"
@@ -1127,27 +1137,27 @@ apply_tuning() {
     case "$NIC_SPEED" in ''|*[!0-9]*) NIC_SPEED=0 ;; esac   # 虚拟网卡常返回 -1/空
   fi
 
-  local SOCK_MEM_DEF UDP_MEM_MIN
+  local SOCK_MEM_DEF UDP_MEM_MIN OPTMEM_MAX
   if [ "$MEM_MB" -ge 16384 ]; then
     # 大内存档 (>= 16GB)
-    TUNE_TIER="large";  SOCK_MEM_MAX=67108864;  TCP_MEM_MAX=67108864; NETDEV_BACKLOG=65536; CONNTRACK_MAX=1048576; NETDEV_BUDGET=6000
+    TUNE_TIER="large";  SOCK_MEM_MAX=134217728; TCP_MEM_MAX=134217728; NETDEV_BACKLOG=65536; CONNTRACK_MAX=1048576; NETDEV_BUDGET=6000; OPTMEM_MAX=131072
     SOCK_MEM_DEF=2097152; UDP_MEM_MIN=131072
   elif [ "$MEM_MB" -ge 4096 ]; then
     # 标准档 (4GB - 16GB)
-    TUNE_TIER="medium"; SOCK_MEM_MAX=67108864; TCP_MEM_MAX=33554432; NETDEV_BACKLOG=32768; CONNTRACK_MAX=262144; NETDEV_BUDGET=6000
+    TUNE_TIER="medium"; SOCK_MEM_MAX=134217728; TCP_MEM_MAX=134217728; NETDEV_BACKLOG=32768; CONNTRACK_MAX=262144; NETDEV_BUDGET=6000; OPTMEM_MAX=131072
     SOCK_MEM_DEF=1048576; UDP_MEM_MIN=65536
   elif [ "$MEM_MB" -ge 1536 ]; then
     # 入门档 (1.5GB - 4GB)
-    TUNE_TIER="entry";  SOCK_MEM_MAX=33554432; TCP_MEM_MAX=16777216;  NETDEV_BACKLOG=16384; CONNTRACK_MAX=65536; NETDEV_BUDGET=""
+    TUNE_TIER="entry";  SOCK_MEM_MAX=33554432; TCP_MEM_MAX=16777216;  NETDEV_BACKLOG=16384; CONNTRACK_MAX=65536; NETDEV_BUDGET=""; OPTMEM_MAX=65536
     SOCK_MEM_DEF=524288; UDP_MEM_MIN=32768
   else
     # 极小内存档 (< 1.5GB) - 严防 OOM 熔断模式
-    TUNE_TIER="small";  SOCK_MEM_MAX=8388608;  TCP_MEM_MAX=4194304;  NETDEV_BACKLOG=4096;  CONNTRACK_MAX=0; NETDEV_BUDGET=""
+    TUNE_TIER="small";  SOCK_MEM_MAX=8388608;  TCP_MEM_MAX=4194304;  NETDEV_BACKLOG=4096;  CONNTRACK_MAX=0; NETDEV_BUDGET=""; OPTMEM_MAX=65536
     SOCK_MEM_DEF=262144; UDP_MEM_MIN=16384
   fi
   # 千兆以上链路在 16GB+ 内存机型上可放宽缓冲上限
   if [ "$NIC_SPEED" -ge 1000 ] && [ "$MEM_MB" -ge 16384 ]; then
-    SOCK_MEM_MAX=67108864; TCP_MEM_MAX=67108864; NETDEV_BACKLOG=131072; NETDEV_BUDGET=8000
+    SOCK_MEM_MAX=134217728; TCP_MEM_MAX=134217728; NETDEV_BACKLOG=131072; NETDEV_BUDGET=8000
     TUNE_TIER="large+${NIC_SPEED}M"
   fi
   info "机型: ${CPU_CORES} 核 / ${MEM_MB} MB / ${ARCH} / 链路 ${NIC_SPEED:-未知}Mb → 调优档位 ${TUNE_TIER}"
@@ -1188,8 +1198,8 @@ apply_tuning() {
   try_sysctl net.ipv4.tcp_comp_sack_delay_ns 1000000
   try_sysctl net.ipv4.tcp_mem "$(( MEM_PAGES * 4 / 100 )) $(( MEM_PAGES * 6 / 100 )) $(( MEM_PAGES * 8 / 100 ))"
   # QUIC / HTTP3：Hysteria2 / Tuic 关键
-  try_sysctl net.core.optmem_max 131072
-  try_sysctl net.core.rps_sock_flow_entries 32768
+  try_sysctl net.core.optmem_max "${OPTMEM_MAX:-65536}"
+  [ "$CPU_CORES" -gt 1 ] && try_sysctl net.core.rps_sock_flow_entries "$((8192 * CPU_CORES))"
   # udp_mem 是**全局**的 UDP 内存上限（页数），全档位动态闭环覆盖
   if [ "$MEM_MB" -ge 16384 ]; then
     try_sysctl net.ipv4.udp_mem "$(( MEM_PAGES * 4 / 100 )) $(( MEM_PAGES * 6 / 100 )) $(( MEM_PAGES * 8 / 100 ))"
@@ -1350,6 +1360,12 @@ DROPINEOF
     info "已为 sing-box 写入 rc_ulimit"
   fi
 
+  # TCP MSS Clamp 防护（避免 Jumbo Frame 与公网 MTU 冲突导致的黑洞丢包）
+  if command -v iptables >/dev/null 2>&1; then
+    iptables -t mangle -C FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu >/dev/null 2>&1 \
+      || iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || true
+  fi
+
   # ---------- 网卡层：fq 队列 + UDP 分片卸载 ----------
   # net.core.default_qdisc=fq 只对**此后新建**的 qdisc 生效，已存在的网卡不会
   # 自动切换，所以必须显式对当前网卡再设一次，否则 QUIC 依赖的 pacing 拿不到。
@@ -1359,8 +1375,7 @@ DROPINEOF
   # ---------- Before / After ----------
   echo ""
   local _buf_mb _cap_mb
-  if [ "$MEM_MB" -ge 16384 ]; then _buf_mb=128; _cap_mb=128;
-  elif [ "$MEM_MB" -ge 4096 ]; then _buf_mb=64; _cap_mb=64;
+  if [ "$MEM_MB" -ge 4096 ]; then _buf_mb=128; _cap_mb=128;
   elif [ "$MEM_MB" -ge 1536 ]; then _buf_mb=32; _cap_mb=32;
   else _buf_mb=16; _cap_mb=16; fi
 
@@ -1424,7 +1439,7 @@ tune_show() {
   CPU_CORES=$(nproc 2>/dev/null || echo 1)
   ARCH=$(uname -m 2>/dev/null || echo unknown)
   if [ "$MEM_MB" -ge 16384 ]; then TUNE_TIER="large"; buf_mb=128; cap_mb=128;
-  elif [ "$MEM_MB" -ge 4096 ]; then TUNE_TIER="medium"; buf_mb=64; cap_mb=64;
+  elif [ "$MEM_MB" -ge 4096 ]; then TUNE_TIER="medium"; buf_mb=128; cap_mb=128;
   elif [ "$MEM_MB" -ge 1536 ]; then TUNE_TIER="entry"; buf_mb=32; cap_mb=32;
   else TUNE_TIER="small"; buf_mb=16; cap_mb=16; fi
 
@@ -5536,10 +5551,10 @@ tune_client_linux() {
   echo -e "${CYAN}   Linux 客户端千兆 TCP 缓冲区与 BDP 调优指南         ${NC}"
   echo -e "${CYAN}======================================================${NC}"
   cat <<'EOF'
-sudo sysctl -w net.core.rmem_max=67108864
-sudo sysctl -w net.core.wmem_max=67108864
-sudo sysctl -w net.ipv4.tcp_rmem="4096 87380 67108864"
-sudo sysctl -w net.ipv4.tcp_wmem="4096 65536 67108864"
+sudo sysctl -w net.core.rmem_max=134217728
+sudo sysctl -w net.core.wmem_max=134217728
+sudo sysctl -w net.ipv4.tcp_rmem="4096 87380 134217728"
+sudo sysctl -w net.ipv4.tcp_wmem="4096 65536 134217728"
 sudo sysctl -w net.ipv4.tcp_limit_output_bytes=4194304
 sudo sysctl -w net.ipv4.tcp_slow_start_after_idle=0
 sudo sysctl -w net.ipv4.tcp_adv_win_scale=1

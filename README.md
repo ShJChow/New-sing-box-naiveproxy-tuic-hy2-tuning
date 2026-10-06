@@ -39,7 +39,7 @@
 - [七、内核版本管理](#七内核版本管理)
 - [八、v2rayN 订阅与客户端配置](#八v2rayn-订阅与客户端配置)
 - [九、四条节点实测吞吐](#九四条节点实测吞吐)
-- [十、版本迭代与核心调优演进记录 (v2.1 - v2.7.63)](#十版本迭代与核心调优演进记录-v21---v2763)
+- [十、版本迭代与核心调优演进记录 (v2.1 - v2.7.64)](#十版本迭代与核心调优演进记录-v21---v2764)
 - [十一、免责声明](#十一免责声明)
 
 ---
@@ -339,12 +339,13 @@ Naiveproxy 节点按 QUIC (H3) 优先排列：
 
 ---
 
-## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.63)
+## 十、版本迭代与核心调优演进记录 (v2.1 - v2.7.64)
 
 本项目经跨洋弱网环境（160ms+ / 1% 丢包）数十轮实测迭代，核心演进总结如下：
 
 | 演进领域 | 涉及版本 | 核心技术方案与调优结论 |
 | :--- | :--- | :--- |
+| **流控调优与 xh 完全对齐（以 xh 为基准自适应大内存 128MB 缓冲与 initcwnd 32 加速）** | v2.7.64 | 以 `xh`（Xray-core-xhttp）调优基准深度统一 `sbbox` 调优方案：1) 内存分档自适应对齐：>=4GB 档位（medium/large）收发与 TCP 缓冲区上限全面释放为 128MB (`134217728`)，`optmem_max` 动态分配为 128KB (`131072`)；2) 多核软中断与流表动态伸缩：`rps_sock_flow_entries` 按 CPU 核心数自适应伸缩 `$((8192 * CPU_CORES))`；3) 网卡运行时脚本 (`sbbox-nic-tune`) 全面对齐：默认路由注入 `initcwnd 32 initrwnd 32` 加速 TLS 握手，多网卡动态遍历绑定多核 RPS/RFS 及 `fq` 队列调度；4) 防火墙防护：补齐 FORWARD 链 `TCPMSS --clamp-mss-to-pmtu`，根治公网 PMTU 黑洞丢包；5) 客户端 Linux 调优指南及状态展示 Before/After 同步对齐 128MB 缓冲标准。 |
 | **默认移除 AnyTLS 节点并强化零日志隐私安全** | v2.7.53 | 1. **默认三大主力**：默认安装协议集由四大主力调整为三大主力（Hysteria2 + NaiveProxy + TUIC），默认不再安装 AnyTLS（按需传 `anyp=1` 开启），消除裸奔端口公网扫描暴露风险；2. **零日志隐私加固**：sing-box 日志默认切换为 `sblevel=off`（`disabled: true, level: panic, timestamp: false`），彻底禁止将客户端真实 IP 与访问目标域名写入磁盘日志；3. **订阅服务零留痕**：订阅分发进程（`sub_server.py`）静默处理 HTTP 请求日志（`log_message` 置空），阻断客户端公网 IP 与 User-Agent 泄露至 systemd journald；4. **端口卫生**：不再默认安装 AnyTLS（此前的"自动闭合旧防火墙规则"并未实现，旧节点需手动清理）。 （默认值已在 v2.7.54 改为 error，`log_message` 改为只吞访问日志） |
 | **日志默认 error 与订阅服务去指纹** | v2.7.54 | 1. `sblevel` 默认由 `off` 改为 `error`：只记真正的错误，`sbbox log` / doctor 才有依据，`sblevel=off` 仍可完全不落盘；2. 订阅服务只丢弃访问日志，处理器错误仍写 stderr（不带客户端地址）；3. 订阅服务的 `Server` 头改为通用值，根路径与未知路径一致返回 404，不再暴露服务身份；4. `sbbox-sub.service` 增加 `NoNewPrivileges` / `PrivateTmp` / `ProtectKernelTunables` / `ProtectControlGroups` / `RestrictSUIDSGID`。仅改服务端日志与订阅服务，不涉及任何传输参数。 |
 | **默认四条节点 + `sbbox proto` 开关备用协议** | v2.7.55 | 不带协议参数的全新安装现在默认装 Hysteria2 / TUIC / VLESS-Reality / Naiveproxy 四条（没给 `ym=` / `alns=1` 时因 Naive 需要真实证书而跳过它并提示）；此前这种情况会直接报错退出。新增 `sbbox proto [show \| hy2\|naive\|tuic\|reality\|anytls on\|off]` 与菜单第 21 项，可在已安装机器上开关任意协议（AnyTLS 即备用协议）：改 `proto_*` 标记 → 重新生成服务端与客户端配置 → 重启，关闭时回收对应端口与防火墙规则，且不允许关掉最后一个协议。AnyTLS 开启时随机分配端口。本机往返验证：开 → 关后凭据、端口、`sb.json`、订阅文件与开启前逐字节一致，开启时 `sbbox selftest` 8 项全过。云厂商安全组需自行放行 / 回收端口。 |
