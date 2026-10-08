@@ -22,6 +22,79 @@ def resolve_token_file(token_path):
         return None
     return candidate
 
+def sanitize_clash_yaml(yaml_text):
+    if "anytls" not in yaml_text:
+        return yaml_text
+
+    lines = yaml_text.splitlines()
+    out_lines = []
+    in_proxies = False
+    current_proxy_lines = []
+    current_proxy_name = None
+    dropped_names = set()
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        if re.match(r"^[a-zA-Z0-9_-]+:", line):
+            if current_proxy_lines:
+                is_anytls = any(re.search(r"^\s*type:\s*['\"]?anytls['\"]?", l) for l in current_proxy_lines)
+                if is_anytls:
+                    if current_proxy_name:
+                        dropped_names.add(current_proxy_name)
+                else:
+                    out_lines.extend(current_proxy_lines)
+                current_proxy_lines = []
+                current_proxy_name = None
+            in_proxies = line.startswith("proxies:")
+            out_lines.append(line)
+            i += 1
+            continue
+
+        if in_proxies:
+            m = re.match(r"^\s*-\s*name:\s*(.+)$", line)
+            if m:
+                if current_proxy_lines:
+                    is_anytls = any(re.search(r"^\s*type:\s*['\"]?anytls['\"]?", l) for l in current_proxy_lines)
+                    if is_anytls:
+                        if current_proxy_name:
+                            dropped_names.add(current_proxy_name)
+                    else:
+                        out_lines.extend(current_proxy_lines)
+                    current_proxy_lines = []
+                current_proxy_name = m.group(1).strip().strip("'\"")
+                current_proxy_lines = [line]
+            elif current_proxy_lines:
+                current_proxy_lines.append(line)
+            else:
+                out_lines.append(line)
+            i += 1
+            continue
+
+        out_lines.append(line)
+        i += 1
+
+    if current_proxy_lines:
+        is_anytls = any(re.search(r"^\s*type:\s*['\"]?anytls['\"]?", l) for l in current_proxy_lines)
+        if is_anytls:
+            if current_proxy_name:
+                dropped_names.add(current_proxy_name)
+        else:
+            out_lines.extend(current_proxy_lines)
+
+    if dropped_names:
+        final_lines = []
+        for l in out_lines:
+            m = re.match(r"^\s*-\s*(.+)$", l)
+            if m:
+                item_name = m.group(1).strip().strip("'\"")
+                if item_name in dropped_names:
+                    continue
+            final_lines.append(l)
+        return "\n".join(final_lines) + ("\n" if yaml_text.endswith("\n") else "")
+    return yaml_text
+
 class SubHandler(BaseHTTPRequestHandler):
     # 隐私：不落访问日志，也不把客户端 IP / UA 写进 journald；
     # 真正的处理器错误仍写 stderr（不带客户端地址），便于排错
@@ -69,7 +142,7 @@ class SubHandler(BaseHTTPRequestHandler):
                 return
 
         force_format = ""
-        for suffix in ("/clash", "/singbox", "/sb", "/json", "/b64", "/v2rayn", "/v2ray"):
+        for suffix in ("/clash", "/singbox", "/sb", "/json", "/b64", "/v2rayn", "/v2ray", "/shadowrocket"):
             if token_path.endswith(suffix):
                 force_format = suffix.lstrip("/")
                 token_path = token_path[:-len(suffix)]
@@ -91,7 +164,12 @@ class SubHandler(BaseHTTPRequestHandler):
         if is_clash:
             clash_file = os.path.join(SB_HOME, "clmi.yaml")
             if os.path.isfile(clash_file):
-                with open(clash_file, "rb") as f: content = f.read()
+                with open(clash_file, "r", encoding="utf-8", errors="ignore") as f:
+                    content_str = f.read()
+                # 兼容隔离：Clash/Mihomo/Stash 原生不支持 anytls 协议，进行容错清洗避免整份配置不可用
+                if "anytls=1" not in q_lower:
+                    content_str = sanitize_clash_yaml(content_str)
+                content = content_str.encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/yaml; charset=utf-8")
                 self.send_header("profile-update-interval", "24")
@@ -115,12 +193,14 @@ class SubHandler(BaseHTTPRequestHandler):
                     if key in hint:
                         plat = name
                         break
-                if plat:
-                    try:
-                        cfg = json.loads(content)
-                        for ib in cfg.get("inbounds", []):
-                            if ib.get("type") != "tun":
-                                continue
+                try:
+                    cfg = json.loads(content)
+                    for ib in cfg.get("inbounds", []):
+                        if ib.get("type") != "tun":
+                            continue
+                        # 规范修正 TUN MTU 为 1500，杜绝 9000 巨型帧公网 PMTU 黑洞丢包
+                        ib["mtu"] = 1500
+                        if plat:
                             ib["stack"] = "mixed"
                             if plat == "windows":
                                 ib["strict_route"] = True
@@ -131,9 +211,9 @@ class SubHandler(BaseHTTPRequestHandler):
                                 # macOS 不支持 strict_route；Android / iOS 由系统 VPN 接管路由，不需要
                                 ib["strict_route"] = False
                                 ib.pop("auto_redirect", None)
-                        content = json.dumps(cfg, indent=4, ensure_ascii=False).encode("utf-8")
-                    except Exception:
-                        pass
+                    content = json.dumps(cfg, indent=4, ensure_ascii=False).encode("utf-8")
+                except Exception:
+                    pass
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
                 self.send_header("content-disposition", 'attachment; filename="sbox_client.json"')
@@ -154,13 +234,42 @@ class SubHandler(BaseHTTPRequestHandler):
                 raw_links = [line.strip() for line in decoded.splitlines() if line.strip() and not line.strip().startswith("#")]
             except Exception: pass
 
-        # 默认下发全量 6 大协议节点，不擅自剔除任何已启用节点
-        selected_links = list(raw_links)
-        # Shadowrocket 只认 http3:// / http2:// 形式的 naive 链接（v2.7.28 起订阅只存 naive+ 写法），按 UA 现场转换
-        if "shadowrocket" in ua:
+        def ensure_node_security(l):
+            # 1. 确保 tuic:// 与 anytls:// 保留 security=tls 强校验参数（避免 v2rayN 缺少 TLS 导致 sing-box core 闪退）
+            if l.startswith(("tuic://", "anytls://")):
+                if "security=" not in l:
+                    if "?" in l:
+                        l = l.replace("?", "?security=tls&", 1)
+                    elif "#" in l:
+                        p = l.split("#", 1)
+                        l = f"{p[0]}?security=tls#{p[1]}"
+                    else:
+                        l = l + "?security=tls"
+            # 2. 确保 tuic:// 显式声明 version=5（小火箭解析规范强依赖，避免误判为 TUIC v4 握手失败）
+            if l.startswith("tuic://"):
+                if "version=" not in l:
+                    if "?" in l:
+                        l = l.replace("?", "?version=5&", 1)
+                    elif "#" in l:
+                        p = l.split("#", 1)
+                        l = f"{p[0]}?version=5#{p[1]}"
+                    else:
+                        l = l + "?version=5"
+            return l
+
+        selected_links = [ensure_node_security(l) for l in raw_links]
+
+        # Shadowrocket（小火箭）客户端适配：
+        # - 小火箭仅支持 http3:// 与 http2:// 格式的 Naive 链接（按 UA 现场转换）
+        # - 小火箭原生不支持 anytls:// 协议（导入显示未知/不可用），在此过滤隔离
+        # - TUIC 节点已通过 ensure_node_security 保证 version=5 声明
+        is_sr = "shadowrocket" in ua or force_format == "shadowrocket" or "shadowrocket=1" in q_lower or "format=shadowrocket" in q_lower
+        if is_sr:
+            selected_links = [l for l in selected_links if not l.startswith("anytls://")]
             selected_links = [("http3://" + l[len("naive+quic://"):]) if l.startswith("naive+quic://")
                               else ("http2://" + l[len("naive+https://"):]) if l.startswith("naive+https://")
                               else l for l in selected_links]
+
         if not selected_links:
             with open(token_file, "rb") as f: content = f.read()
             self.send_response(200)
